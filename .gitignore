@@ -1,0 +1,19 @@
+
+# Dipendenze e build
+node_modules/
+dist/
+src-tauri/target/
+.venv/
+__pycache__/
+*.py[cod]
+
+# Segreti e dati locali
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+.DS_Store
+
+# Email e storico locale potenzialmente sensibili
+data/raw/

@@ -30,6 +30,8 @@ from fishstop_engine.analysis_limits import (
 )
 from .attachment      import analyze_attachment
 from .body_context    import select_body_for_ai
+from .cryptographic_auth import verify_cryptographic_authentication
+from .html_form_analysis import analyze_html_forms
 from .html_utils      import (
     recover_mislabelled_utf7_html,
     sanitize_html_for_preview,
@@ -339,9 +341,10 @@ class EmlSOCAnalyzer:
     legato a messaggi specifici.
     """
 
-    def analyze(self, eml_path: str) -> dict:
+    def analyze(self, eml_path: str, verification_raw_email: bytes | None = None) -> dict:
         with open(eml_path, "rb") as f:
             raw_bytes = f.read()
+        raw_bytes_for_verification = verification_raw_email if verification_raw_email is not None else raw_bytes
 
         msg = email.message_from_bytes(raw_bytes, policy=policy.default)
         _validate_mime_structure(msg)
@@ -452,6 +455,13 @@ class EmlSOCAnalyzer:
         dkim_headers = self._headers(msg, "DKIM-Signature")
         report["dkim_signature_present"] = bool(dkim_headers)
         report["dkim_signature_raw"]     = "\n".join(dkim_headers)
+        report["cryptographic_authentication"] = verify_cryptographic_authentication(
+            raw_bytes_for_verification,
+            injection_ip=report.get("injection_sender_ip"),
+            envelope_from=EmlSOCAnalyzer._extract_address(report.get("return_path") or ""),
+            helo=(report.get("closest_to_sender") or {}).get("from_host"),
+            from_address=from_addr,
+        )
 
         # ── 9. Body e allegati ────────────────────────────────────────────
         body_parts       = []
@@ -539,6 +549,10 @@ class EmlSOCAnalyzer:
         report["body_html"] = combined_html.strip() if html_parts else None
         report["body_html_safe"] = sanitize_html_for_preview(combined_html) if html_parts else None
         report["body_html_clean"] = html_clean
+        report["html_form_analysis"] = analyze_html_forms(
+            combined_html,
+            from_domain=_extract_domain(from_addr or ""),
+        )
         report["body_clean"] = body_clean
 
         report["body_source"] = (
@@ -621,8 +635,19 @@ class EmlSOCAnalyzer:
         report["links"] = extract_links(
             body_plain=report["body"],
             body_html=report.get("body_html") or "",
+            embedded_urls=[
+                {"url": url, "label": attachment.get("filename") or "Attachment URL", "source": "attachment"}
+                for attachment in attachments_info
+                for url in (attachment.get("embedded_urls") or [])
+            ],
         )
-        report["lookalike_alerts"] = check_lookalike_domains(report["links"])
+        # `mailto:` actions are retained for identity coherence, but are not
+        # web destinations and therefore must not alter Streamlit-equivalent
+        # lookalike/typosquatting checks.
+        report["lookalike_alerts"] = check_lookalike_domains([
+            link for link in report["links"]
+            if str(link.get("scheme") or "").lower() in {"http", "https"}
+        ])
 
         # ── 11. Flag SOC ──────────────────────────────────────────────────
         report["flags"] = self._build_flags(report)
@@ -722,6 +747,19 @@ class EmlSOCAnalyzer:
         elif not dmarc:
             flag("INFO", "DMARC", "No DMARC result is available in this EML export")
 
+        # Separate from the receiver-provided Authentication-Results: these
+        # results were reproduced locally against live DNS and therefore take
+        # precedence only when an actual verification fails.
+        crypto_auth = report.get("cryptographic_authentication") or {}
+        for protocol in ("dkim", "spf", "dmarc"):
+            result = crypto_auth.get(protocol) or {}
+            if str(result.get("status") or "").lower() == "fail":
+                flag(
+                    "MEDIUM",
+                    f"Cryptographic {protocol.upper()}",
+                    str(result.get("message") or "Independent DNS-backed verification failed."),
+                )
+
         # Reply-To mismatch
         if report["reply_to_mismatch"]:
             flag("HIGH", "Reply-To",
@@ -758,9 +796,28 @@ class EmlSOCAnalyzer:
 
         # HTML stripping applicato
         if report.get("html_strip_applied"):
-            flag("INFO", "Body",
-                 "Email body is pure HTML: tags removed before AI analysis. "
-                 "Possible hidden text obfuscation in tags.")
+            body_source = str(report.get("body_source") or "")
+            message = (
+                "Email body is HTML: tags were removed before AI analysis. "
+                "Possible hidden text obfuscation in tags."
+                if body_source.startswith("text/html")
+                else "An HTML alternative was normalized and compared with the plain-text body before AI analysis."
+            )
+            flag("INFO", "Body", message)
+
+        form_analysis = report.get("html_form_analysis") or {}
+        form_status = str(form_analysis.get("status") or "").lower()
+        for form in (form_analysis.get("forms") or [])[:5]:
+            risk = str(form.get("risk") or "").lower()
+            if risk not in {"high", "medium"}:
+                continue
+            level = "HIGH" if risk == "high" else "MEDIUM"
+            destination = form.get("action_host") or form.get("action_kind") or "unknown destination"
+            sensitive = ", ".join(form.get("sensitive_fields") or [])
+            detail = f"HTML form ({form.get('method') or 'GET'}) targets {destination}. {form.get('message') or ''}"
+            if sensitive:
+                detail += f" Sensitive fields: {sensitive}."
+            flag(level, "HTML Form", detail)
 
         # Display Name Spoofing
         dns_val = report.get("display_name_spoofing")
@@ -786,6 +843,7 @@ class EmlSOCAnalyzer:
                 flag("HIGH", "Attachment",
                      f"'{att['filename']}': {attachment_anomaly}")
             pdf_security = att.get("pdf_security") or {}
+            archive_security = att.get("archive_security") or {}
             for behavior in (pdf_security.get("behaviors") or [])[:8]:
                 flag(
                     _pdf_indicator_flag_level(behavior.get("severity")),
@@ -805,7 +863,16 @@ class EmlSOCAnalyzer:
                 flag(
                     "INFO",
                     "PDF Attachment",
-                    f"'{att['filename']}': PDF static scan - {pdf_security.get('summary')}",
+                     f"'{att['filename']}': PDF static scan - {pdf_security.get('summary')}",
+                )
+            for finding in (archive_security.get("findings") or [])[:8]:
+                risk = str(finding.get("severity") or "").lower()
+                if risk not in {"high", "medium"}:
+                    continue
+                flag(
+                    "HIGH" if risk == "high" else "MEDIUM",
+                    "Archive / Office",
+                    f"'{att['filename']}': {finding.get('label') or finding.get('key')} x{finding.get('count') or 1}",
                 )
             if att.get("magic_bytes_hex"):
                 flag("INFO", "Attachment",
@@ -820,6 +887,15 @@ class EmlSOCAnalyzer:
                     "URL with bare IP detected: `" + lnk["url"] + "` - avoids DNS lookup, "
                     "typical of phishing or C2",
                 )
+            if lnk.get("has_userinfo") or lnk.get("has_credentials"):
+                flag("HIGH", "Link", f"URL uses userinfo before its destination host: `{lnk['url']}`")
+            if lnk.get("nested_redirect_count"):
+                targets = ", ".join(lnk.get("redirect_hosts") or []) or "hidden target"
+                flag("MEDIUM", "Link", f"URL contains {lnk['nested_redirect_count']} nested redirect destination(s): {targets}")
+            if lnk.get("nonstandard_port"):
+                flag("MEDIUM", "Link", f"URL uses non-standard {lnk.get('scheme', 'web').upper()} port {lnk.get('port')}: `{lnk['url']}`")
+            if lnk.get("unicode_path_or_query"):
+                flag("MEDIUM", "Link", f"URL path or query contains Unicode characters: `{lnk['url']}`")
 
         for alert in report.get("lookalike_alerts", []):
             technique_label = {

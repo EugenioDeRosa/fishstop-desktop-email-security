@@ -23,8 +23,8 @@ const GOOGLE_CLIENT_ID: &str = "676285460838-a927po5i3k4eo5cq7pls04ltjg63p8mf.ap
 const AUTHORIZATION_ENDPOINT: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_ENDPOINT: &str = "https://oauth2.googleapis.com/token";
 const USERINFO_ENDPOINT: &str = "https://openidconnect.googleapis.com/v1/userinfo";
-const BERT_MODEL_ID: &str = "eugenioderodev/fishstop-bert";
-const BERT_MODEL_REVISION: &str = "b29e3334457d942bb5c05fe8f6639edeccf59692";
+const IDENTITY_MODEL_ID: &str = "Davlan/distilbert-base-multilingual-cased-ner-hrl";
+const IDENTITY_MODEL_REVISION: &str = "d421f57d5b1d36b375408588669e9340f9b11a89";
 
 #[derive(Debug, Deserialize)]
 struct TokenResponse {
@@ -213,27 +213,27 @@ fn python_interpreter() -> PathBuf {
 }
 
 #[derive(Default)]
-struct BertWorker {
+struct IdentityWorker {
     child: Option<Child>,
     stdin: Option<BufWriter<ChildStdin>>,
     stdout: Option<BufReader<ChildStdout>>,
 }
 
-impl BertWorker {
+impl IdentityWorker {
     fn start(&mut self) -> Result<(), String> {
         if self.child.is_some() {
             return Ok(());
         }
         let mut child = Command::new(python_interpreter())
             .arg(python_engine_path())
-            .arg("bert-worker")
+            .arg("identity-worker")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
-            .map_err(|error| format!("Could not start the BERT worker: {error}"))?;
-        let stdin = child.stdin.take().ok_or("Worker BERT senza stdin")?;
-        let stdout = child.stdout.take().ok_or("Worker BERT senza stdout")?;
+            .map_err(|error| format!("Could not start the identity worker: {error}"))?;
+        let stdin = child.stdin.take().ok_or("Identity worker has no stdin")?;
+        let stdout = child.stdout.take().ok_or("Identity worker has no stdout")?;
         self.stdin = Some(BufWriter::new(stdin));
         self.stdout = Some(BufReader::new(stdout));
         self.child = Some(child);
@@ -243,26 +243,26 @@ impl BertWorker {
     fn analyze(&mut self, report: serde_json::Value) -> Result<serde_json::Value, String> {
         self.start()?;
         let request = serde_json::to_string(&report)
-            .map_err(|error| format!("Could not serialize the BERT report: {error}"))?;
-        let stdin = self.stdin.as_mut().ok_or("BERT worker unavailable")?;
+            .map_err(|error| format!("Could not serialize the identity report: {error}"))?;
+        let stdin = self.stdin.as_mut().ok_or("Identity worker unavailable")?;
         stdin.write_all(request.as_bytes()).and_then(|_| stdin.write_all(b"\n")).and_then(|_| stdin.flush())
-            .map_err(|error| format!("Could not send the report to BERT: {error}"))?;
+            .map_err(|error| format!("Could not send the report to identity analysis: {error}"))?;
         let mut response = String::new();
-        let stdout = self.stdout.as_mut().ok_or("BERT worker unavailable")?;
+        let stdout = self.stdout.as_mut().ok_or("Identity worker unavailable")?;
         stdout.read_line(&mut response)
-            .map_err(|error| format!("Could not read the BERT response: {error}"))?;
+            .map_err(|error| format!("Could not read the identity response: {error}"))?;
         if response.trim().is_empty() {
             self.child = None;
             self.stdin = None;
             self.stdout = None;
-            return Err("The BERT worker stopped. Try the analysis again.".to_string());
+            return Err("The identity worker stopped. Try the analysis again.".to_string());
         }
         let payload: serde_json::Value = serde_json::from_str(&response)
-            .map_err(|_| "The BERT worker returned an invalid response.".to_string())?;
+            .map_err(|_| "The identity worker returned an invalid response.".to_string())?;
         if payload.get("ok").and_then(|value| value.as_bool()) != Some(true) {
-            return Err(payload.get("error").and_then(|value| value.as_str()).unwrap_or("BERT analysis failed.").to_string());
+            return Err(payload.get("error").and_then(|value| value.as_str()).unwrap_or("Identity analysis failed.").to_string());
         }
-        payload.get("result").cloned().ok_or_else(|| "BERT result is missing.".to_string())
+        payload.get("result").cloned().ok_or_else(|| "Identity result is missing.".to_string())
     }
 }
 
@@ -308,7 +308,7 @@ async fn analyze_eml(file_name: String, contents: Vec<u8>, virustotal_api_key: S
 }
 
 fn analyze_ai_with_engine(command: &str, report: serde_json::Value, ollama_model: &str) -> Result<serde_json::Value, String> {
-    if !matches!(command, "bert" | "phi4") {
+    if !matches!(command, "identity" | "phi4") {
         return Err("Unsupported AI engine.".to_string());
     }
     let engine = python_engine_path();
@@ -337,13 +337,13 @@ fn analyze_ai_with_engine(command: &str, report: serde_json::Value, ollama_model
 }
 
 #[tauri::command]
-async fn analyze_bert(report: serde_json::Value, worker: tauri::State<'_, Arc<Mutex<BertWorker>>>) -> Result<serde_json::Value, String> {
+async fn analyze_identity(report: serde_json::Value, worker: tauri::State<'_, Arc<Mutex<IdentityWorker>>>) -> Result<serde_json::Value, String> {
     let worker = Arc::clone(&worker);
     tauri::async_runtime::spawn_blocking(move || worker.lock()
-        .map_err(|_| "BERT worker unavailable.".to_string())?
+        .map_err(|_| "Identity worker unavailable.".to_string())?
         .analyze(report))
         .await
-        .map_err(|error| format!("BERT analysis interrupted: {error}"))?
+        .map_err(|error| format!("Identity analysis interrupted: {error}"))?
 }
 
 #[tauri::command]
@@ -422,21 +422,21 @@ async fn list_ollama_models() -> Result<Vec<String>, String> {
 }
 
 #[tauri::command]
-async fn huggingface_bert_model_info() -> Result<HuggingFaceModelInfo, String> {
+async fn huggingface_identity_model_info() -> Result<HuggingFaceModelInfo, String> {
     tauri::async_runtime::spawn_blocking(|| {
         let response: HuggingFaceModelResponse = reqwest::blocking::Client::builder()
             .timeout(Duration::from_secs(6))
             .build()
             .map_err(|error| format!("Could not prepare the Hugging Face request: {error}"))?
-            .get(format!("https://huggingface.co/api/models/{BERT_MODEL_ID}"))
+            .get(format!("https://huggingface.co/api/models/{IDENTITY_MODEL_ID}"))
             .send()
             .and_then(|response| response.error_for_status())
             .map_err(|error| format!("Hugging Face is unavailable: {error}"))?
             .json()
             .map_err(|error| format!("Invalid Hugging Face model response: {error}"))?;
         Ok(HuggingFaceModelInfo {
-            repository: BERT_MODEL_ID.to_string(),
-            runtime_revision: BERT_MODEL_REVISION.to_string(),
+            repository: IDENTITY_MODEL_ID.to_string(),
+            runtime_revision: IDENTITY_MODEL_REVISION.to_string(),
             latest_commit: response.sha,
             updated_at: response.last_modified,
         })
@@ -447,7 +447,7 @@ async fn huggingface_bert_model_info() -> Result<HuggingFaceModelInfo, String> {
 struct LocalEngineStatus {
     static_engine: bool,
     python_runtime: bool,
-    bert_dependencies: bool,
+    identity_dependencies: bool,
 }
 
 #[tauri::command]
@@ -462,25 +462,37 @@ async fn local_engine_status() -> LocalEngineStatus {
             .status()
             .map(|status| status.success())
             .unwrap_or(false);
-        let bert_dependencies = engine && python_runtime && Command::new(&python)
+        let identity_dependencies = engine && python_runtime && Command::new(&python)
             .args(["-c", "import torch, transformers, huggingface_hub"])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()
             .map(|status| status.success())
             .unwrap_or(false);
-        LocalEngineStatus { static_engine: engine, python_runtime, bert_dependencies }
+        LocalEngineStatus { static_engine: engine, python_runtime, identity_dependencies }
     }).await.unwrap_or(LocalEngineStatus {
         static_engine: false,
         python_runtime: false,
-        bert_dependencies: false,
+        identity_dependencies: false,
     })
+}
+
+#[tauri::command]
+fn open_external_url(url: String) -> Result<(), String> {
+    let parsed = Url::parse(&url).map_err(|_| "The external link is not a valid URL.".to_string())?;
+    if !matches!(parsed.scheme(), "https" | "http") {
+        return Err("Only HTTP and HTTPS links can be opened.".to_string());
+    }
+    if parsed.host_str().is_none() {
+        return Err("The external link does not contain a host.".to_string());
+    }
+    launch_browser(parsed.as_str())
 }
 
 fn main() {
     tauri::Builder::default()
-        .manage(Arc::new(Mutex::new(BertWorker::default())))
-        .invoke_handler(tauri::generate_handler![sign_in_with_google, analyze_eml, analyze_bert, analyze_phi4, warm_phi4, list_ollama_models, huggingface_bert_model_info, local_engine_status])
+        .manage(Arc::new(Mutex::new(IdentityWorker::default())))
+        .invoke_handler(tauri::generate_handler![sign_in_with_google, analyze_eml, analyze_identity, analyze_phi4, warm_phi4, list_ollama_models, huggingface_identity_model_info, local_engine_status, open_external_url])
         .run(tauri::generate_context!())
         .expect("FishStop failed to start");
 }

@@ -128,6 +128,8 @@ TASK_INSTRUCTIONS = (
     "An event notification, status update, receipt, reminder, marketing announcement, calendar notice, ordinary business discussion, or security alert is not itself a request. "
     "Do not convert a warning such as 'if this was not you, contact support' into provide_credentials, verify_account, payment, or change_settings unless the message explicitly tells the recipient to perform that action. "
     "Treat a supplied phone number, normal portal, attachment, or URL as a delivery channel only when the message explicitly asks the recipient to use it. "
+    "[LINK CALL-TO-ACTION TEXT] contains visible text from an actual clickable HTML link. A concise command on that link counts as an explicit link action even when the body does not say 'click'; "
+    "when an account/security alert is paired with such a call-to-action, classify the specific account action and set channel=link. "
     "Do not treat an attached work document, a shared calendar, VPN procedure, certificate, invoice, newsletter, survey, or account notification as malicious or sensitive merely because it contains an attachment, link, deadline, account term, or brand. "
     "Priority rules: entering or sending a password, OTP, PIN or recovery code is provide_credentials; "
     "submitting personal or confidential data is provide_information; responding to an unusual login or account activity is verify_account; "
@@ -780,6 +782,12 @@ _LINK_ACTION_PATTERN = re.compile(
     r".{0,96}\b(?:link|collegamento|url|button|pulsante|qui\s+sopra|above|below)\b",
     re.IGNORECASE,
 )
+_ACCOUNT_ACTION_CONTEXT_PATTERN = re.compile(
+    r"\b(?:account|sign[ -]?in|login|password|credential|security|verify|verification|"
+    r"withdrawal|suspend(?:ed|ed)?|disabled|access|account|sicurezza|accesso|"
+    r"verifica|credenzial|sospes[oa]|blocc[oa]|retir(?:o|ada)|cuenta)\b",
+    re.IGNORECASE,
+)
 _ATTACHMENT_ACTION_PATTERN = re.compile(
     r"\b(?:open|review|see|view|read|consult|apri|visualizza|consulta|leggi|esamina|rivedi|controlla)\b"
     r".{0,96}\b(?:attached|attachment|file|document|pdf|allegat|documento)\b",
@@ -801,13 +809,15 @@ _PAYMENT_ACTION_PATTERN = re.compile(
     r"bonifico|trasferisci|trasferire|versa|versare|effettua(?:re)?\s+(?:il\s+)?pagamento|"
     r"pague|pagar|realice|realizar|efect[uú]e|efectuar|abone|abonar|"
     r"transfiera|transferir|transferencia|env[ií]e|enviar|pagamento|pagar|efetue|efetuar|"
-    r"transfira|transfer[êe]ncia)\b",
+    r"transfira|transfer[êe]ncia|przelew\w*|zap[łl]a[ćc]\w*|p[łl]atno[śs][ćc]\w*|"
+    r"op[łl]a[ćc]\w*|uregul\w*|wp[łl]a[ćc]\w*)\b",
     re.IGNORECASE,
 )
 _PAYMENT_TARGET_PATTERN = re.compile(
     r"(?:€|\$|\b(?:eur|usd|gbp|iban|beneficiar|beneficiary|conto|account|"
     r"wallet|bitcoin|crypto|gift\s*card|importo|amount|denaro|money|"
-    r"pago|pagamento|transferencia|transfer[êe]ncia|comprobante|comprovante)\b)",
+    r"pago|pagamento|transferencia|transfer[êe]ncia|comprobante|comprovante|"
+    r"faktur\w*|kwot\w*|przelew\w*|p[łl]atno[śs][ćc]\w*|op[łl]at\w*)\b)",
     re.IGNORECASE,
 )
 _BANK_DESTINATION_PATTERN = re.compile(
@@ -849,6 +859,18 @@ def _explicit_link_action_evidence(soc: dict) -> str:
     return ""
 
 
+def _security_cta_link_evidence(soc: dict) -> str:
+    """Return a visible CTA label only in an account/security action context."""
+    context = _normalize_obfuscated_text(_message_evidence_text(soc))
+    if not _ACCOUNT_ACTION_CONTEXT_PATTERN.search(context):
+        return ""
+    for label in _actionable_link_texts(soc):
+        value = _clip_exact_span(label, 180)
+        if len(value) >= 4 and not re.fullmatch(r"https?://\S+", value, re.IGNORECASE):
+            return value
+    return ""
+
+
 def _explicit_attachment_action_evidence(soc: dict) -> str:
     """Return a verbatim instruction to open or review an attachment, if present."""
     for segment in _evidence_segments(soc):
@@ -873,6 +895,18 @@ def _explicit_payment_request(soc: dict) -> bool:
         and _PAYMENT_TARGET_PATTERN.search(segment)
         for segment in _evidence_segments(soc)
     )
+
+
+def _explicit_payment_evidence(soc: dict) -> str:
+    """Return a concrete payment instruction confirmed by both payment patterns."""
+    matches = [
+        segment for segment in _evidence_segments(soc)
+        if _PAYMENT_ACTION_PATTERN.search(segment) and _PAYMENT_TARGET_PATTERN.search(segment)
+    ]
+    # Prefer the substantive instruction over a short invoice-style subject.
+    # This remains language-agnostic and returns only text already present in
+    # the message.
+    return _clip_exact_span(max(matches, key=len), 180) if matches else ""
 
 
 def _grounded_payment_diversion(soc: dict) -> dict:
@@ -983,13 +1017,25 @@ def _email_prompt_from_body(
     )
 
     technical_lines = _technical_context_lines(soc, body_for_llm=body)
-    bert_result = str(soc.get("bert_ai_result") or "").strip().lower()
-    if bert_result in {"phishing", "malicious", "legitimate", "benign", "uncertain"}:
+    identity_entities = ((soc.get("identity_analysis") or {}).get("entities") or [])
+    if identity_entities:
+        names = ", ".join(str(item.get("name") or "").strip() for item in identity_entities[:6] if item.get("name"))
+        if names:
+            technical_lines.append(
+                "Identity intelligence extracted organisation claims from visible email text: "
+                f"{names}. This is neutral context until domain coherence is verified."
+            )
+    for item in ((soc.get("identity_analysis") or {}).get("coherence") or [])[:4]:
+        if item.get("status") != "mismatch" or not item.get("official_domain"):
+            continue
+        mismatches = ", ".join(
+            f"{entry.get('source')}: {entry.get('domain')}"
+            for entry in (item.get("mismatches") or [])[:5]
+        )
         technical_lines.append(
-            "DistilBERT content signal: "
-            f"classification={bert_result}; "
-            f"phishing_probability={soc.get('bert_phishing_probability', '-')}; "
-            f"legitimate_probability={soc.get('bert_legitimate_probability', '-')}"
+            "Brand/domain coherence check did not pass: "
+            f"claimed_brand={item.get('brand') or '-'} official_domain={item.get('official_domain')} "
+            f"unrelated_contacts={mismatches or '-'}"
         )
     technical_block = "\n".join(
         f"- {_clip(line, 260)}" for line in technical_lines[:18]
@@ -1395,6 +1441,39 @@ def _correlate_semantic_with_message_structure(soc: dict, semantic: dict) -> dic
 
     channel = semantic["action_channel"]
     action = semantic["requested_action"]
+    # Treat a direct payment instruction as an action even when a multilingual
+    # local model reduces it to neutral invoice information.  Both a transfer
+    # verb and a payment target must be present in the same parsed segment, so
+    # an invoice number or a bank-related word alone cannot trigger this.
+    if action in {"none", "informational", "provide_information"} and _explicit_payment_request(soc):
+        payment_evidence = _explicit_payment_evidence(soc)
+        semantic["requested_action"] = "pay_or_transfer"
+        semantic["action_channel"] = "none"
+        semantic["asks_for_payment"] = True
+        semantic["payment_method"] = "bank_transfer"
+        semantic["evidence_phrase"] = payment_evidence
+        semantic["reason"] = "The email explicitly asks the recipient to make a bank transfer payment."
+        semantic["content_summary"] = "The email asks the recipient to make a bank transfer payment."
+        semantic["ambiguity"] = "low"
+        semantic["semantic_signals"] = sorted(set(semantic.get("semantic_signals") or []) | {"payment"})
+        action = "pay_or_transfer"
+        channel = "none"
+    # A visible HTML CTA is actionable even when the sender did not write a
+    # separate 'click here' sentence.  Restrict this fallback to a claimed
+    # account/security context so ordinary newsletter buttons remain neutral.
+    if action in {"none", "informational", "provide_information"} and links:
+        cta_evidence = _security_cta_link_evidence(soc)
+        if cta_evidence:
+            semantic["requested_action"] = "verify_account"
+            semantic["action_channel"] = "supplied_link"
+            semantic["asks_to_click_link"] = True
+            semantic["asks_to_verify_account"] = True
+            semantic["evidence_phrase"] = cta_evidence
+            semantic["reason"] = "The email presents an account/security issue and a visible call-to-action link."
+            semantic["content_summary"] = "The email asks the recipient to use a supplied link to resolve a claimed account or security issue."
+            semantic["ambiguity"] = "low"
+            action = "verify_account"
+            channel = "supplied_link"
     # A payment request in a commercial thread is not extortion unless the
     # email also contains a concrete harmful consequence.  Keep the payment
     # action available for the BEC/diversion checks, but remove an unsupported

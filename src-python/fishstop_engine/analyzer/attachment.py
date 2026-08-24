@@ -3,11 +3,13 @@
 import hashlib
 import io
 import re
+import zipfile
 from collections import Counter
 from typing import Optional
 from urllib.parse import parse_qsl, unquote, urlparse
 
 from .constants import CONTENT_TYPE_TO_EXT, MAGIC_BYTES
+from .archive_analysis import analyze_archive_security
 
 ZIP_CONTAINER_EXTS = {"docx", "xlsx", "pptx", "zip"}
 
@@ -325,6 +327,7 @@ def _empty_uri_evidence() -> dict:
         "public_site_landing_count": 0,
         "samples": [],
         "signatures": [],
+        "urls": [],
     }
 
 
@@ -343,6 +346,9 @@ def _uri_evidence_from_action_urls(action_urls: list[dict], url_count: int | Non
         has_redirect = bool(nested_urls)
         has_tracking = _has_tracking_params(url)
         targets = nested_urls or [url]
+        for target in [url, *nested_urls]:
+            if target not in evidence["urls"]:
+                evidence["urls"].append(target)
         has_public_landing = any(_is_public_site_landing(target) for target in targets)
         signature = "|".join([url] + nested_urls)
         if signature in seen_signatures:
@@ -366,6 +372,7 @@ def _uri_evidence_from_action_urls(action_urls: list[dict], url_count: int | Non
 
     evidence["samples"] = evidence["samples"][:5]
     evidence["signatures"] = sorted(seen_signatures)[:50]
+    evidence["urls"] = evidence["urls"][:25]
     return evidence
 
 
@@ -389,8 +396,12 @@ def _merge_uri_evidence(*items: dict) -> dict:
             if sample not in seen_samples:
                 merged["samples"].append(sample)
                 seen_samples.add(sample)
+        for url in item.get("urls") or []:
+            if url not in merged["urls"]:
+                merged["urls"].append(url)
     merged["samples"] = merged["samples"][:5]
     merged["signatures"] = sorted(seen_signatures)[:50]
+    merged["urls"] = merged["urls"][:25]
     return merged
 
 
@@ -743,6 +754,8 @@ def analyze_attachment(
         "hash_sha256": None,
         "size_bytes": None,
         "pdf_security": None,
+        "archive_security": None,
+        "embedded_urls": [],
     }
 
     raw_bytes, payload_warning = _payload_to_bytes(raw_payload)
@@ -759,6 +772,8 @@ def analyze_attachment(
 
     if entry["magic_detected_format"] == "pdf" or entry["extension_from_filename"] == "pdf":
         entry["pdf_security"] = analyze_pdf_security(raw_bytes)
+    if zipfile.is_zipfile(io.BytesIO(raw_bytes)) or entry["extension_from_filename"] in ZIP_CONTAINER_EXTS:
+        entry["archive_security"] = analyze_archive_security(raw_bytes, filename)
 
     ct_base = content_type.split(";", 1)[0].strip().lower()
     expected_exts = CONTENT_TYPE_TO_EXT.get(ct_base, [])
@@ -788,5 +803,13 @@ def analyze_attachment(
         anomaly_parts.append(
             f"PDF risk {str(pdf_security.get('risk_level')).upper()}: {pdf_security.get('summary')}"
         )
+    archive_security = entry.get("archive_security") or {}
+    if archive_security.get("risk_level") in {"high", "medium"}:
+        anomaly_parts.append(
+            f"Archive risk {str(archive_security.get('risk_level')).upper()}: {archive_security.get('summary')}"
+        )
+    pdf_urls = ((entry.get("pdf_security") or {}).get("uri_evidence") or {}).get("urls") or []
+    archive_urls = archive_security.get("urls") or []
+    entry["embedded_urls"] = list(dict.fromkeys([*pdf_urls, *archive_urls]))[:25]
     entry["anomaly"] = "; ".join(anomaly_parts) if anomaly_parts else None
     return entry

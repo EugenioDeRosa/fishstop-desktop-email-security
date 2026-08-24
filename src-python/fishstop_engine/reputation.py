@@ -13,6 +13,7 @@ except ImportError:  # Static parsing must remain usable without optional lookup
 
 VT = "https://www.virustotal.com/api/v3"
 ABUSE = "https://api.abuseipdb.com/api/v2/check"
+RDAP = "https://rdap.org/domain"
 
 
 def _vt_status(data: dict, base: dict) -> dict:
@@ -61,6 +62,43 @@ def check_file(api_key: str, sha256: str) -> dict:
         return {**result, "threat_label": ptc.get("suggested_threat_label", ""), "file_type": attrs.get("type_description", ""), "file_name": (attrs.get("names") or [""])[0], "permalink": f"https://www.virustotal.com/gui/file/{sha256}"}
     except requests.RequestException as error:
         return {**base, "status": "error", "message": f"VirusTotal unavailable: {error}"}
+
+
+def check_vt_domain(api_key: str, domain: str) -> dict:
+    base = {"domain": domain, "status": "skipped", "malicious": 0, "suspicious": 0, "detection_ratio": "-"}
+    if not api_key: return {**base, "message": "VirusTotal is not configured: add the API key in Settings."}
+    if requests is None: return {**base, "message": "Reputation check unavailable: install requests."}
+    try:
+        response = requests.get(f"{VT}/domains/{domain}", headers={"x-apikey": api_key}, timeout=10)
+        if response.status_code == 404: return {**base, "status": "not_found", "message": "Domain not found on VirusTotal"}
+        if response.status_code == 401: return {**base, "status": "error", "message": "Invalid VirusTotal API key"}
+        if response.status_code == 429: return {**base, "status": "error", "message": "VirusTotal rate limit exceeded"}
+        response.raise_for_status()
+        payload = response.json(); result = _vt_status(payload, base)
+        attrs = (payload.get("data") or {}).get("attributes", {})
+        return {**result, "registrar": attrs.get("registrar", ""), "creation_date": attrs.get("creation_date", ""), "last_update_date": attrs.get("last_update_date", ""), "permalink": f"https://www.virustotal.com/gui/domain/{domain}"}
+    except requests.RequestException as error:
+        return {**base, "status": "error", "message": f"VirusTotal unavailable: {error}"}
+
+
+def check_rdap_domain(domain: str) -> dict:
+    base = {"domain": domain, "status": "skipped"}
+    if requests is None: return {**base, "message": "RDAP lookup unavailable: install requests."}
+    try:
+        response = requests.get(f"{RDAP}/{domain}", headers={"Accept": "application/rdap+json", "User-Agent": "FishStop/1.0"}, timeout=8)
+        if response.status_code == 404: return {**base, "status": "not_found", "message": "Domain is not available in RDAP."}
+        response.raise_for_status(); payload = response.json()
+        events = {str(item.get("eventAction") or "").lower(): item.get("eventDate") or "" for item in (payload.get("events") or []) if isinstance(item, dict)}
+        registrar = ""
+        for entity in payload.get("entities") or []:
+            if "registrar" not in [str(role).lower() for role in (entity.get("roles") or [])]: continue
+            vcard = entity.get("vcardArray") or []
+            if len(vcard) > 1:
+                for field in vcard[1]:
+                    if field and field[0] == "fn": registrar = str(field[3] or ""); break
+        return {**base, "status": "ok", "registration_date": events.get("registration", ""), "last_changed_date": events.get("last changed", ""), "registrar": registrar, "handle": payload.get("handle", ""), "url": f"https://rdap.org/domain/{domain}"}
+    except requests.RequestException as error:
+        return {**base, "status": "error", "message": f"RDAP unavailable: {error}"}
 
 
 def check_ip(api_key: str, ip: str) -> dict:
@@ -171,7 +209,13 @@ def geolocate(ip: str) -> dict:
 
 
 def enrich(report: dict, vt_key: str, abuse_key: str) -> dict:
-    urls = dict.fromkeys(str(link.get("url") or "").strip() for link in report.get("links") or [])
+    # Reputation services receive web indicators only. A mailto link is an
+    # email address, not a URL destination, and must not be sent to VirusTotal.
+    urls = dict.fromkeys(
+        str(link.get("url") or "").strip()
+        for link in report.get("links") or []
+        if str(link.get("scheme") or "").lower() in {"http", "https"}
+    )
     report["link_reputation"] = {url: check_url(vt_key, url) for url in urls if url}
     ips = dict.fromkeys(ip for hop in report.get("received_hops") or [] for ip in (hop.get("all_ips") or ([hop.get("sender_ip")] if hop.get("sender_ip") else [])))
     if report.get("injection_sender_ip"): ips[report["injection_sender_ip"]] = None
@@ -180,7 +224,7 @@ def enrich(report: dict, vt_key: str, abuse_key: str) -> dict:
     def domain(value: str) -> str:
         match = re.search(r"@([\w.-]+)", value or ""); return match.group(1).lower() if match else ""
     domains = dict.fromkeys(filter(None, (domain(report.get(key) or "") for key in ("from_", "return_path", "reply_to"))))
-    report["domain_reputation"] = {item: check_domain(abuse_key, item) for item in domains}
+    report["domain_reputation"] = {item: {"infrastructure": check_domain(abuse_key, item), "virustotal": check_vt_domain(vt_key, item), "rdap": check_rdap_domain(item)} for item in domains}
     for attachment in report.get("attachments") or []:
         if attachment.get("hash_sha256"):
             attachment["file_reputation"] = check_file(vt_key, attachment["hash_sha256"])

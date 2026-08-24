@@ -8,7 +8,7 @@ Handles plain text and HTML while preserving visible link text.
 """
 
 import re
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, unquote, urlparse
 
 try:
     from bs4 import BeautifulSoup
@@ -22,6 +22,7 @@ from fishstop_engine.analysis_limits import EmailAnalysisLimitError, MAX_LINKS
 
 _URL_RE = re.compile(
     r"""(?i)\b(?:https?://|ftp://|www\.)"""
+    r"""(?:[^\s/@]+(?::[^\s/@]*)?@)?"""
     r"""(?:[^\W_][\w\-]*\.)+[^\W_]{2,}"""
     r"""(?::\d{1,5})?"""
     r"""(?:/[^\s"'<>\]\)]*)?""",
@@ -31,12 +32,14 @@ _BARE_DOMAIN_RE = re.compile(
     r"""(?i)(?<![@\w.-])(?:[^\W_][\w\-]*\.)+[^\W_]{2,}(?![\w.-])""",
     re.VERBOSE,
 )
-_HREF_RE = re.compile(r"""href\s*=\s*["']?(https?://[^\s"'<>]+)""", re.IGNORECASE)
+_EMAIL_RE = re.compile(r"[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}", re.IGNORECASE)
+_HREF_RE = re.compile(r"""href\s*=\s*["']?((?:https?://|mailto:)[^\s"'<>]+)""", re.IGNORECASE)
 _ANCHOR_RE = re.compile(
-    r"""<a\b[^>]*href\s*=\s*["']?(?P<href>https?://[^\s"'<>]+)["']?[^>]*>(?P<text>.*?)</a>""",
+    r"""<a\b[^>]*href\s*=\s*["']?(?P<href>(?:https?://|mailto:)[^\s"'<>]+)["']?[^>]*>(?P<text>.*?)</a>""",
     re.IGNORECASE | re.DOTALL,
 )
 _WEB_SCHEMES = {"http", "https"}
+_ACTION_SCHEMES = {*_WEB_SCHEMES, "mailto"}
 _BRACKETED_PLACEHOLDER_USERINFO_RE = re.compile(
     r"^(?P<scheme>https?://)\[[^\]/?#@]*\]@(?P<destination>.+)$",
     re.IGNORECASE,
@@ -45,6 +48,11 @@ _NON_ACTION_CONTAINER_MARKER_RE = re.compile(
     r"(?:^|[-_])(?:email[-_]?signature|mail[-_]?signature|signature|footer)(?:$|[-_])",
     re.IGNORECASE,
 )
+_REDIRECT_PARAM_NAMES = {
+    "url", "u", "uri", "target", "to", "dest", "destination", "redirect",
+    "redirect_uri", "return", "returnurl", "next", "continue", "goto", "link",
+}
+_NESTED_WEB_URL_RE = re.compile(r"https?://[^\s<>()\[\]{}\"']+", re.IGNORECASE)
 
 
 def _normalize_malformed_userinfo(value: str) -> str:
@@ -72,7 +80,7 @@ def _is_web_url_candidate(value: str) -> bool:
     if parsed is None:
         return False
     if parsed.scheme:
-        return parsed.scheme.lower() in _WEB_SCHEMES
+        return parsed.scheme.lower() in _ACTION_SCHEMES
     return value.lower().startswith("www.") or bool(_BARE_DOMAIN_RE.fullmatch(value.rstrip(".,;)")))
 
 
@@ -84,6 +92,8 @@ def _with_scheme(value: str) -> str:
     value = (value or "").strip()
     if not value:
         return ""
+    if value.lower().startswith("mailto:"):
+        return value
     if value.startswith("//"):
         return "https:" + value
     if value.lower().startswith("www.") or "://" not in value:
@@ -99,6 +109,7 @@ def _url_dedupe_key(value: str) -> str:
         scheme=parsed.scheme.lower(),
         netloc=parsed.netloc.lower(),
         path=parsed.path or "/",
+        query=unquote(parsed.query or ""),
     ).geturl()
 
 
@@ -144,6 +155,62 @@ def _possible_shortener(host: str, path: str) -> tuple[bool, str]:
     return False, ""
 
 
+def _decode_repeated(value: str) -> str:
+    decoded = value
+    for _ in range(3):
+        candidate = unquote(decoded)
+        if candidate == decoded:
+            break
+        decoded = candidate
+    return decoded
+
+
+def _url_intelligence(parsed, original: str, host: str) -> dict:
+    """Inspect URL structure only; nested destinations are never requested."""
+    try:
+        port = parsed.port
+    except ValueError:
+        port = None
+    scheme = (parsed.scheme or "").lower()
+    standard_port = 80 if scheme == "http" else 443 if scheme == "https" else None
+    has_userinfo = bool(parsed.username is not None or parsed.password is not None)
+    has_credentials = bool(parsed.username or parsed.password)
+    redirect_targets: list[str] = []
+    for name, value in parse_qsl(parsed.query, keep_blank_values=True):
+        if name.lower() not in _REDIRECT_PARAM_NAMES:
+            continue
+        decoded = _decode_repeated(value)
+        candidates = _NESTED_WEB_URL_RE.findall(decoded)
+        if not candidates and decoded.lower().startswith(("http%3a", "https%3a")):
+            candidates = _NESTED_WEB_URL_RE.findall(_decode_repeated(decoded))
+        for candidate in candidates:
+            if candidate not in redirect_targets:
+                redirect_targets.append(candidate[:500])
+    redirect_hosts = []
+    for target in redirect_targets:
+        target_parsed = _safe_urlparse(target)
+        target_host = (target_parsed.hostname or "").lower() if target_parsed else ""
+        if target_host and target_host not in redirect_hosts:
+            redirect_hosts.append(target_host)
+    return {
+        "has_userinfo": has_userinfo,
+        "has_credentials": has_credentials,
+        "nonstandard_port": port is not None and port != standard_port,
+        "port": port,
+        "nested_redirect_count": len(redirect_targets),
+        "redirect_targets": redirect_targets[:5],
+        "redirect_hosts": redirect_hosts[:5],
+        "unicode_path_or_query": (
+            _contains_non_ascii(parsed.path)
+            or _contains_non_ascii(parsed.query)
+            or _contains_non_ascii(_decode_repeated(parsed.path))
+            or _contains_non_ascii(_decode_repeated(parsed.query))
+        ),
+        "unicode_host": _contains_non_ascii(host),
+        "raw_at_sign": "@" in original.split("?", 1)[0],
+    }
+
+
 def _html_node_has_non_action_marker(node) -> bool:
     attrs = getattr(node, "attrs", None)
     if attrs is None:
@@ -181,6 +248,7 @@ def extract_links(
     body_plain: str,
     body_html: str,
     *,
+    embedded_urls: list[dict] | None = None,
     max_links: int = MAX_LINKS,
 ) -> list[dict]:
     """
@@ -215,20 +283,40 @@ def extract_links(
             return
         host = (parsed.hostname or "").lower()
         scheme = parsed.scheme.lower()
-        if scheme not in _WEB_SCHEMES or not host:
+        if scheme == "mailto":
+            address = parsed.path.split("?", 1)[0].strip()
+            if not _EMAIL_RE.fullmatch(address):
+                return
+            host = address.rsplit("@", 1)[-1].lower()
+        elif scheme not in _WEB_SCHEMES or not host:
             return
         seen.add(dedupe_key)
 
         display_text = (display or "").strip()
         display_url, display_host = _extract_display_destination(display_text)
-        is_shortener, shortener_reason = _possible_shortener(host, parsed.path)
+        # A mailto label is often just a display name or the local part of an
+        # email address (e.g. ``eugenio.derosa``). It is not a web
+        # destination and must never be treated as a masked-domain mismatch.
+        if scheme == "mailto":
+            display_url, display_host = "", ""
+        is_shortener, shortener_reason = _possible_shortener(host, parsed.path) if scheme in _WEB_SCHEMES else (False, "")
+        intelligence = _url_intelligence(parsed, url, host) if scheme in _WEB_SCHEMES else {
+            "has_userinfo": False, "has_credentials": False, "nonstandard_port": False,
+            "port": None, "nested_redirect_count": 0, "redirect_targets": [], "redirect_hosts": [],
+            "unicode_path_or_query": False, "unicode_host": False, "raw_at_sign": False,
+        }
 
         links.append({
             "url": url,
             "display_text": display_text[:120],
             "display_url": display_url,
             "display_host": display_host,
-            "display_mismatch": bool(display_host and host and not _same_registered_domain(display_host, host)),
+            "display_mismatch": bool(
+                scheme in _WEB_SCHEMES
+                and display_host
+                and host
+                and not _same_registered_domain(display_host, host)
+            ),
             "host": host,
             "scheme": scheme,
             "source": source,
@@ -237,6 +325,7 @@ def extract_links(
             "is_ip": is_ip_url(host),
             "is_possible_shortener": is_shortener,
             "shortener_reason": shortener_reason,
+            **intelligence,
         })
 
     def _add_unicode_bare_domains(text: str, source: str) -> None:
@@ -283,5 +372,13 @@ def extract_links(
         for m in _URL_RE.finditer(body_plain):
             _add(m.group(0), "", "plain_text")
         _add_unicode_bare_domains(body_plain, "plain_domain")
+
+    for item in embedded_urls or []:
+        _add(
+            str(item.get("url") or ""),
+            str(item.get("label") or ""),
+            str(item.get("source") or "attachment"),
+            role="body_action",
+        )
 
     return links

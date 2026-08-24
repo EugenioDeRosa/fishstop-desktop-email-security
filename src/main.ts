@@ -8,6 +8,8 @@ type GoogleUser = { sub: string; name?: string; email: string; picture?: string 
 type Section = "dashboard" | "analyse" | "history" | "statistics" | "settings";
 type SocFlag = { level: "HIGH" | "MEDIUM" | "LOW" | "INFO"; field: string; message: string };
 type AuthResult = { status?: string; identity?: string; source?: string; raw?: string; all_results?: AuthResult[] };
+type CryptographicAuthCheck = { status?: string; message?: string; identity?: string; spf_result?: string; verified_domains?: string[]; policy?: string; policy_domain?: string; dkim_aligned?: boolean; spf_aligned?: boolean; alignment_mode?: string };
+type CryptographicAuthentication = { status?: string; provider?: string; dkim?: CryptographicAuthCheck; spf?: CryptographicAuthCheck; dmarc?: CryptographicAuthCheck };
 type ReceivedHop = { from_host?: string; by_host?: string; sender_ip?: string; all_ips?: string[]; received_at?: string; raw?: string };
 type AnalysisReport = {
   subject?: string; from_?: string; reply_to?: string; return_path?: string; flags?: SocFlag[];
@@ -15,20 +17,21 @@ type AnalysisReport = {
   body_source?: string; body_clean?: string; body_ai?: string; body_context?: string; body_html?: string; body_html_safe?: string; injection_sender_ip?: string;
   eml_sha256?: string;
   return_path_domain_mismatch?: boolean; reply_to_mismatch?: boolean; display_name_spoofing?: string;
-  links?: Array<{ url?: string; host?: string; is_ip?: boolean; scheme?: string; source?: string; display_text?: string; display_host?: string; display_mismatch?: boolean; is_possible_shortener?: boolean; shortener_reason?: string; role?: string; actionable?: boolean; sources?: string[] }>;
+  links?: Array<{ url?: string; host?: string; is_ip?: boolean; scheme?: string; source?: string; display_text?: string; display_host?: string; display_mismatch?: boolean; is_possible_shortener?: boolean; shortener_reason?: string; has_userinfo?: boolean; has_credentials?: boolean; nonstandard_port?: boolean; port?: number; nested_redirect_count?: number; redirect_hosts?: string[]; unicode_path_or_query?: boolean; role?: string; actionable?: boolean; sources?: string[] }>;
   link_reputation?: Record<string, ReputationResult>;
   hop_reputation?: Record<string, ReputationResult>;
-  domain_reputation?: Record<string, ReputationResult>;
+  domain_reputation?: Record<string, { infrastructure?: ReputationResult; virustotal?: ReputationResult & { registrar?: string; creation_date?: string | number }; rdap?: ReputationResult & { registration_date?: string; registrar?: string } }>;
   geolocation_results?: Record<string, ReputationResult>;
-  attachments?: Array<{ filename?: string; content_type?: string; size?: number; hash_sha256?: string; anomaly?: string; magic_detected_format?: string; mime_role?: string; actionable?: boolean; pdf_security?: { risk_level?: string; summary?: string }; file_reputation?: ReputationResult }>;
+  attachments?: Array<{ filename?: string; content_type?: string; size?: number; hash_sha256?: string; anomaly?: string; magic_detected_format?: string; mime_role?: string; actionable?: boolean; pdf_security?: { risk_level?: string; summary?: string }; archive_security?: { risk_level?: string; summary?: string; entry_count?: number; total_uncompressed_bytes?: number; encrypted_entry_count?: number; nested_archive_count?: number; findings?: Array<{ label?: string; severity?: string; count?: number; samples?: string[] }> }; file_reputation?: ReputationResult }>;
   lookalike_alerts?: Array<{ url?: string; host?: string; matched_brand?: string; technique?: string; detail?: string; edit_distance?: number }>;
   authentication_results_raw?: string; arc_authentication_results?: string; received_spf_raw?: string;
   dkim_signature_present?: boolean; dkim_signature_raw?: string;
+  html_form_analysis?: { status?: string; form_count?: number; message?: string; forms?: Array<{ risk?: string; method?: string; action?: string; action_host?: string; action_kind?: string; external_action?: boolean; field_count?: number; sensitive_fields?: string[]; message?: string }> };
   auth_results?: Record<string, AuthResult>; arc_auth_results?: Record<string, AuthResult>;
   effective_auth_results?: Record<string, AuthResult>;
+  cryptographic_authentication?: CryptographicAuthentication;
   received_hops?: ReceivedHop[];
-  bert_ai_result?: string; bert_phishing_probability?: number; bert_legitimate_probability?: number;
-  bert_analysis?: { status?: string; classification?: string; probability_malicious?: number; probability_legitimate?: number; chunk_count?: number; message?: string };
+  identity_analysis?: { status?: string; model?: string; message?: string; segments_analyzed?: number; entities?: Array<{ name?: string; confidence?: number; occurrences?: Array<{ source?: string; evidence?: string }> }>; coherence?: Array<{ brand?: string; official_website?: string; official_domain?: string; status?: string; message?: string; mismatches?: Array<{ source?: string; domain?: string }> }> };
   phi4_analysis?: { status?: string; model?: string; duration_ms?: number; analysis?: { final_verdict?: string; content_summary?: string; semantic_reason?: string; explanation?: string; confidence?: number; requested_action?: string; action_channel?: string; intent_evidence?: string; intent_signals?: string[]; signal_evidence?: string; content_risk?: string; identity_risk?: string; technical_risk?: string; ambiguity?: string; claimed_brand?: string; payment_destination_change?: boolean; corroboration?: { supports_decision?: boolean; details?: string[]; caveats?: string[] } }; message?: string };
 };
 type ReputationResult = { status?: string; message?: string; detection_ratio?: string; malicious?: number; suspicious?: number; total_engines?: number; threat_label?: string; file_type?: string; file_name?: string; last_analysis?: string | number; permalink?: string; abuseConfidenceScore?: number; totalReports?: number; country?: string; country_code?: string; city?: string; region?: string; isp?: string; org?: string; asn?: string; timezone?: string; lat?: number; lon?: number; is_proxy?: boolean; is_hosting?: boolean; resolved_ip?: string; resolved_domain?: string; used_parent_fallback?: string; url?: string; title?: string; crowdsourced_context_summary?: string };
@@ -49,7 +52,7 @@ if (!app) throw new Error("FishStop could not start.");
 const root: HTMLDivElement = app;
 
 type ProtectionTone = "checking" | "ok" | "warning" | "error";
-type LocalEngineStatus = { static_engine: boolean; python_runtime: boolean; bert_dependencies: boolean };
+type LocalEngineStatus = { static_engine: boolean; python_runtime: boolean; identity_dependencies: boolean };
 type HuggingFaceModelInfo = { repository: string; runtime_revision: string; latest_commit?: string; updated_at?: string };
 
 function escapeHtml(value: string): string {
@@ -91,8 +94,8 @@ async function refreshProtectionStatus(user: GoogleUser): Promise<void> {
       setProtectionStatus(element, "error", "Analysis engine unavailable");
       return;
     }
-    if (!engine.bert_dependencies) {
-      setProtectionStatus(element, "error", "Contextual text analysis unavailable");
+    if (!engine.identity_dependencies) {
+      setProtectionStatus(element, "error", "Identity intelligence unavailable");
       return;
     }
     if (!models.includes(selectedModel)) {
@@ -179,6 +182,65 @@ function trackIndicatorCopy(user: GoogleUser): void {
   catch { /* Copying still works if local storage is unavailable. */ }
 }
 
+async function copyIndicator(value: string): Promise<boolean> {
+  if (!value) return false;
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(value);
+      return true;
+    }
+    const fallback = document.createElement("textarea");
+    fallback.value = value;
+    fallback.style.position = "fixed";
+    fallback.style.opacity = "0";
+    document.body.appendChild(fallback);
+    fallback.select();
+    const copied = document.execCommand("copy");
+    fallback.remove();
+    return copied;
+  } catch {
+    return false;
+  }
+}
+
+function showExternalLinkDialog(url: string, label: string): void {
+  let dialog = document.querySelector<HTMLDialogElement>("#external-link-dialog");
+  if (!dialog) {
+    dialog = document.createElement("dialog");
+    dialog.id = "external-link-dialog";
+    dialog.className = "external-link-dialog";
+    document.body.appendChild(dialog);
+  }
+  let host = "External website";
+  try { host = new URL(url).host; } catch { /* The native command validates it before opening. */ }
+  dialog.innerHTML = `<form method="dialog"><p class="page-kicker">EXTERNAL WEBSITE</p><h2>${escapeHtml(label || "Open external report")}</h2><p>This report opens outside FishStop.</p><code>${escapeHtml(host)}</code><small>${escapeHtml(url)}</small><div class="dialog-actions"><button value="cancel" type="submit">Cancel</button><button value="copy" type="button" data-copy-external>Copy link</button><button type="button" data-open-external>Open in browser ↗</button></div><span class="external-link-status" aria-live="polite"></span></form>`;
+  dialog.querySelector<HTMLButtonElement>("[data-copy-external]")?.addEventListener("click", async () => {
+    const copied = await copyIndicator(url);
+    const status = dialog?.querySelector<HTMLElement>(".external-link-status");
+    if (status) status.textContent = copied ? "Link copied." : "Could not copy the link.";
+  });
+  dialog.querySelector<HTMLButtonElement>("[data-open-external]")?.addEventListener("click", async () => {
+    const status = dialog?.querySelector<HTMLElement>(".external-link-status");
+    if (status) status.textContent = "Opening external browser…";
+    try {
+      await invoke("open_external_url", { url });
+      dialog?.close();
+    } catch (error) {
+      if (status) status.textContent = String(error || "Could not open the external browser.");
+    }
+  });
+  if (!dialog.open) dialog.showModal();
+}
+
+document.addEventListener("click", (event) => {
+  const target = event.target;
+  if (!(target instanceof Element)) return;
+  const link = target.closest<HTMLAnchorElement>('a[target="_blank"][href]');
+  if (!link) return;
+  event.preventDefault();
+  showExternalLinkDialog(link.href, link.textContent?.trim() || "Open external report");
+});
+
 function statisticsPeriod(user: GoogleUser): StatisticsPeriod {
   const value = localStorage.getItem(statisticsPeriodStorageKey(user));
   return ["today", "week", "month", "3m", "6m", "9m", "12m", "all"].includes(value || "") ? value as StatisticsPeriod : "week";
@@ -237,7 +299,7 @@ function orderedReceivedHops(hops: ReceivedHop[] = []): ReceivedHop[] {
 }
 
 function analysisLoadingMarkup(fileName: string): string {
-  const checks = ["Static checks and reputation", "Contextual text analysis", "AI analysis", "Final report"];
+  const checks = ["Static checks and reputation", "Identity intelligence", "AI analysis", "Final report"];
   return `<section class="analysis-loading" aria-live="polite"><div class="loading-orbit"><i></i><b>⌁</b></div><div><p class="page-kicker">LOCAL ANALYSIS IN PROGRESS</p><h2>Checking ${escapeHtml(fileName)}</h2><p class="loading-copy">Each signal is processed on this device.</p></div><ol>${checks.map((label, index) => `<li data-loading-check="${index}"><span>✓</span>${label}</li>`).join("")}</ol></section>`;
 }
 
@@ -341,13 +403,12 @@ function conciseAiVerdict(report: AnalysisReport, fallback: string): string {
 
 function assessment(report: AnalysisReport): { tone: "safe" | "review" | "danger"; label: string; detail: string } {
   const phi = (report.phi4_analysis?.analysis?.final_verdict || "").toLowerCase();
-  const bert = (report.bert_analysis?.classification || "").toLowerCase();
   const high = (report.flags || []).some((flag) => flag.level === "HIGH");
   const medium = (report.flags || []).some((flag) => flag.level === "MEDIUM");
   const staticReason = highSeverityStaticReason(report);
   const unverifiedRequestedResource = unverifiedRequestedResourceReason(report);
   const authenticationReview = authenticationReviewReason(report);
-  // The Ollama policy receives static, reputation and BERT evidence: when available,
+  // The Ollama policy receives static, reputation and identity evidence: when available,
   // it is the final synthesis. Confirmed external detections and strong static
   // findings can never be downgraded by an unavailable or disagreeing model.
   if (staticReason) return { tone: "danger", label: "HIGH RISK", detail: staticReason };
@@ -356,8 +417,6 @@ function assessment(report: AnalysisReport): { tone: "safe" | "review" | "danger
   if (high) return { tone: "danger", label: "HIGH RISK", detail: "A high-severity static check failed. Do not interact with this message." };
   if (phi === "review" || medium) return { tone: "review", label: "REVIEW REQUIRED", detail: authenticationReview || conciseAiVerdict(report, "Anomalies were found. Verify the message before taking any action.") };
   if (phi === "legitimate") return { tone: "safe", label: "LIKELY LEGITIMATE", detail: conciseAiVerdict(report, "No relevant technical or content indicators were found.") };
-  if (bert === "phishing") return { tone: "danger", label: "HIGH RISK", detail: "BERT detected content consistent with phishing; the Ollama summary is unavailable." };
-  if (bert === "uncertain") return { tone: "review", label: "REVIEW REQUIRED", detail: "BERT is inconclusive and the Ollama summary is unavailable." };
   return { tone: "safe", label: "LIKELY LEGITIMATE", detail: "No relevant technical or semantic signals were found." };
 }
 
@@ -401,6 +460,18 @@ function authCheckLabel(status: string): string {
   return tone === "pass" ? "Passed" : tone === "fail" ? "Failed" : tone === "warn" ? "Review required" : "Unavailable";
 }
 
+function cryptographicCheckTone(status?: string): CheckTone {
+  const value = (status || "unavailable").toLowerCase();
+  if (value === "pass") return "pass";
+  if (value === "fail") return "fail";
+  return "neutral";
+}
+
+function cryptographicCheckLabel(status?: string): string {
+  const value = (status || "unavailable").toLowerCase();
+  return value === "pass" ? "Aligned" : value === "fail" ? "Failed" : "Unavailable";
+}
+
 function staticCheckItem(tone: CheckTone, title: string, detail: string, status?: string): string {
   const summary = status ? `${status} · ${detail}` : detail;
   return `<li class="static-check static-check-${tone}"><strong>${escapeHtml(title)}</strong><small>${escapeHtml(summary)}</small></li>`;
@@ -417,6 +488,20 @@ function mailboxAddress(value: string): string {
   const bracketed = /<\s*([^<>\s]+@[^<>\s]+)\s*>/.exec(value);
   const plain = /\b[^\s<>@]+@[^\s<>@]+\b/.exec(value);
   return (bracketed?.[1] || plain?.[0] || value).trim();
+}
+
+function parseMailtoAction(value?: string): { recipient: string; subject: string } | null {
+  if (!/^mailto:/i.test(value || "")) return null;
+  const [rawRecipient, rawQuery = ""] = String(value).slice(7).split("?", 2);
+  let recipient = rawRecipient;
+  try { recipient = decodeURIComponent(rawRecipient); } catch { /* Keep the original safe value. */ }
+  if (!/^\S+@\S+\.\S+$/.test(recipient)) return null;
+  const parameters = new URLSearchParams(rawQuery);
+  let subject = "";
+  parameters.forEach((parameterValue, parameterName) => {
+    if (parameterName.toLowerCase() === "subject") subject = parameterValue.trim();
+  });
+  return { recipient, subject };
 }
 
 function reputationCheckTone(result?: ReputationResult): CheckTone | undefined {
@@ -453,6 +538,37 @@ function reportMarkup(report: AnalysisReport): string {
     return staticCheckItem(tone, protocol, result.identity || result.source, `${authCheckLabel(result.status)} · ${result.status.toUpperCase()}`);
   }).join("");
   const authDetails = authEvidence.map(([protocol, result]) => `<section class="auth-evidence static-surface-${authCheckTone(result.status)}"><div class="check-heading"><h3>${protocol}</h3></div><p>${authCheckLabel(result.status)} · ${escapeHtml(result.status.toUpperCase())} · ${escapeHtml(result.source)}</p>${result.identity ? `<p>Identity: <code>${escapeHtml(result.identity)}</code></p>` : ""}${result.all_results.length > 1 ? `<p>${result.all_results.length} results found: the least favourable is shown.</p>` : ""}<pre>${escapeHtml(result.raw || "No evidence in the EML header.")}</pre></section>`).join("");
+  const cryptographic = report.cryptographic_authentication;
+  const cryptographicChecks = ([
+    ["SPF", cryptographic?.spf],
+    ["DKIM", cryptographic?.dkim],
+    ["DMARC", cryptographic?.dmarc],
+  ] as const);
+  // DMARC is the combined alignment result. An archived DKIM signature can
+  // fail independently while an SPF identity still proves DMARC alignment.
+  const cryptographicTone: CheckTone = cryptographic?.status === "pass" ? "pass"
+    : cryptographic?.status === "fail" ? "fail" : "neutral";
+  const cryptographicRows = cryptographicChecks.map(([protocol, item]) => {
+    const status = cryptographicCheckLabel(item?.status);
+    const details = protocol === "DKIM"
+      ? (item?.verified_domains?.length ? `Verified domain: ${item.verified_domains.join(", ")}` : item?.message)
+      : protocol === "SPF"
+        ? [item?.identity && `Envelope domain: ${item.identity}`, item?.spf_result && `Result ${item.spf_result.toUpperCase()}`, item?.message].filter(Boolean).join(" · ")
+        : (item?.policy ? [`Policy ${item.policy.toUpperCase()}`, `DKIM ${item.dkim_aligned ? "aligned" : "not aligned"}`, `SPF ${item.spf_aligned ? "aligned" : "not aligned"}`, item?.message].filter(Boolean).join(" · ") : item?.message);
+    return `<li class="static-check static-check-${cryptographicCheckTone(item?.status)}"><div><strong>${protocol}</strong><span>${status}</span></div><small>${escapeHtml(details || "No independent verification data is available.")}</small></li>`;
+  }).join("");
+  const cryptographicDetails = cryptographic
+    ? `<section class="cryptographic-authentication static-surface-${cryptographicTone}"><div class="cryptographic-heading"><div><p class="page-kicker">INDEPENDENT CHECK</p><h3>Cryptographic verification</h3><p>DNS-backed verification performed by FishStop, separate from the receiver-provided headers.</p></div><b>${cryptographicTone === "pass" ? "ALIGNED" : cryptographicTone === "fail" ? "FAILED" : "UNAVAILABLE"}</b></div><ul>${cryptographicRows}</ul></section>`
+    : `<section class="cryptographic-authentication static-surface-neutral"><div class="cryptographic-heading"><div><p class="page-kicker">INDEPENDENT CHECK</p><h3>Cryptographic verification</h3><p>The report was created before independent authentication verification was available.</p></div><b>UNAVAILABLE</b></div></section>`;
+  const formAnalysis = report.html_form_analysis;
+  const formTone: CheckTone = formAnalysis?.status === "suspicious" ? "fail" : formAnalysis?.status === "review" ? "warn" : formAnalysis?.status === "clean" ? "pass" : "neutral";
+  const formRows = (formAnalysis?.forms || []).map((form, index) => {
+    const tone: CheckTone = form.risk === "high" ? "fail" : form.risk === "medium" ? "warn" : "pass";
+    const target = form.action_host || (form.action_kind === "missing" ? "No action declared" : form.action_kind === "relative" ? "Relative action" : "No resolvable destination");
+    const sensitive = form.sensitive_fields?.length ? `Sensitive fields: ${form.sensitive_fields.join(", ")}.` : "";
+    return staticCheckItem(tone, `Form ${index + 1} · ${form.method || "GET"}`, `${target} · ${form.message || ""} ${sensitive}`.trim(), form.risk === "high" ? "Credential harvesting risk" : form.risk === "medium" ? "Review required" : "No sensitive fields");
+  }).join("");
+  const htmlFormDetails = `<section class="html-form-inspection static-surface-${formTone}"><div><p class="page-kicker">LOCAL HTML INSPECTION</p><h3>Form and credential harvesting</h3><p>${escapeHtml(formAnalysis?.message || "This analysis is not available in older reports.")}</p></div><ul>${formRows || staticCheckItem(formTone, formAnalysis?.status === "clean" ? "No HTML forms" : "Form inspection unavailable", formAnalysis?.message || "No form data is available.", formAnalysis?.status === "clean" ? "Passed" : "Unavailable")}</ul></section>`;
   const displayNameSpoofing = String(report.display_name_spoofing || "").trim();
   const displayNameSpoofed = Boolean(displayNameSpoofing && !["none", "false", "no"].includes(displayNameSpoofing.toLowerCase()));
   const replyToAddress = mailboxAddress(String(report.reply_to || "").trim());
@@ -463,62 +579,83 @@ function reportMarkup(report: AnalysisReport): string {
     senderConsistencyItem(displayNameSpoofed ? "fail" : "pass", "Display name", displayNameSpoofed ? displayNameSpoofing : "No display-name impersonation detected.", displayNameSpoofed ? "Impersonation detected" : "Aligned"),
   ].join("");
   const lookalikeHosts = new Set((report.lookalike_alerts || []).map((alert) => (alert.host || "").toLowerCase()));
-  const sourceLabel: Record<string, string> = { html_href: "HTML link", html_text: "HTML text", plain_text: "Email text" };
+  const sourceLabel: Record<string, string> = { html_href: "HTML link", html_text: "HTML text", plain_text: "Email text", attachment: "Attachment URL" };
   const techniqueLabel: Record<string, string> = {
     edit_distance: "Edit distance", homoglyph: "Unicode homoglyphs", unicode_homoglyph: "Confusable Unicode characters",
     punycode_idna: "Punycode / IDNA domain", punycode_homograph: "Punycode homograph", typosquatting: "Typosquatting",
   };
-  const links = (report.links || []).map((link) => {
+  const links = (report.links || []).filter((link) => (link.scheme || "").toLowerCase() !== "mailto").map((link) => {
     const dangerous = Boolean(link.is_ip || lookalikeHosts.has((link.host || "").toLowerCase()));
+    const structuralDanger = Boolean(link.has_userinfo || link.has_credentials);
+    const structuralWarning = Boolean(link.nonstandard_port || link.nested_redirect_count || link.unicode_path_or_query);
     const reputationResult = report.link_reputation?.[link.url || ""];
     const reputation = reputationCheckTone(reputationResult);
-    const tone = dangerous || link.display_mismatch ? "fail" : reputation || (link.is_possible_shortener ? "warn" : "pass");
-    const status = dangerous ? (link.is_ip ? "Direct IP" : "Lookalike domain") : link.display_mismatch ? "Destination differs from visible text" : reputation === "fail" ? "Detected by VirusTotal" : reputation === "warn" ? "Review required" : reputation === "pass" ? "VirusTotal clean" : link.is_possible_shortener ? "Possible URL shortener" : "Valid URL structure";
+    const tone = dangerous || structuralDanger || link.display_mismatch ? "fail" : reputation || (structuralWarning || link.is_possible_shortener ? "warn" : "pass");
+    const status = dangerous ? (link.is_ip ? "Direct IP" : "Lookalike domain") : structuralDanger ? "Hidden destination userinfo" : link.display_mismatch ? "Destination differs from visible text" : reputation === "fail" ? "Detected by VirusTotal" : reputation === "warn" ? "Review required" : reputation === "pass" ? "VirusTotal clean" : link.nested_redirect_count ? "Nested redirect destination" : link.nonstandard_port ? "Non-standard port" : link.unicode_path_or_query ? "Unicode path or query" : link.is_possible_shortener ? "Possible URL shortener" : "Valid URL structure";
     const host = link.host || "URL without host";
     const vtUrl = reputationResult?.permalink || `https://www.virustotal.com/gui/domain/${encodeURIComponent(host)}`;
     const whoisUrl = `https://www.whois.com/whois/${encodeURIComponent(host)}`;
+    const isWebLink = ["http", "https"].includes((link.scheme || "").toLowerCase());
     const metadata = [sourceLabel[link.source || ""] || link.source, link.scheme ? link.scheme.toUpperCase() : ""].filter(Boolean).join(" · ");
-    const notes = [link.display_mismatch && `Visible text: ${link.display_host || link.display_text || "different domain"}`, link.is_possible_shortener && link.shortener_reason, reputationResult?.detection_ratio && `VirusTotal: ${reputationResult.detection_ratio}`, reputationResult?.last_analysis && `Last analysis: ${reputationResult.last_analysis}`].filter(Boolean).join(" · ");
-    const virusTotalAction = reputationResult?.status === "not_found"
+    const notes = [link.display_mismatch && `Visible text: ${link.display_host || link.display_text || "different domain"}`, link.has_credentials && "Username or password is embedded before the destination host", link.has_userinfo && "Userinfo is present before the destination host", link.nonstandard_port && `Port ${link.port}`, link.nested_redirect_count && `Redirects to: ${(link.redirect_hosts || []).join(", ") || "embedded target"}`, link.unicode_path_or_query && "Unicode characters in path or query", link.is_possible_shortener && link.shortener_reason, reputationResult?.detection_ratio && `VirusTotal: ${reputationResult.detection_ratio}`, reputationResult?.last_analysis && `Last analysis: ${reputationResult.last_analysis}`].filter(Boolean).join(" · ");
+    const virusTotalAction = !isWebLink ? ""
+      : reputationResult?.status === "not_found"
       ? `<a class="manual-vt-action" href="https://www.virustotal.com/gui/home/url" target="_blank" rel="noopener noreferrer" data-vt-manual-url="${escapeHtml(link.url || "")}">Copy URL &amp; open VirusTotal ↗</a>`
       : `<a href="${escapeHtml(vtUrl)}" target="_blank" rel="noopener noreferrer">${reputationResult?.permalink ? "VirusTotal report ↗" : "VirusTotal ↗"}</a>`;
-    return `<li class="static-check static-check-${tone} link-evidence"><div><strong>${escapeHtml(host)}</strong><span>${escapeHtml(status)}</span></div><small>${escapeHtml((link.url || "").replace("://", "[://]").replaceAll(".", "[.]"))}</small>${metadata ? `<em>${escapeHtml(metadata)}</em>` : ""}${notes ? `<em>${escapeHtml(notes)}</em>` : ""}<p>${virusTotalAction}<a href="${escapeHtml(whoisUrl)}" target="_blank" rel="noopener noreferrer">WHOIS ↗</a></p></li>`;
+    const copyAction = tone === "fail" && link.url ? `<button class="copy-evidence" type="button" data-copy-ioc="${escapeHtml(link.url)}">Copy URL</button>` : "";
+    return `<li class="static-check static-check-${tone} link-evidence"><div><strong>${escapeHtml(host)}</strong><span>${escapeHtml(status)}</span></div><small>${escapeHtml((link.url || "").replace("://", "[://]").replaceAll(".", "[.]"))}</small>${metadata ? `<em>${escapeHtml(metadata)}</em>` : ""}${notes ? `<em>${escapeHtml(notes)}</em>` : ""}${copyAction}${isWebLink ? `<p>${virusTotalAction}<a href="${escapeHtml(whoisUrl)}" target="_blank" rel="noopener noreferrer">WHOIS ↗</a></p>` : ""}</li>`;
   }).join("") || staticCheckItem("neutral", "No extracted links", "No URLs are present in the message.", "Not applicable");
+  const mailtoGroups = new Map<string, { recipient: string; subjects: string[]; count: number }>();
+  (report.links || []).forEach((link) => {
+    const action = parseMailtoAction(link.url);
+    if (!action) return;
+    const key = action.recipient.toLowerCase();
+    const current = mailtoGroups.get(key) || { recipient: action.recipient, subjects: [], count: 0 };
+    current.count += 1;
+    if (action.subject && !current.subjects.some((subject) => subject.toLowerCase() === action.subject.toLowerCase())) current.subjects.push(action.subject);
+    mailtoGroups.set(key, current);
+  });
+  const emailActions = [...mailtoGroups.values()].map((action) => {
+    const subjectDetail = action.subjects.length ? `Subject${action.subjects.length === 1 ? "" : "s"}: ${action.subjects.join(" · ")}` : "No subject specified";
+    const countDetail = `${action.count} email action${action.count === 1 ? "" : "s"} found`;
+    return `<li class="static-check static-check-neutral email-action"><div><strong>${escapeHtml(action.recipient)}</strong><span>Email action</span></div><small>${escapeHtml(`${countDetail} · ${subjectDetail}`)}</small><button class="copy-evidence" type="button" data-copy-ioc="${escapeHtml(action.recipient)}">Copy address</button></li>`;
+  }).join("") || staticCheckItem("neutral", "No email actions", "No mailto destinations are present in the message.", "Not applicable");
   const attachments = (report.attachments || []).map((attachment) => {
     const pdfRisk = (attachment.pdf_security?.risk_level || "").toLowerCase();
-    const risky = Boolean(attachment.anomaly || ["high", "critical"].includes(pdfRisk));
-    const caution = ["medium", "warning"].includes(pdfRisk);
+    const archiveRisk = (attachment.archive_security?.risk_level || "").toLowerCase();
+    const risky = Boolean(attachment.anomaly || ["high", "critical"].includes(pdfRisk) || ["high", "critical"].includes(archiveRisk));
+    const caution = ["medium", "warning"].includes(pdfRisk) || ["medium", "warning"].includes(archiveRisk);
     const reputationResult = attachment.file_reputation;
     const reputation = reputationCheckTone(reputationResult);
     const detail = `${attachment.content_type || "unknown type"} · ${attachment.size || 0} bytes · ${attachment.magic_detected_format || "unrecognised format"}`;
-    const note = attachment.anomaly || attachment.pdf_security?.summary || (caution ? "PDF requires review" : "Local structure valid");
+    const archiveMeta = attachment.archive_security ? `${attachment.archive_security.entry_count || 0} entries${attachment.archive_security.nested_archive_count ? ` · ${attachment.archive_security.nested_archive_count} nested` : ""}${attachment.archive_security.encrypted_entry_count ? ` · ${attachment.archive_security.encrypted_entry_count} encrypted` : ""}` : "";
+    const note = attachment.anomaly || attachment.pdf_security?.summary || attachment.archive_security?.summary || (caution ? "Archive or PDF requires review" : "Local structure valid");
     const tone = risky ? "fail" : caution ? "warn" : reputation || "pass";
     const status = risky ? "Anomaly detected" : caution || reputation === "warn" ? "Review required" : reputation === "fail" ? "Detected by VirusTotal" : reputation === "pass" ? "VirusTotal clean" : "Passed";
     const intelligence = [reputationResult?.detection_ratio && `VirusTotal: ${reputationResult.detection_ratio}`, reputationResult?.last_analysis && `Last analysis: ${reputationResult.last_analysis}`].filter(Boolean).join(" · ");
     const reportLink = reputationResult?.permalink ? `<p><a href="${escapeHtml(reputationResult.permalink)}" target="_blank" rel="noopener noreferrer">VirusTotal report ↗</a></p>` : "";
-    return `<li class="static-check static-check-${tone}"><strong>${escapeHtml(attachment.filename || "Unnamed attachment")}</strong><small>${escapeHtml(`${status} · ${detail} · ${note}`)}</small>${intelligence ? `<em>${escapeHtml(intelligence)}</em>` : ""}${reportLink}</li>`;
+    const copyAction = tone === "fail" && attachment.hash_sha256 ? `<button class="copy-evidence" type="button" data-copy-ioc="${escapeHtml(attachment.hash_sha256)}">Copy SHA-256</button>` : "";
+    return `<li class="static-check static-check-${tone}"><strong>${escapeHtml(attachment.filename || "Unnamed attachment")}</strong><small>${escapeHtml(`${status} · ${detail} · ${note}`)}</small>${archiveMeta ? `<em>Archive inspection: ${escapeHtml(archiveMeta)}</em>` : ""}${intelligence ? `<em>${escapeHtml(intelligence)}</em>` : ""}${copyAction}${reportLink}</li>`;
   }).join("") || staticCheckItem("neutral", "No attachments detected", "No MIME files are available to check.", "Not applicable");
   const lookalikes = (report.lookalike_alerts || []).map((alert) => {
     const technique = techniqueLabel[alert.technique || ""] || alert.technique || "Suspicious domain";
     const brand = alert.matched_brand && alert.matched_brand !== "-" ? ` → ${alert.matched_brand}` : "";
     const editDistance = alert.edit_distance === undefined || alert.edit_distance === null ? "" : ` · distance ${alert.edit_distance}`;
-    return `<li class="static-check static-check-fail lookalike-evidence"><div><strong>${escapeHtml(technique)}</strong><span>Possible impersonation</span></div><b>${escapeHtml(`${alert.host || "Domain"}${brand}`)}</b>${editDistance ? `<em>${escapeHtml(editDistance.trim().replace(/^·\s*/, ""))}</em>` : ""}${alert.detail ? `<small>${escapeHtml(alert.detail)}</small>` : ""}${alert.url ? `<code>${escapeHtml(alert.url)}</code>` : ""}</li>`;
+    const copyValue = alert.url || alert.host || "";
+    return `<li class="static-check static-check-fail lookalike-evidence"><div><strong>${escapeHtml(technique)}</strong><span>Possible impersonation</span></div><b>${escapeHtml(`${alert.host || "Domain"}${brand}`)}</b>${editDistance ? `<em>${escapeHtml(editDistance.trim().replace(/^·\s*/, ""))}</em>` : ""}${alert.detail ? `<small>${escapeHtml(alert.detail)}</small>` : ""}${alert.url ? `<code>${escapeHtml(alert.url)}</code>` : ""}${copyValue ? `<button class="copy-evidence" type="button" data-copy-ioc="${escapeHtml(copyValue)}">Copy ${alert.url ? "URL" : "domain"}</button>` : ""}</li>`;
   }).join("") || staticCheckItem("pass", "No lookalike domains", "No suspicious similarity with monitored brands.", "Passed");
   const fields = (items: Array<[string, string | undefined | null | boolean]>) => `<dl class="field-list">${items.filter(([, value]) => value !== undefined && value !== null && value !== "").map(([label, value]) => `<div><dt>${label}</dt><dd>${escapeHtml(String(value))}</dd></div>`).join("") || "<div><dd>No data available.</dd></div>"}</dl>`;
-  const iocs = [
-    ["URL", (report.links || []).map((link) => link.url || "")],
-    ["Domains", [...(report.links || []).map((link) => link.host || ""), ...(report.lookalike_alerts || []).map((alert) => alert.host || "")]],
-    ["IP", [report.injection_sender_ip || "", ...(report.received_hops || []).map((hop) => hop.sender_ip || "")]],
-    ["Hash", (report.attachments || []).map((attachment) => attachment.hash_sha256 || "")],
-  ].map(([label, values]) => `<section><h3>${label}</h3><code>${(values as string[]).filter(Boolean).map(escapeHtml).join("\n") || "—"}</code></section>`).join("");
-  const menu = [["summary", "Summary"], ["sender", "Sender"], ["auth", "Authentication"], ["links", "Links"], ["files", "Files"], ["content", "Content"], ["iocs", "Indicators"], ["technical", "Technical"]];
+  const menu = [["summary", "Summary"], ["sender", "Sender"], ["auth", "Authentication"], ["links", "Links"], ["files", "Files"], ["content", "Content"], ["technical", "Technical"]];
   const tabs = menu.map(([id, label], index) => `<button class="report-tab ${index === 0 ? "active" : ""}" data-report-tab="${id}" type="button">${label}</button>`).join("");
-  const panel = (id: string, content: string, active = false) => `<section class="report-panel ${active ? "active" : ""}" data-report-panel="${id}">${content}</section>`;
-  return `<section class="analysis-report verdict-${verdict.tone}"><div class="report-summary"><p class="page-kicker">ANALYSIS RESULT</p><h2>${risk}</h2><p class="verdict-detail">${escapeHtml(verdict.detail)}</p>${rationale}<p><strong>${escapeHtml(report.subject || "No subject")}</strong> · ${escapeHtml(report.from_ || "Sender unavailable")}</p><div class="report-stats"><span>${high} high</span><span>${medium} medium</span><span>${(report.links || []).length} links</span><span>${(report.attachments || []).length} attachments</span></div></div><nav class="report-tabs" aria-label="Report sections">${tabs}</nav>${panel("summary", `<div class="report-grid"><section><h3>Message</h3>${fields([["From", report.from_], ["To", report.to], ["Subject", report.subject], ["Date", report.date]])}</section><section><h3>Trust checks</h3><ul class="auth-grid">${auth}</ul><p class="quiet">${report.lookalike_alerts?.length ? `${report.lookalike_alerts.length} possible lookalike domain(s).` : "No lookalike domains detected."}</p></section></div><div class="report-flags"><h3>All signals</h3><ul>${details}</ul></div>`, true)}${panel("sender", `<div class="report-grid"><section><h3>Sender identity</h3>${fields([["Delivered-To", report.delivered_to], ["Return-Path", report.return_path], ["Reply-To", report.reply_to], ["Errors-To", report.errors_to], ["Importance", report.importance]])}</section><section class="sender-consistency"><h3>Identity consistency</h3><ul class="auth-grid">${senderInconsistencies}</ul></section></div>`)}${panel("auth", `<div class="report-grid"><section><h3>Routing</h3>${fields([["Received hops", String((report.received_hops || []).length)], ["Injection IP", report.injection_sender_ip]])}</section></div><section class="authentication-checks"><h3>Authentication checks</h3><div class="auth-evidence-grid">${authDetails}</div></section>`)}${panel("links", `<div class="report-grid"><section class="evidence-card"><h3>Extracted URLs</h3><ul>${links}</ul></section><section class="evidence-card"><h3>Lookalike / Typosquatting</h3><ul>${lookalikes}</ul></section></div>`)}${panel("files", `<section class="evidence-card"><h3>Attachments</h3><ul>${attachments}</ul></section>`)}${panel("content", `<div class="report-grid"><section><h3>Context</h3>${fields([["Source", report.body_source], ["Selection", report.body_context]])}</section><section><h3>Extracted body</h3><pre>${escapeHtml((report.body_ai || report.body_clean || "No extractable text.").slice(0, 12000))}</pre></section></div>`)}${panel("iocs", `<div class="ioc-grid">${iocs}</div>`)}${panel("technical", `<section class="technical-report"><div><h3>Structured report</h3><p>Export technical evidence as JSON, without the original binary content.</p></div><button id="download-report" type="button">Download JSON</button><pre>${escapeHtml(JSON.stringify(report, null, 2))}</pre></section>`)}</section>`;
+  const panel = (id: string, content: string, active = false) => {
+    const composedContent = id === "content" ? `${content}${htmlFormDetails}` : content;
+    return `<section class="report-panel ${active ? "active" : ""}" data-report-panel="${id}">${composedContent}</section>`;
+  };
+  return `<section class="analysis-report verdict-${verdict.tone}"><div class="report-summary"><p class="page-kicker">ANALYSIS RESULT</p><h2>${risk}</h2><p class="verdict-detail">${escapeHtml(verdict.detail)}</p>${rationale}<p><strong>${escapeHtml(report.subject || "No subject")}</strong> · ${escapeHtml(report.from_ || "Sender unavailable")}</p><div class="report-stats"><span>${high} high</span><span>${medium} medium</span><span>${(report.links || []).filter((link) => (link.scheme || "").toLowerCase() !== "mailto").length} web links</span><span>${(report.attachments || []).length} attachments</span></div></div><nav class="report-tabs" aria-label="Report sections">${tabs}</nav>${panel("summary", `<div class="report-grid"><section><h3>Message</h3>${fields([["From", report.from_], ["To", report.to], ["Subject", report.subject], ["Date", report.date]])}</section><section><h3>Trust checks</h3><ul class="auth-grid">${auth}</ul><p class="quiet">${report.lookalike_alerts?.length ? `${report.lookalike_alerts.length} possible lookalike domain(s).` : "No lookalike domains detected."}</p></section></div><div class="report-flags"><h3>All signals</h3><ul>${details}</ul></div>`, true)}${panel("sender", `<div class="report-grid"><section><h3>Sender identity</h3>${fields([["Delivered-To", report.delivered_to], ["Return-Path", report.return_path], ["Reply-To", report.reply_to], ["Errors-To", report.errors_to], ["Importance", report.importance]])}</section><section class="sender-consistency"><h3>Identity consistency</h3><ul class="auth-grid">${senderInconsistencies}</ul></section></div>`)}${panel("auth", `<div class="report-grid"><section><h3>Routing</h3>${fields([["Received hops", String((report.received_hops || []).length)], ["Injection IP", report.injection_sender_ip]])}</section></div><section class="authentication-checks"><h3>Authentication checks</h3><div class="auth-evidence-grid">${authDetails}</div></section>${cryptographicDetails}`)}${panel("links", `<div class="report-grid"><section class="evidence-card"><h3>Web links</h3><ul>${links}</ul></section><section class="evidence-card"><h3>Email actions</h3><ul>${emailActions}</ul></section><section class="evidence-card"><h3>Lookalike / Typosquatting</h3><ul>${lookalikes}</ul></section></div>`)}${panel("files", `<section class="evidence-card"><h3>Attachments</h3><ul>${attachments}</ul></section>`)}${panel("content", `<div class="report-grid"><section><h3>Context</h3>${fields([["Source", report.body_source], ["Selection", report.body_context]])}</section><section><h3>Extracted body</h3><pre>${escapeHtml((report.body_ai || report.body_clean || "No extractable text.").slice(0, 12000))}</pre></section></div>`)}${panel("technical", `<section class="technical-report"><div><h3>Structured report</h3><p>Export technical evidence as JSON, without the original binary content.</p></div><button id="download-report" type="button">Download JSON</button><pre>${escapeHtml(JSON.stringify(report, null, 2))}</pre></section>`)}</section>`;
 }
 
-function reputationRows(items: Array<{ title: string; detail: string; result?: ReputationResult }>): string {
-  return items.length ? items.map(({ title, detail, result }) => {
+function reputationRows(items: Array<{ title: string; detail: string; result?: ReputationResult; copyValue?: string }>): string {
+  return items.length ? items.map(({ title, detail, result, copyValue }) => {
     const status = result?.status || "skipped";
     const score = result?.abuseConfidenceScore;
     const tone = status === "malicious" || (score !== undefined && score >= 50) ? "danger"
@@ -534,7 +671,8 @@ function reputationRows(items: Array<{ title: string; detail: string; result?: R
       : canManuallySearchVirusTotal
         ? `<a class="manual-vt-action" href="https://www.virustotal.com/gui/home/url" target="_blank" rel="noopener noreferrer" data-vt-manual-url="${escapeHtml(title)}">Copy URL &amp; open VirusTotal ↗</a>`
         : "";
-    return `<li class="reputation-${tone}"><strong>${escapeHtml(title)}</strong><small>${escapeHtml(detail)}</small><b>${escapeHtml(displayStatus)} · ${escapeHtml(metrics)}</b>${extra ? `<small>${escapeHtml(extra)}</small>` : ""}${action}</li>`;
+    const copyAction = tone === "danger" && copyValue ? `<button class="copy-evidence" type="button" data-copy-ioc="${escapeHtml(copyValue)}">Copy indicator</button>` : "";
+    return `<li class="reputation-${tone}"><strong>${escapeHtml(title)}</strong><small>${escapeHtml(detail)}</small><b>${escapeHtml(displayStatus)} · ${escapeHtml(metrics)}</b>${extra ? `<small>${escapeHtml(extra)}</small>` : ""}${copyAction}${action}</li>`;
   }).join("") : "<li class=\"reputation-empty\">No indicators available.</li>";
 }
 
@@ -552,9 +690,21 @@ function addReputationPanel(report: AnalysisReport): void {
   const urls = reputationRows(Object.entries(report.link_reputation || {}).map(([url, result]) => ({ title: url, detail: result.title || "VirusTotal URL", result })));
   const files = reputationRows((report.attachments || []).filter((item) => item.hash_sha256).map((item) => ({ title: item.filename || item.hash_sha256 || "Attachment", detail: item.hash_sha256 || "", result: item.file_reputation })));
   const hops = reputationRows(Object.entries(report.hop_reputation || {}).map(([ip, result]) => ({ title: ip, detail: "AbuseIPDB · IP hop", result: { ...result, ...(report.geolocation_results?.[ip] || {}) } })));
-  const domains = reputationRows(Object.entries(report.domain_reputation || {}).map(([domain, result]) => ({ title: domain, detail: result.resolved_ip ? `Resolved to ${result.resolved_ip}` : "Sender domain", result })));
+  const domains = Object.entries(report.domain_reputation || {}).map(([domain, intelligence]) => {
+    const infrastructure = intelligence.infrastructure || {};
+    const vt = intelligence.virustotal || {};
+    const rdap = intelligence.rdap || {};
+    const vtTone = reputationCheckTone(vt);
+    const tone = vtTone === "fail" ? "fail" : vtTone === "warn" ? "warn" : vtTone === "pass" ? "pass" : "neutral";
+    const vtStatus = vt.status === "clean" ? "VirusTotal clean" : vt.status === "malicious" ? "Detected by VirusTotal" : vt.status === "suspicious" ? "VirusTotal review" : vt.message || "VirusTotal unavailable";
+    const registration = rdap.registration_date || vt.creation_date;
+    const registrationDate = registration ? formatAnalysisDate(/^\d+$/.test(String(registration)) ? new Date(Number(registration) * 1000).toISOString() : String(registration)) : "";
+    const facts = [infrastructure.resolved_ip && `Resolved IP: ${infrastructure.resolved_ip}`, infrastructure.isp && `ISP: ${infrastructure.isp}`, registrationDate && `Registered: ${registrationDate}`, rdap.registrar || vt.registrar].filter(Boolean).join(" · ");
+    const links = [vt.permalink && `<a href="${escapeHtml(vt.permalink)}" target="_blank" rel="noopener noreferrer">VirusTotal report ↗</a>`, rdap.url && `<a href="${escapeHtml(rdap.url)}" target="_blank" rel="noopener noreferrer">RDAP ↗</a>`, infrastructure.url && `<a href="${escapeHtml(infrastructure.url)}" target="_blank" rel="noopener noreferrer">AbuseIPDB ↗</a>`].filter(Boolean).join("");
+    return `<li class="static-check static-check-${tone}"><strong>${escapeHtml(domain)}</strong><small>${escapeHtml(vtStatus)}${facts ? ` · ${escapeHtml(facts)}` : ""}</small>${links ? `<p>${links}</p>` : ""}</li>`;
+  }).join("") || '<li class="reputation-empty">No sender domains available.</li>';
   tabs.insertAdjacentHTML("beforeend", '<button class="report-tab" data-report-tab="reputation" type="button">Reputation</button>');
-  shell.insertAdjacentHTML("beforeend", `<section class="report-panel" data-report-panel="reputation"><div class="reputation-intro"><p class="page-kicker">EXTERNAL INTELLIGENCE</p><h3>Indicator reputation</h3><p>VirusTotal receives URLs and hashes; AbuseIPDB and ipwho.is receive public IP addresses only.</p></div><div class="reputation-grid"><section class="evidence-card"><h3>Links · VirusTotal</h3><ul>${urls}</ul></section><section class="evidence-card"><h3>Attachments · VirusTotal</h3><ul>${files}</ul></section><section class="evidence-card"><h3>Hops · AbuseIPDB and geolocation</h3><ul>${hops}</ul></section><section class="evidence-card"><h3>Sender domains · AbuseIPDB</h3><ul>${domains}</ul></section></div></section>`);
+  shell.insertAdjacentHTML("beforeend", `<section class="report-panel" data-report-panel="reputation"><div class="reputation-intro"><p class="page-kicker">EXTERNAL INTELLIGENCE</p><h3>Indicator reputation</h3><p>VirusTotal receives URLs, hashes and sender domains; AbuseIPDB and ipwho.is receive public IP addresses only. RDAP receives sender domains only.</p></div><div class="reputation-grid"><section class="evidence-card"><h3>Links · VirusTotal</h3><ul>${urls}</ul></section><section class="evidence-card"><h3>Attachments · VirusTotal</h3><ul>${files}</ul></section><section class="evidence-card"><h3>Hops · AbuseIPDB and geolocation</h3><ul>${hops}</ul></section><section class="evidence-card"><h3>Sender domains · VirusTotal, RDAP and infrastructure</h3><ul>${domains}</ul></section></div></section>`);
 }
 
 type GlobeHop = { lat: number; lon: number; ip: string; fromHost: string; byHost: string; city: string; country: string; isp: string; score?: number; reports?: number; role: "sender" | "injection" | "relay" | "recipient" };
@@ -686,8 +836,11 @@ function renderEmailGlobe(report: AnalysisReport): void {
 function integrateReputation(report: AnalysisReport): void {
   const panel = (name: string) => document.querySelector<HTMLElement>(`[data-report-panel="${name}"]`);
   const sender = panel("sender");
-  const domains = reputationRows(Object.entries(report.domain_reputation || {}).map(([domain, result]) => ({ title: `From (${domain})`, detail: result.resolved_ip ? `Resolved IP ${result.resolved_ip}` : "Domain reputation", result })));
-  sender?.insertAdjacentHTML("beforeend", `<section class="evidence-card inline-reputation"><h3>Domain reputation</h3><ul>${domains}</ul></section>`);
+  const domains = reputationRows(Object.entries(report.domain_reputation || {}).map(([domain, intelligence]) => {
+    const result = intelligence.infrastructure;
+    return { title: `From (${domain})`, detail: result?.resolved_ip ? `Resolved IP ${result.resolved_ip}` : "Resolved-IP infrastructure reputation", result, copyValue: domain };
+  }));
+  sender?.insertAdjacentHTML("beforeend", `<section class="evidence-card inline-reputation"><h3>Sender infrastructure reputation</h3><ul>${domains}</ul></section>`);
   const auth = panel("auth");
   const hops = orderedReceivedHops(report.received_hops).map((hop, index) => {
     const ips = hop.all_ips || (hop.sender_ip ? [hop.sender_ip] : []);
@@ -697,7 +850,8 @@ function integrateReputation(report: AnalysisReport): void {
       const reputation = report.hop_reputation?.[ip] || {};
       const geo = report.geolocation_results?.[ip] || {};
       const location = [geo.city, geo.region, geo.country].filter(Boolean).join(", ") || geo.message || "Geolocation unavailable";
-      return `<div class="hop-ip-detail"><strong>IP ${escapeHtml(ip)}</strong><small>${escapeHtml(location)} · ISP ${escapeHtml(geo.isp || "—")}</small><b>AbuseIPDB · ${escapeHtml(String(reputation.abuseConfidenceScore ?? "—"))}/100 · ${escapeHtml(String(reputation.totalReports ?? 0))} report</b></div>`;
+      const copyAction = reputationCheckTone(reputation) === "fail" ? `<button class="copy-evidence" type="button" data-copy-ioc="${escapeHtml(ip)}">Copy IP</button>` : "";
+      return `<div class="hop-ip-detail"><strong>IP ${escapeHtml(ip)}</strong><small>${escapeHtml(location)} · ISP ${escapeHtml(geo.isp || "—")}</small><b>AbuseIPDB · ${escapeHtml(String(reputation.abuseConfidenceScore ?? "—"))}/100 · ${escapeHtml(String(reputation.totalReports ?? 0))} report</b>${copyAction}</div>`;
     }).join("") || `<p class="hop-empty">No public IP is available for this hop.</p>`;
     return `<details class="hop-card hop-card-${tone}"><summary><span><strong>Hop ${index + 1} · ${escapeHtml(hop.from_host || "unknown source")}</strong><small>${escapeHtml(hop.by_host || "unknown destination")} · ${escapeHtml(hop.received_at || "date unavailable")}</small></span><span class="hop-disclosure" aria-hidden="true"></span></summary><div class="hop-details">${details}${hop.raw ? `<pre>${escapeHtml(hop.raw)}</pre>` : ""}</div></details>`;
   }).join("") || "<p>No hops available.</p>";
@@ -709,30 +863,29 @@ function integrateReputation(report: AnalysisReport): void {
 
 function bindReportInteractions(user: GoogleUser, report: AnalysisReport): void {
   integrateReputation(report);
-  document.querySelectorAll<HTMLElement>(".ioc-grid code").forEach((item) => {
-    const values = item.innerText.split("\n").map((value) => value.trim()).filter((value) => value && value !== "—");
-    item.innerHTML = values.length ? values.map((value) => `<span class="ioc-item"><b>${escapeHtml(value)}</b><button type="button" data-copy-ioc="${escapeHtml(value)}">Copy</button></span>`).join("") : "—";
-  });
   document.querySelectorAll<HTMLButtonElement>("[data-copy-ioc]").forEach((button) => button.addEventListener("click", async () => {
-    await navigator.clipboard?.writeText(button.dataset.copyIoc || "");
-    trackIndicatorCopy(user);
-    const previous = button.textContent; button.textContent = "Copied ✓";
-    window.setTimeout(() => { button.textContent = previous; }, 900);
+    const copied = await copyIndicator(button.dataset.copyIoc || "");
+    if (copied) trackIndicatorCopy(user);
+    const previous = button.textContent;
+    button.textContent = copied ? "Copied ✓" : "Copy failed";
+    window.setTimeout(() => { button.textContent = previous; }, 1200);
   }));
   document.querySelectorAll<HTMLButtonElement>("[data-copy-address]").forEach((button) => button.addEventListener("click", async () => {
-    await navigator.clipboard?.writeText(button.dataset.copyAddress || "");
-    trackIndicatorCopy(user);
-    const previous = button.textContent; button.textContent = "Copied ✓";
-    window.setTimeout(() => { button.textContent = previous; }, 900);
+    const copied = await copyIndicator(button.dataset.copyAddress || "");
+    if (copied) trackIndicatorCopy(user);
+    const previous = button.textContent;
+    button.textContent = copied ? "Copied ✓" : "Copy failed";
+    window.setTimeout(() => { button.textContent = previous; }, 1200);
   }));
   document.querySelectorAll<HTMLAnchorElement>("[data-vt-manual-url]").forEach((link) => link.addEventListener("click", () => {
     const url = link.dataset.vtManualUrl || "";
     if (!url) return;
-    void navigator.clipboard?.writeText(url);
-    trackIndicatorCopy(user);
     const previous = link.textContent;
-    link.textContent = "URL copied · opening VirusTotal ↗";
-    window.setTimeout(() => { link.textContent = previous; }, 1400);
+    void copyIndicator(url).then((copied) => {
+      if (copied) trackIndicatorCopy(user);
+      link.textContent = copied ? "URL copied · opening VirusTotal ↗" : "Could not copy URL · opening VirusTotal ↗";
+      window.setTimeout(() => { link.textContent = previous; }, 1400);
+    });
   }));
   document.querySelectorAll<HTMLButtonElement>("[data-report-tab]").forEach((button) => button.addEventListener("click", () => {
     const tab = button.dataset.reportTab;
@@ -750,12 +903,24 @@ function bindReportInteractions(user: GoogleUser, report: AnalysisReport): void 
 function renderAiPanels(container: HTMLElement, model = DEFAULT_OLLAMA_MODEL): void {
   const contentPanel = container.querySelector<HTMLElement>('[data-report-panel="content"]');
   if (!contentPanel) return;
-  contentPanel.insertAdjacentHTML("afterbegin", `<section class="ai-panels"><article data-ai-panel="bert"><p class="page-kicker">DISTILBERT</p><h3>Content analysis</h3><p>Preparing the model…</p></article><article data-ai-panel="phi4"><p class="page-kicker">OLLAMA · ${escapeHtml(model)}</p><h3>Semantic analysis</h3><p>Preparing the model…</p></article></section>`);
+  contentPanel.insertAdjacentHTML("afterbegin", `<section class="ai-panels"><article data-ai-panel="identity"><p class="page-kicker">LOCAL NER</p><h3>Identity intelligence</h3><p>Extracting claimed organisations…</p></article><article data-ai-panel="phi4"><p class="page-kicker">OLLAMA · ${escapeHtml(model)}</p><h3>Semantic analysis</h3><p>Preparing the model…</p></article></section>`);
 }
 
-function setAiPanel(container: HTMLElement, engine: "bert" | "phi4", title: string, message: string, state: "loading" | "ok" | "error", model?: string): void {
+function setAiPanel(container: HTMLElement, engine: "identity" | "phi4", title: string, message: string, state: "loading" | "ok" | "error", model?: string): void {
   const panel = container.querySelector<HTMLElement>(`[data-ai-panel="${engine}"]`);
-  if (panel) panel.innerHTML = `<p class="page-kicker">${engine === "bert" ? "DISTILBERT" : `OLLAMA · ${escapeHtml(model || DEFAULT_OLLAMA_MODEL)}`}</p><h3>${escapeHtml(title)}</h3><p class="ai-${state}">${escapeHtml(message)}</p>`;
+  if (panel) panel.innerHTML = `<p class="page-kicker">${engine === "identity" ? "LOCAL NER" : `OLLAMA · ${escapeHtml(model || DEFAULT_OLLAMA_MODEL)}`}</p><h3>${escapeHtml(title)}</h3><p class="ai-${state}">${escapeHtml(message)}</p>`;
+}
+
+function setIdentityPanel(container: HTMLElement, analysis: NonNullable<AnalysisReport["identity_analysis"]>): void {
+  const panel = container.querySelector<HTMLElement>('[data-ai-panel="identity"]');
+  if (!panel) return;
+  const entities = analysis.entities || [];
+  const chain = entities.length
+    ? `<ul class="identity-chain">${entities.slice(0, 4).map((entity) => `<li><strong>${escapeHtml(entity.name || "Organisation")}</strong><span>${escapeHtml((entity.occurrences || []).map((item) => item.source || "email").filter((value, index, all) => all.indexOf(value) === index).join(" · ") || "email text")}</span></li>`).join("")}</ul>`
+    : "<p class=\"identity-empty\">No organisation claim was found in visible sender, subject, or body text.</p>";
+  const coherence = (analysis.coherence || []).filter((item) => item.official_domain);
+  const coherenceMarkup = coherence.length ? `<div class="identity-coherence">${coherence.map((item) => `<div class="identity-coherence-item identity-${escapeHtml(item.status || "unverified")}"><div><strong>${escapeHtml(item.brand || "Claimed organisation")}</strong><span>Official: ${escapeHtml(item.official_domain || "unresolved")}</span></div>${item.mismatches?.length ? `<p>Mismatch: ${escapeHtml(item.mismatches.map((mismatch) => `${mismatch.source}: ${mismatch.domain}`).join(" · "))}</p>` : `<p>Available email domains align with the official domain.</p>`}</div>`).join("")}</div>` : "<small class=\"semantic-meta\">Official-domain lookup is unavailable or no brand could be resolved.</small>";
+  panel.innerHTML = `<p class="page-kicker">LOCAL NER</p><h3>Identity intelligence</h3><p class="identity-summary">${escapeHtml(analysis.message || "Organisation extraction complete.")}</p>${chain}${coherenceMarkup}`;
 }
 
 function semanticLabel(value: string | undefined): string {
@@ -781,23 +946,17 @@ function setPhiSemanticPanel(container: HTMLElement, analysis: NonNullable<NonNu
   panel.innerHTML = `<p class="page-kicker">OLLAMA · ${escapeHtml(model)}</p><div class="semantic-verdict semantic-${tone}"><span>${escapeHtml(semanticLabel(verdict))}</span></div><h3>Semantic assessment</h3><p class="semantic-summary">${escapeHtml(analysis.content_summary || analysis.explanation || "Semantic analysis complete.")}</p><dl class="semantic-facts"><div><dt>Detected action</dt><dd>${escapeHtml(semanticLabel(analysis.requested_action))}</dd></div><div><dt>Channel</dt><dd>${escapeHtml(semanticLabel(analysis.action_channel))}</dd></div><div><dt>Content risk</dt><dd>${escapeHtml(semanticLabel(analysis.content_risk))}</dd></div><div><dt>Technical risk</dt><dd>${escapeHtml(semanticLabel(analysis.technical_risk))}</dd></div></dl>${analysis.intent_evidence ? `<blockquote>“${escapeHtml(analysis.intent_evidence)}”</blockquote>` : ""}${signals.length || details.length ? `<details class="semantic-details"><summary>Reasoning and evidence <span>${signals.length + details.length}</span></summary>${signals.length ? `<p><b>Signals:</b> ${escapeHtml(signals.map(semanticLabel).join(" · "))}</p>` : ""}${analysis.signal_evidence ? `<p><b>Context:</b> ${escapeHtml(analysis.signal_evidence)}</p>` : ""}${details.length ? `<ul>${details.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>` : ""}</details>` : ""}<small class="semantic-meta">${durationMs ? `${(durationMs / 1000).toFixed(1)} s · ` : ""}${corroboration.supports_decision ? "Independent evidence is available" : "Assessment should be confirmed with technical evidence"}</small>`;
 }
 
-async function runAiAnalysis(user: GoogleUser, report: AnalysisReport, recordId: string | null, container: HTMLElement, startedAt: number, onSettled?: (engine: "bert" | "phi4") => void): Promise<void> {
+async function runAiAnalysis(user: GoogleUser, report: AnalysisReport, recordId: string | null, container: HTMLElement, startedAt: number, onSettled?: (engine: "identity" | "phi4") => void): Promise<void> {
   const model = ollamaModel(user);
   renderAiPanels(container, model);
-  await invoke<NonNullable<AnalysisReport["bert_analysis"]>>("analyze_bert", { report }).then((value) => {
-    report.bert_analysis = value;
-    // Same fields used by Streamlit's apply_email_risk_policy: Ollama can now
-    // corroborate or challenge BERT instead of receiving an incomplete report.
-    report.bert_ai_result = value.classification;
-    report.bert_phishing_probability = value.probability_malicious;
-    report.bert_legitimate_probability = value.probability_legitimate;
-    const probability = value.probability_malicious?.toFixed(1) ?? "—";
-    setAiPanel(container, "bert", `Content: ${value.classification || "unclassified"}`, `${probability}% phishing probability · ${value.chunk_count || 0} analysed blocks`, "ok");
-    onSettled?.("bert");
+  await invoke<NonNullable<AnalysisReport["identity_analysis"]>>("analyze_identity", { report }).then((value) => {
+    report.identity_analysis = value;
+    setIdentityPanel(container, value);
+    onSettled?.("identity");
   }).catch((error) => {
-    report.bert_analysis = { status: "error", message: String(error) };
-    setAiPanel(container, "bert", "Analysis unavailable", String(error), "error");
-    onSettled?.("bert");
+    report.identity_analysis = { status: "error", message: String(error) };
+    setAiPanel(container, "identity", "Analysis unavailable", String(error), "error");
+    onSettled?.("identity");
   });
   const phiStartedAt = performance.now();
   await invoke<NonNullable<AnalysisReport["phi4_analysis"]>>("analyze_phi4", { report, model }).then((value) => {
@@ -811,19 +970,19 @@ async function runAiAnalysis(user: GoogleUser, report: AnalysisReport, recordId:
     onSettled?.("phi4");
   });
   if (recordId) updateStoredAnalysis(user, recordId, {
-    bert_analysis: report.bert_analysis,
-    bert_ai_result: report.bert_ai_result,
-    bert_phishing_probability: report.bert_phishing_probability,
-    bert_legitimate_probability: report.bert_legitimate_probability,
+    identity_analysis: report.identity_analysis,
     phi4_analysis: report.phi4_analysis,
   }, Math.round(performance.now() - startedAt));
 }
 
 function restoreAiAnalysis(report: AnalysisReport, container: HTMLElement): void {
-  if (!report.bert_analysis && !report.phi4_analysis) return;
+  if (!report.identity_analysis && !report.phi4_analysis) return;
   renderAiPanels(container);
-  const bert = report.bert_analysis;
-  if (bert) setAiPanel(container, "bert", bert.status === "ok" ? `Content: ${bert.classification || "unclassified"}` : "Analysis unavailable", bert.status === "ok" ? `${bert.probability_malicious?.toFixed(1) ?? "—"}% phishing probability · ${bert.chunk_count || 0} analysed blocks` : (bert.message || "BERT error"), bert.status === "ok" ? "ok" : "error");
+  const identity = report.identity_analysis;
+  if (identity) {
+    if (identity.status === "ok") setIdentityPanel(container, identity);
+    else setAiPanel(container, "identity", "Analysis unavailable", identity.message || "Identity analysis error", "error");
+  }
   const phi4 = report.phi4_analysis;
   if (phi4) {
     if (phi4.status === "ok" && phi4.analysis) setPhiSemanticPanel(container, phi4.analysis, phi4.model || DEFAULT_OLLAMA_MODEL, phi4.duration_ms);
@@ -1003,14 +1162,21 @@ function renderDashboard(user: GoogleUser, section: Section = "dashboard"): void
   });
   if (ollamaSelect) void loadOllamaModels();
   const bertProvenance = document.querySelector<HTMLElement>("#bert-model-provenance");
-  if (bertProvenance) void invoke<HuggingFaceModelInfo>("huggingface_bert_model_info").then((info) => {
+  if (bertProvenance) {
+    const card = bertProvenance.closest<HTMLElement>(".model-provenance-card");
+    const kicker = card?.querySelector<HTMLElement>(".page-kicker");
+    const title = card?.querySelector<HTMLElement>("h2");
+    if (kicker) kicker.textContent = "IDENTITY INTELLIGENCE";
+    if (title) title.textContent = "Organisation extraction model";
+    void invoke<HuggingFaceModelInfo>("huggingface_identity_model_info").then((info) => {
     const runtimeRevision = info.runtime_revision.slice(0, 12);
     const latestCommit = info.latest_commit?.slice(0, 12) || "unavailable";
     const repositoryUrl = `https://huggingface.co/${info.repository.split("/").map(encodeURIComponent).join("/")}`;
     bertProvenance.innerHTML = `<a href="${repositoryUrl}" target="_blank" rel="noopener noreferrer">${escapeHtml(info.repository)} ↗</a><span>Runtime commit ${escapeHtml(runtimeRevision)}</span><small>Latest repository update: ${escapeHtml(formatModelUpdatedAt(info.updated_at))} · commit ${escapeHtml(latestCommit)}</small>`;
-  }).catch((error) => {
-    bertProvenance.textContent = `Model provenance unavailable: ${String(error)}`;
-  });
+    }).catch((error) => {
+      bertProvenance.textContent = `Model provenance unavailable: ${String(error)}`;
+    });
+  }
   const dropZone = document.querySelector<HTMLButtonElement>("#eml-drop"); const input = document.querySelector<HTMLInputElement>("#eml-input"); const uploadStatus = document.querySelector<HTMLParagraphElement>("#upload-status");
   const intake = document.querySelector<HTMLElement>("#eml-intake"); const changeEmail = document.querySelector<HTMLButtonElement>("#change-eml");
   let analysisRun = 0;
@@ -1034,9 +1200,9 @@ function renderDashboard(user: GoogleUser, section: Section = "dashboard"): void
       if (run !== analysisRun) return;
       if (result) markLoadingCheck(result, 0);
       const recordId = saveAnalysis(user, report);
-      uploadStatus.textContent = "Content analysis with BERT and AI in progress…";
+      uploadStatus.textContent = "Identity and semantic analysis in progress…";
       await runAiAnalysis(user, report, recordId, document.createElement("div"), startedAt, (engine) => {
-        if (run === analysisRun && result) markLoadingCheck(result, engine === "bert" ? 1 : 2);
+        if (run === analysisRun && result) markLoadingCheck(result, engine === "identity" ? 1 : 2);
       });
       if (run !== analysisRun) return;
       const completedResult = document.querySelector<HTMLDivElement>("#analysis-result");

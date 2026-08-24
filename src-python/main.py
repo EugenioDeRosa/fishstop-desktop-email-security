@@ -19,7 +19,9 @@ from fishstop_engine.analyzer import EmlSOCAnalyzer
 from fishstop_engine.parser import _sanitize_eml_bytes
 from fishstop_engine.reputation import enrich as enrich_reputation
 
-_BERT_RUNTIME: dict[str, Any] | None = None
+_IDENTITY_RUNTIME: dict[str, Any] | None = None
+IDENTITY_MODEL_ID = "Davlan/distilbert-base-multilingual-cased-ner-hrl"
+IDENTITY_MODEL_REVISION = "d421f57d5b1d36b375408588669e9340f9b11a89"
 
 
 def _json_safe(value: Any) -> Any:
@@ -48,7 +50,12 @@ def analyze(path_value: str) -> dict[str, Any]:
         normalized_path = Path(normalized_file.name)
         normalized_file.write(_sanitize_eml_bytes(raw))
     try:
-        report = EmlSOCAnalyzer().analyze(str(normalized_path))
+        # MIME parsing uses a defensively normalised copy. DKIM verification,
+        # however, must see the exact original bytes because its signature
+        # covers line endings and body canonicalisation.
+        report = EmlSOCAnalyzer().analyze(
+            str(normalized_path), verification_raw_email=raw,
+        )
     finally:
         normalized_path.unlink(missing_ok=True)
     report["eml_sha256"] = hashlib.sha256(raw).hexdigest()
@@ -60,65 +67,34 @@ def analyze(path_value: str) -> dict[str, Any]:
     return _json_safe(report)
 
 
-def analyze_bert(report_path: str) -> dict[str, Any]:
-    """Run the calibrated FishStop DistilBERT content classifier."""
-    global _BERT_RUNTIME
+def analyze_identity(report_path: str) -> dict[str, Any]:
+    """Run local multilingual organisation extraction for impersonation evidence."""
+    global _IDENTITY_RUNTIME
     try:
-        import torch
-        from huggingface_hub import hf_hub_download
-        from transformers import AutoModelForSequenceClassification, AutoTokenizer
-        from fishstop_engine.bert_calibration import (
-            DEFAULT_BAND, DEFAULT_POSITIVE_LABEL_ID, DEFAULT_TEMPERATURE,
-            DEFAULT_THRESHOLD, calibrated_probabilities, classify,
-        )
-        from fishstop_engine.bert_inference import predict_email_logits
-        from fishstop_engine.bert_input import prepare_bert_input
+        from transformers import AutoModelForTokenClassification, AutoTokenizer, pipeline
+        from fishstop_engine.brand_intelligence import assess_brand_coherence
+        from fishstop_engine.identity_analysis import extract_organisations
     except ImportError as error:
         raise RuntimeError(
-            "BERT requires AI dependencies. Install src-python/requirements.txt."
+            "Identity analysis requires AI dependencies. Install src-python/requirements.txt."
         ) from error
 
     report = json.loads(Path(report_path).read_text(encoding="utf-8"))
-    model_id = "eugenioderodev/fishstop-bert"
-    revision = "b29e3334457d942bb5c05fe8f6639edeccf59692"
-    if _BERT_RUNTIME is None:
-        tokenizer = AutoTokenizer.from_pretrained(model_id, revision=revision)
-        model = AutoModelForSequenceClassification.from_pretrained(model_id, revision=revision)
+    if _IDENTITY_RUNTIME is None:
+        tokenizer = AutoTokenizer.from_pretrained(IDENTITY_MODEL_ID, revision=IDENTITY_MODEL_REVISION)
+        model = AutoModelForTokenClassification.from_pretrained(IDENTITY_MODEL_ID, revision=IDENTITY_MODEL_REVISION)
         model.eval()
-        calibration = {
-            "temperature": DEFAULT_TEMPERATURE, "threshold": DEFAULT_THRESHOLD,
-            "band": DEFAULT_BAND, "positive_label_id": DEFAULT_POSITIVE_LABEL_ID,
-            "source": "default",
+        _IDENTITY_RUNTIME = {
+            "pipeline": pipeline(
+                "token-classification", model=model, tokenizer=tokenizer,
+                aggregation_strategy="simple", device=-1,
+            ),
         }
-        try:
-            calibration_path = hf_hub_download(repo_id=model_id, filename="calibration.json", revision=revision)
-            calibration.update(json.loads(Path(calibration_path).read_text(encoding="utf-8")))
-            calibration["source"] = "huggingface"
-        except Exception:
-            pass
-        _BERT_RUNTIME = {"tokenizer": tokenizer, "model": model, "calibration": calibration}
-    tokenizer = _BERT_RUNTIME["tokenizer"]
-    model = _BERT_RUNTIME["model"]
-    calibration = _BERT_RUNTIME["calibration"]
-    text = prepare_bert_input(
-        str(report.get("subject") or ""),
-        str(report.get("body_for_ai") or report.get("body_ai") or report.get("body_clean") or ""),
-    )
-    if not text:
-        return {"status": "skipped", "message": "No usable text is available for BERT analysis."}
-    positive_label_id = int(calibration.get("positive_label_id", 1))
-    logits, chunk_count = predict_email_logits(model, tokenizer, text, positive_label_id=positive_label_id)
-    probabilities = calibrated_probabilities(logits, float(calibration["temperature"])).flatten().tolist()
-    negative_label_id = 1 - positive_label_id
-    return {
-        "status": "ok",
-        "classification": classify(probabilities[positive_label_id], float(calibration["threshold"]), float(calibration["band"])),
-        "probability_legitimate": probabilities[negative_label_id] * 100,
-        "probability_malicious": probabilities[positive_label_id] * 100,
-        "chunk_count": chunk_count,
-        "model": f"{model_id}@{revision}",
-        "calibration": calibration,
-    }
+    result = extract_organisations(report, _IDENTITY_RUNTIME["pipeline"])
+    if result.get("status") == "ok":
+        result["coherence"] = assess_brand_coherence(report, result.get("entities") or [])
+    result["model"] = f"{IDENTITY_MODEL_ID}@{IDENTITY_MODEL_REVISION}"
+    return result
 
 
 def analyze_phi4(report_path: str) -> dict[str, Any]:
@@ -140,15 +116,15 @@ def analyze_phi4(report_path: str) -> dict[str, Any]:
     })
 
 
-def bert_worker() -> None:
-    """Keep the BERT weights in memory and handle JSON-line requests."""
+def identity_worker() -> None:
+    """Keep the NER weights in memory and handle JSON-line requests."""
     for raw_line in sys.stdin:
         report_path: Path | None = None
         try:
             with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", suffix=".json", delete=False) as handle:
                 handle.write(raw_line)
                 report_path = Path(handle.name)
-            result = analyze_bert(str(report_path))
+            result = analyze_identity(str(report_path))
             print(json.dumps({"ok": True, "result": result}, ensure_ascii=False), flush=True)
         except Exception as error:
             print(json.dumps({"ok": False, "error": str(error)}, ensure_ascii=False), flush=True)
@@ -158,19 +134,19 @@ def bert_worker() -> None:
 
 
 def main() -> None:
-    if len(sys.argv) == 2 and sys.argv[1] == "bert-worker":
-        bert_worker()
+    if len(sys.argv) == 2 and sys.argv[1] == "identity-worker":
+        identity_worker()
         return
     if len(sys.argv) == 2:
         command, value = "static", sys.argv[1]
     elif len(sys.argv) == 3:
         command, value = sys.argv[1], sys.argv[2]
     else:
-        raise SystemExit("Uso: main.py [static|bert|phi4] <file>")
+        raise SystemExit("Usage: main.py [static|identity|phi4] <file>")
     try:
         result = {
             "static": analyze,
-            "bert": analyze_bert,
+            "identity": analyze_identity,
             "phi4": analyze_phi4,
         }.get(command)
         if result is None:

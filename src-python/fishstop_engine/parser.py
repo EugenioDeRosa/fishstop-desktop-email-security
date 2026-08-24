@@ -88,7 +88,7 @@ class EmailParserPipeline:
           - omettono la riga vuota di separazione header/body
         """
         if not os.path.exists(eml_path):
-            raise FileNotFoundError(f"File .eml non trovato in: {eml_path}")
+            raise FileNotFoundError(f".eml file not found at: {eml_path}")
 
         with open(eml_path, 'rb') as f:
             raw_bytes = f.read()
@@ -158,7 +158,7 @@ class EmailParserPipeline:
         restituisce un DataFrame di Pandas pronto per l'addestramento.
         """
         if pd is None:
-            raise RuntimeError("Il parsing batch richiede pandas; l'analisi di un singolo EML non lo richiede.")
+            raise RuntimeError("Batch parsing requires pandas; single-EML analysis does not.")
 
         parsed_emails = []
         
@@ -172,7 +172,7 @@ class EmailParserPipeline:
                     data = self.parse_single_eml(full_path)
                     parsed_emails.append(data)
                 except Exception as e:
-                    print(f"[-] Error nel parsing del file {filename}: {e}")
+                    print(f"[-] Error parsing file {filename}: {e}")
 
         return pd.DataFrame(parsed_emails)
 
@@ -183,4 +183,4 @@ if __name__ == "__main__":
     for test_file in ['test.eml', 'test2.eml', 'test3_good.eml']:
         if os.path.exists(test_file):
             res = parser.parse_single_eml(test_file)
-            print(f"[+] Parsing di {test_file} completato con successo! Oggetto: {res['subject']}")
+            print(f"[+] Parsed {test_file} successfully. Subject: {res['subject']}")

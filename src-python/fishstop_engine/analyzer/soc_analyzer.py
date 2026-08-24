@@ -13,6 +13,7 @@ Coordina tutti i sotto-moduli dell'analyzer:
 """
 
 import email
+import html as html_lib
 import ipaddress
 import re
 from email import policy
@@ -200,14 +201,14 @@ def _decode_text_part(part) -> str:
                 candidates.append(candidate)
         for candidate in candidates:
             try:
-                return recover_mislabelled_utf7_html(payload.decode(candidate, errors="strict"))
+                return html_lib.unescape(recover_mislabelled_utf7_html(payload.decode(candidate, errors="strict")))
             except (LookupError, UnicodeDecodeError):
                 continue
-        return recover_mislabelled_utf7_html(payload.decode("utf-8", errors="replace"))
+        return html_lib.unescape(recover_mislabelled_utf7_html(payload.decode("utf-8", errors="replace")))
 
     raw_payload = part.get_payload(decode=False)
     if isinstance(raw_payload, str):
-        return recover_mislabelled_utf7_html(raw_payload)
+        return html_lib.unescape(recover_mislabelled_utf7_html(raw_payload))
     return ""
 
 
@@ -218,6 +219,35 @@ def _looks_like_html(value: str) -> bool:
         r"(?is)<\s*(?:!doctype\s+html|html|body|table|div|span|p|br|a|img|style|head)\b",
         value,
     ))
+
+
+_RAW_URL_TOKEN_RE = re.compile(r"https?://[^\s<>()]+", re.IGNORECASE)
+
+
+def _prefer_html_over_link_heavy_plain(plain: str, html: str) -> bool:
+    """Prefer visible HTML text when the plain alternative is tracking-URL noise.
+
+    Marketing systems often generate a valid ``text/plain`` alternative by
+    inserting a full redirect URL after every button.  The HTML alternative
+    retains the same visible message without exposing those opaque tracking
+    parameters to the AI models.  This is a content-quality decision, not a
+    sender/domain allowlist: HTML is selected only when it contains meaningful
+    visible text and raw URLs dominate the plain alternative.
+    """
+    if len(plain) < 1_200 or len(html) < 120:
+        return False
+    urls = _RAW_URL_TOKEN_RE.findall(plain)
+    if len(urls) < 6:
+        return False
+    url_characters = sum(len(url) for url in urls)
+    visible_plain = _RAW_URL_TOKEN_RE.sub(" ", plain)
+    visible_words = re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ0-9]{2,}", visible_plain)
+    html_words = re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ0-9]{2,}", html)
+    return (
+        url_characters >= len(plain) * 0.45
+        and len(html_words) >= 20
+        and len(html) >= min(240, len(" ".join(visible_words)) * 0.45)
+    )
 
 
 def _strip_plaintext_noise_blocks(value: str) -> tuple[str, int, int]:
@@ -502,7 +532,8 @@ class EmlSOCAnalyzer:
         combined_html = "\n".join(html_parts)
         html_clean = strip_html(combined_html) if combined_html else ""
         plain_clean = re.sub(r"\n{3,}", "\n\n", "\n".join(body_parts)).strip() if body_parts else ""
-        body_clean = plain_clean or html_clean
+        prefer_html_for_ai = _prefer_html_over_link_heavy_plain(plain_clean, html_clean)
+        body_clean = html_clean if prefer_html_for_ai else (plain_clean or html_clean)
 
         report["body"] = body_clean
         report["body_html"] = combined_html.strip() if html_parts else None
@@ -510,8 +541,14 @@ class EmlSOCAnalyzer:
         report["body_html_clean"] = html_clean
         report["body_clean"] = body_clean
 
-        report["body_source"] = "text/plain" if body_parts else ("text/html" if html_parts else "empty")
+        report["body_source"] = (
+            "text/html (preferred over link-heavy plain text)"
+            if prefer_html_for_ai
+            else "text/plain" if body_parts else ("text/html" if html_parts else "empty")
+        )
         report["html_strip_applied"] = bool(html_parts)
+        report["body_plain_tracking_url_count"] = len(_RAW_URL_TOKEN_RE.findall(plain_clean))
+        report["body_selected_html_for_ai"] = prefer_html_for_ai
         report["body_plain_noise_removed_lines"] = plain_noise_removed_lines
         report["body_plain_noise_removed_chars"] = plain_noise_removed_chars
         report["attachments"] = attachments_info
@@ -564,6 +601,10 @@ class EmlSOCAnalyzer:
                 report[key] = plain_ai_selection.get(key, report.get(key, 0))
         report["body_extracted"] = report.get("body_ai") or bert_source
         report["body_for_ai"] = report["body_extracted"].strip()
+        # Both AI engines must consume the same reply/forward/footer-cleaned
+        # content. Keeping the earlier intent source here would reintroduce
+        # legal notices and contact cards for Ollama only.
+        report["body_for_intent"] = report["body_for_ai"]
         report["ai_analysis_supported"] = (
             len(report["body_for_ai"]) <= MAX_AI_BODY_CHARS
         )
@@ -659,8 +700,12 @@ class EmlSOCAnalyzer:
             spf_status = (spf.get("status") or "unknown").lower()
             if spf_status != "pass":
                 flag("MEDIUM", "SPF", f"SPF {spf_status.upper()} - sender authorization should be reviewed")
+        # An EML export can legitimately omit all delivery/authentication
+        # headers.  Absence of an SPF result is not equivalent to an SPF
+        # failure, so keep it informational and let the UI show it as
+        # unavailable rather than turning it into a risk signal.
         else:
-            flag("MEDIUM", "SPF", "No SPF result found in headers")
+            flag("INFO", "SPF", "No SPF result is available in this EML export")
 
         # DKIM: missing/none is an absence of evidence, not a strong malicious signal.
         dkim = effective.get("DKIM") or report["auth_results"].get("DKIM") or report["arc_auth_results"].get("DKIM")
@@ -668,14 +713,14 @@ class EmlSOCAnalyzer:
         if dkim_status and dkim_status != "pass":
             flag("MEDIUM", "DKIM", f"DKIM {dkim_status.upper()} - signature validation should be reviewed")
         elif not report["dkim_signature_present"]:
-            flag("MEDIUM", "DKIM", "DKIM signature missing from headers")
+            flag("INFO", "DKIM", "No DKIM signature is available in this EML export")
 
         # DMARC
         dmarc = effective.get("DMARC") or report["auth_results"].get("DMARC") or report["arc_auth_results"].get("DMARC")
         if dmarc and dmarc["status"] not in ("pass", "bestguesspass"):
             flag("MEDIUM", "DMARC", f"DMARC {dmarc['status'].upper()}")
         elif not dmarc:
-            flag("MEDIUM", "DMARC", "No DMARC policy detected in headers")
+            flag("INFO", "DMARC", "No DMARC result is available in this EML export")
 
         # Reply-To mismatch
         if report["reply_to_mismatch"]:

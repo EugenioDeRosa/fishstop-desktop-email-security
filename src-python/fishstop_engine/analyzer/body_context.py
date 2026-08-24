@@ -47,9 +47,16 @@ _OUTLOOK_REPLY_HEADER_RE = re.compile(
     re.IGNORECASE,
 )
 
-_THREAD_SEPARATOR_RE = re.compile(r"^\s*[_=*-]{10,}\s*$")
+# The label between dash runs is localized by mail clients (for example
+# ``---------- Original message ----------``), so recognition below relies on
+# the structural header block that follows it rather than on its wording.
+_THREAD_SEPARATOR_RE = re.compile(r"^\s*[_=*-]{8,}(?:\s*[^\r\n]*?\s*[_=*-]{8,})?\s*$")
 _THREAD_SEPARATOR_HEADER_RE = re.compile(
     r"^\s*(?:from|da|de|sent|inviato|date|data|to|a|cc|bcc|subject|oggetto)\s*:",
+    re.IGNORECASE,
+)
+_GENERIC_HEADER_LINE_RE = re.compile(
+    r"^\s*[\wÀ-ÖØ-öø-ÿ][\wÀ-ÖØ-öø-ÿ ._-]{0,32}\s*:\s*\S",
     re.IGNORECASE,
 )
 
@@ -68,6 +75,10 @@ _AI_TAIL_BOILERPLATE_RE = re.compile(
     r"please consider the impact on the environment before printing|"
     r"this e-?mail may contain|"
     r"this message may contain|"
+    r"this e-?mail\s*\(including any attachment\)\s+is a corporate message|"
+    r"this e-?mail is intended solely|"
+    r"all (?:the )?information and attachments contained in (?:this )?(?:e-?mail|message)|"
+    r"the contents of this (?:e-?mail|message) (?:and any attachments )?are confidential|"
     r"this e-?mail was sent to you by|"
     r"legal disclosure\b|"
     r"privacy statement\b|"
@@ -75,8 +86,17 @@ _AI_TAIL_BOILERPLATE_RE = re.compile(
     r"to opt out of future communications|"
     r"if you'd like me to stop sending you emails|"
     r"if you would like me to stop sending you emails|"
+    r"this message was sent to .{0,180}(?:unsubscribe|manage your settings)|"
     r"unsubscribe\b|"
     r"informativa privacy\b|"
+    r"prima di stampare\b|"
+    r"questo messaggio è stato inviato da un indirizzo email di sola notifica|"
+    r"il presente messaggio di posta elettronica|"
+    r"il presente messaggio,?\s*(?:inclus[oaie]|con)\b|"
+    r"questa e-?mail(?: e qualsiasi allegato)?|"
+    r"questa email(?: e qualsiasi allegato)?|"
+    r"wiadomość ta przeznaczona jest wyłącznie|"
+    r"niniejsza wiadomość(?: e-?mail)?(?: wraz z załącznikami)?|"
     r"riservatezza\b|"
     r"avvertenza di riservatezza\b|"
     r"nota di riservatezza\b"
@@ -98,9 +118,11 @@ _AI_SIGNATURE_START_RE = re.compile(
     r"regards|"
     r"thanks|"
     r"thank you"
+    r"|grazie"
     r"|good luck"
     r"|sincerely"
     r"|cheers"
+    r"|pozdrawiam"
     r")\s*,?\s*$",
     re.IGNORECASE,
 )
@@ -110,6 +132,41 @@ def _meaningful_line_count(lines: list[str]) -> int:
     return sum(1 for line in lines if line.strip())
 
 
+def _signature_start_before_footer(lines: list[str], footer_index: int) -> int:
+    """Return the start of a contact-card-like block before a legal footer."""
+    for index in range(footer_index - 1, -1, -1):
+        visible = lines[index].strip().strip("*_` ")
+        if _AI_SIGNATURE_START_RE.match(visible) and _meaningful_line_count(lines[:index]) >= 2:
+            return index
+
+    contact_patterns = (
+        re.compile(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}"),
+        re.compile(r"\b(?:tel|phone|fax|mobile|cell)\b", re.IGNORECASE),
+        re.compile(r"\+?\d[\d .()/-]{7,}"),
+        re.compile(r"\b(?:www\.|https?://)", re.IGNORECASE),
+    )
+    window_start = max(0, footer_index - 32)
+    window = lines[window_start:footer_index]
+    contact_lines = [
+        window_start + index
+        for index, line in enumerate(window)
+        if any(pattern.search(line) for pattern in contact_patterns)
+    ]
+    if len(contact_lines) < 2:
+        return footer_index
+
+    # HTML-to-text conversion may insert blank lines between each contact-card
+    # row.  Start at the preceding paragraph, not at the first phone/email row,
+    # so the person's name and title disappear with the signature too.
+    paragraph_breaks = [index for index in range(contact_lines[0] - 1, window_start - 1, -1) if not lines[index].strip()]
+    if paragraph_breaks:
+        return paragraph_breaks[min(3, len(paragraph_breaks) - 1)] + 1
+    # Some HTML alternatives flatten the card into one uninterrupted run. In
+    # that case remove a short lead-in too (name, role and company), while
+    # retaining the preceding operational sentence or call-to-action.
+    return max(window_start, contact_lines[0] - 6)
+
+
 def _trim_ai_tail(lines: list[str]) -> tuple[list[str], int]:
     """Remove signatures, legal footers and unsubscribe blocks from the AI body."""
     end = len(lines)
@@ -117,8 +174,36 @@ def _trim_ai_tail(lines: list[str]) -> tuple[list[str], int]:
         end -= 1
     lines = lines[:end]
 
-    # Search from the end: forwarded threads often contain a sign-off for each
-    # historical turn.  The first one is not the end of the selected context.
+    # A legal notice can be followed by a second, local mail-client signature
+    # (for example when someone forwards the message).  Find it in document
+    # order, rather than only at the physical end of the text.
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        before = lines[:index]
+        visible = stripped.strip("*_` ")
+        if not (_AI_TAIL_BOILERPLATE_RE.match(visible) and _meaningful_line_count(before) >= 1):
+            continue
+        # Consecutive translated legal notices are one footer.  Begin at the
+        # first one, otherwise an English copy would leave its Polish (or
+        # other-language) counterpart in the semantic input.
+        footer_start = index
+        probe = index - 1
+        while probe >= 0:
+            if not lines[probe].strip():
+                probe -= 1
+                continue
+            prior_visible = lines[probe].strip().strip("*_` ")
+            if not _AI_TAIL_BOILERPLATE_RE.match(prior_visible):
+                break
+            footer_start = probe
+            probe -= 1
+        cutoff = _signature_start_before_footer(lines, footer_start)
+        return lines[:cutoff], len(lines) - cutoff
+
+    # With no legal footer, a tail sign-off is still removable. Search from
+    # the end because forwarded threads can contain a sign-off per turn.
     for index in range(len(lines) - 1, -1, -1):
         line = lines[index]
         stripped = line.strip()
@@ -130,16 +215,19 @@ def _trim_ai_tail(lines: list[str]) -> tuple[list[str], int]:
         # presentation markers, so footer links do not become fake calls to
         # action for the AI.
         visible = stripped.strip("*_` ")
-        if _AI_TAIL_BOILERPLATE_RE.match(visible) and _meaningful_line_count(before) >= 1:
-            return before, len(lines) - index
         if _AI_SIGNATURE_START_RE.match(visible) and _meaningful_line_count(before) >= 2:
             return before, len(lines) - index
     return lines, 0
 
 
-def _finalize_body_ai(lines: list[str], removed_quotes: int = 0, removed_headers: int = 0) -> tuple[str, int, int, int]:
+def _finalize_body_ai(
+    lines: list[str],
+    removed_quotes: int = 0,
+    removed_headers: int = 0,
+    removed_tail_before: int = 0,
+) -> tuple[str, int, int, int]:
     selected, removed_tail = _trim_ai_tail(lines)
-    return compact_ai_body(_join_significant(selected)), removed_quotes, removed_headers, removed_tail
+    return compact_ai_body(_join_significant(selected)), removed_quotes, removed_headers, removed_tail_before + removed_tail
 
 
 def _normalize_lines(text: str) -> list[str]:
@@ -204,6 +292,29 @@ def _latest_forwarded_turns(lines: list[str], max_boundaries: int = 3) -> tuple[
     return lines, 0
 
 
+def _remove_interturn_tail_noise(lines: list[str]) -> tuple[list[str], int]:
+    """Drop signature/footer text at the end of each retained forwarded turn."""
+    boundaries = [
+        index
+        for index, line in enumerate(lines)
+        if index and (_REPLY_MARKER_RE.match(line) or _FORWARDED_THREAD_REPLY_RE.match(line))
+    ]
+    if not boundaries:
+        return lines, 0
+
+    output: list[str] = []
+    removed = 0
+    start = 0
+    for boundary in boundaries:
+        segment, count = _trim_ai_tail(lines[start:boundary])
+        output.extend(segment)
+        output.append(lines[boundary])
+        removed += count
+        start = boundary + 1
+    output.extend(lines[start:])
+    return output, removed
+
+
 def _looks_like_outlook_reply_header(lines: list[str], index: int) -> bool:
     if not _OUTLOOK_REPLY_FROM_RE.match(lines[index]):
         return False
@@ -225,12 +336,10 @@ def _looks_like_outlook_reply_header(lines: list[str], index: int) -> bool:
 def _looks_like_thread_separator(lines: list[str], index: int) -> bool:
     if not _THREAD_SEPARATOR_RE.match(lines[index]):
         return False
-    nearby_headers = sum(
-        1
-        for line in lines[index + 1:index + 9]
-        if _THREAD_SEPARATOR_HEADER_RE.match(line.strip())
-    )
-    return nearby_headers >= 2
+    following = [line.strip() for line in lines[index + 1:index + 10] if line.strip()]
+    named_headers = sum(1 for line in following if _THREAD_SEPARATOR_HEADER_RE.match(line))
+    generic_headers = sum(1 for line in following if _GENERIC_HEADER_LINE_RE.match(line))
+    return named_headers >= 2 or generic_headers >= 2
 
 
 def select_body_for_ai(body_clean: str) -> dict:
@@ -256,8 +365,12 @@ def select_body_for_ai(body_clean: str) -> dict:
             selected, removed_headers = _strip_forwarded_headers(lines[index + 1:])
             selected, removed_quotes = _remove_quoted_lines(selected)
             selected, removed_thread = _latest_forwarded_turns(selected)
+            selected, removed_interturn_tail = _remove_interturn_tail_noise(selected)
             body_ai, removed_quotes, removed_headers, removed_tail = _finalize_body_ai(
-                selected, removed_quotes, removed_headers + removed_thread
+                selected,
+                removed_quotes,
+                removed_headers + removed_thread,
+                removed_interturn_tail,
             )
             return {
                 "body_ai": body_ai,

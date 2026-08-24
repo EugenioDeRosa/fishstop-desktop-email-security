@@ -36,11 +36,11 @@ def _json_safe(value: Any) -> Any:
 def analyze(path_value: str) -> dict[str, Any]:
     path = Path(path_value).expanduser().resolve()
     if not path.is_file():
-        raise FileNotFoundError("Il file EML selezionato non esiste più.")
+        raise FileNotFoundError("The selected EML file no longer exists.")
     if path.suffix.lower() != ".eml":
-        raise ValueError("FishStop supporta esclusivamente file .eml.")
+        raise ValueError("FishStop supports .eml files only.")
     if path.stat().st_size > MAX_EML_BYTES:
-        raise EmailAnalysisLimitError("Il file EML supera il limite supportato di 10 MB.")
+        raise EmailAnalysisLimitError("The EML file exceeds the supported 10 MB limit.")
 
     raw = path.read_bytes()
     # Do not write next to the user-selected file: it may be read-only.
@@ -75,7 +75,7 @@ def analyze_bert(report_path: str) -> dict[str, Any]:
         from fishstop_engine.bert_input import prepare_bert_input
     except ImportError as error:
         raise RuntimeError(
-            "BERT richiede le dipendenze AI. Installa src-python/requirements.txt."
+            "BERT requires AI dependencies. Install src-python/requirements.txt."
         ) from error
 
     report = json.loads(Path(report_path).read_text(encoding="utf-8"))
@@ -105,7 +105,7 @@ def analyze_bert(report_path: str) -> dict[str, Any]:
         str(report.get("body_for_ai") or report.get("body_ai") or report.get("body_clean") or ""),
     )
     if not text:
-        return {"status": "skipped", "message": "Nessun testo utile per l'analisi BERT."}
+        return {"status": "skipped", "message": "No usable text is available for BERT analysis."}
     positive_label_id = int(calibration.get("positive_label_id", 1))
     logits, chunk_count = predict_email_logits(model, tokenizer, text, positive_label_id=positive_label_id)
     probabilities = calibrated_probabilities(logits, float(calibration["temperature"])).flatten().tolist()
@@ -130,9 +130,9 @@ def analyze_phi4(report_path: str) -> dict[str, Any]:
     for event in stream_phi4_email_analysis(report):
         last_event = event
         if event.get("status") == "error":
-            raise RuntimeError(str(event.get("message") or "Analisi Phi-4 non riuscita."))
+            raise RuntimeError(str(event.get("message") or "Phi-4 analysis failed."))
     if last_event.get("status") != "ok":
-        raise RuntimeError("Phi-4 non ha restituito un risultato finale.")
+        raise RuntimeError("Phi-4 did not return a final result.")
     return _json_safe({
         "status": "ok", "analysis": last_event.get("analysis"),
         "backend": last_event.get("backend"), "model": last_event.get("model"),

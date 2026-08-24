@@ -23,6 +23,8 @@ const GOOGLE_CLIENT_ID: &str = "676285460838-a927po5i3k4eo5cq7pls04ltjg63p8mf.ap
 const AUTHORIZATION_ENDPOINT: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_ENDPOINT: &str = "https://oauth2.googleapis.com/token";
 const USERINFO_ENDPOINT: &str = "https://openidconnect.googleapis.com/v1/userinfo";
+const BERT_MODEL_ID: &str = "eugenioderodev/fishstop-bert";
+const BERT_MODEL_REVISION: &str = "b29e3334457d942bb5c05fe8f6639edeccf59692";
 
 #[derive(Debug, Deserialize)]
 struct TokenResponse {
@@ -61,14 +63,14 @@ fn launch_browser(url: &str) -> Result<(), String> {
 
     #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     let result: Result<std::process::Child, std::io::Error> =
-        Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "sistema non supportato"));
+        Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "unsupported system"));
 
-    result.map(|_| ()).map_err(|error| format!("Impossibile aprire il browser: {error}"))
+    result.map(|_| ()).map_err(|error| format!("Could not open the browser: {error}"))
 }
 
 fn reply(stream: &mut std::net::TcpStream, title: &str, body: &str) {
     let page = format!(
-        "<!doctype html><html lang=\"it\"><head><meta charset=\"utf-8\"><title>{title}</title><style>body{{font-family:system-ui;background:#f6f9f7;color:#12312f;display:grid;place-items:center;min-height:90vh;margin:0}}main{{max-width:430px;padding:32px;text-align:center;background:white;border-radius:18px;box-shadow:0 12px 40px #0a393020}}h1{{margin-top:0}}</style></head><body><main><h1>{title}</h1><p>{body}</p></main></body></html>"
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>{title}</title><style>body{{font-family:system-ui;background:#f6f9f7;color:#12312f;display:grid;place-items:center;min-height:90vh;margin:0}}main{{max-width:430px;padding:32px;text-align:center;background:white;border-radius:18px;box-shadow:0 12px 40px #0a393020}}h1{{margin-top:0}}</style></head><body><main><h1>{title}</h1><p>{body}</p></main></body></html>"
     );
     let response = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -80,7 +82,7 @@ fn reply(stream: &mut std::net::TcpStream, title: &str, body: &str) {
 fn wait_for_callback(listener: TcpListener, expected_state: &str) -> Result<String, String> {
     listener
         .set_nonblocking(true)
-        .map_err(|error| format!("Impossibile preparare il callback: {error}"))?;
+        .map_err(|error| format!("Could not prepare the callback: {error}"))?;
     let deadline = Instant::now() + Duration::from_secs(120);
 
     while Instant::now() < deadline {
@@ -89,49 +91,49 @@ fn wait_for_callback(listener: TcpListener, expected_state: &str) -> Result<Stri
                 let mut buffer = [0_u8; 8192];
                 let read = stream
                     .read(&mut buffer)
-                    .map_err(|error| format!("Impossibile leggere il callback: {error}"))?;
+                    .map_err(|error| format!("Could not read the callback: {error}"))?;
                 let request = String::from_utf8_lossy(&buffer[..read]);
                 let target = request
                     .lines()
                     .next()
                     .and_then(|line| line.split_whitespace().nth(1))
-                    .ok_or("Callback Google non valido")?;
+                    .ok_or("Invalid Google callback")?;
                 let callback = Url::parse(&format!("http://127.0.0.1{target}"))
-                    .map_err(|_| "Callback Google non valido".to_string())?;
+                    .map_err(|_| "Invalid Google callback".to_string())?;
                 let parameters: std::collections::HashMap<_, _> =
                     callback.query_pairs().into_owned().collect();
 
                 if parameters.get("state").map(String::as_str) != Some(expected_state) {
-                    reply(&mut stream, "Accesso annullato", "La verifica di sicurezza non è riuscita. Torna a FishStop e riprova.");
-                    return Err("Verifica di sicurezza OAuth non riuscita".to_string());
+                    reply(&mut stream, "Sign-in cancelled", "Security verification failed. Return to FishStop and try again.");
+                    return Err("OAuth security verification failed".to_string());
                 }
                 if let Some(error) = parameters.get("error") {
-                    reply(&mut stream, "Accesso annullato", "Puoi chiudere questa pagina e tornare a FishStop.");
-                    return Err(format!("Google ha annullato l'accesso: {error}"));
+                    reply(&mut stream, "Sign-in cancelled", "You can close this page and return to FishStop.");
+                    return Err(format!("Google cancelled the sign-in: {error}"));
                 }
                 if let Some(code) = parameters.get("code") {
-                    reply(&mut stream, "Accesso completato", "Puoi chiudere questa pagina e tornare a FishStop.");
+                    reply(&mut stream, "Sign-in complete", "You can close this page and return to FishStop.");
                     return Ok(code.clone());
                 }
-                reply(&mut stream, "Accesso annullato", "Google non ha restituito un codice di accesso.");
-                return Err("Google non ha restituito un codice di accesso".to_string());
+                reply(&mut stream, "Sign-in cancelled", "Google did not return a sign-in code.");
+                return Err("Google did not return a sign-in code".to_string());
             }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 thread::sleep(Duration::from_millis(100));
             }
-            Err(error) => return Err(format!("Impossibile ricevere il callback Google: {error}")),
+            Err(error) => return Err(format!("Could not receive the Google callback: {error}")),
         }
     }
 
-    Err("Tempo scaduto: completa l'accesso Google entro due minuti".to_string())
+    Err("Timed out: complete Google sign-in within two minutes.".to_string())
 }
 
 fn google_sign_in() -> Result<GoogleUser, String> {
     let listener = TcpListener::bind("127.0.0.1:0")
-        .map_err(|error| format!("Impossibile avviare il callback locale: {error}"))?;
+        .map_err(|error| format!("Could not start the local callback: {error}"))?;
     let port = listener
         .local_addr()
-        .map_err(|error| format!("Impossibile leggere la porta locale: {error}"))?
+        .map_err(|error| format!("Could not read the local port: {error}"))?
         .port();
     let redirect_uri = format!("http://127.0.0.1:{port}");
     let state = random_url_safe(32);
@@ -151,7 +153,7 @@ fn google_sign_in() -> Result<GoogleUser, String> {
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(30))
         .build()
-        .map_err(|error| format!("Impossibile preparare la connessione sicura: {error}"))?;
+        .map_err(|error| format!("Could not prepare the secure connection: {error}"))?;
     let token_response = client
         .post(TOKEN_ENDPOINT)
         .form(&[
@@ -162,32 +164,32 @@ fn google_sign_in() -> Result<GoogleUser, String> {
             ("redirect_uri", redirect_uri.as_str()),
         ])
         .send()
-        .map_err(|error| format!("Google non ha risposto: {error}"))?;
+        .map_err(|error| format!("Google did not respond: {error}"))?;
     if !token_response.status().is_success() {
         let status = token_response.status();
         let details = token_response.text().unwrap_or_default();
-        return Err(format!("Google ha rifiutato l'accesso ({status}): {details}"));
+        return Err(format!("Google denied the sign-in ({status}): {details}"));
     }
     let token: TokenResponse = token_response
         .json()
-        .map_err(|error| format!("Risposta Google non valida: {error}"))?;
+        .map_err(|error| format!("Invalid Google response: {error}"))?;
 
     client
         .get(USERINFO_ENDPOINT)
         .bearer_auth(token.access_token)
         .send()
-        .map_err(|error| format!("Impossibile ottenere il profilo Google: {error}"))?
+        .map_err(|error| format!("Could not retrieve the Google profile: {error}"))?
         .error_for_status()
-        .map_err(|error| format!("Google ha rifiutato il profilo: {error}"))?
+        .map_err(|error| format!("Google denied profile access: {error}"))?
         .json()
-        .map_err(|error| format!("Profilo Google non valido: {error}"))
+        .map_err(|error| format!("Invalid Google profile: {error}"))
 }
 
 #[tauri::command]
 async fn sign_in_with_google() -> Result<GoogleUser, String> {
     tauri::async_runtime::spawn_blocking(google_sign_in)
         .await
-        .map_err(|error| format!("Accesso Google interrotto: {error}"))?
+        .map_err(|error| format!("Google sign-in interrupted: {error}"))?
 }
 
 fn python_engine_path() -> PathBuf {
@@ -229,7 +231,7 @@ impl BertWorker {
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
-            .map_err(|error| format!("Impossibile avviare il worker BERT: {error}"))?;
+            .map_err(|error| format!("Could not start the BERT worker: {error}"))?;
         let stdin = child.stdin.take().ok_or("Worker BERT senza stdin")?;
         let stdout = child.stdout.take().ok_or("Worker BERT senza stdout")?;
         self.stdin = Some(BufWriter::new(stdin));
@@ -241,107 +243,107 @@ impl BertWorker {
     fn analyze(&mut self, report: serde_json::Value) -> Result<serde_json::Value, String> {
         self.start()?;
         let request = serde_json::to_string(&report)
-            .map_err(|error| format!("Impossibile serializzare il report BERT: {error}"))?;
-        let stdin = self.stdin.as_mut().ok_or("Worker BERT non disponibile")?;
+            .map_err(|error| format!("Could not serialize the BERT report: {error}"))?;
+        let stdin = self.stdin.as_mut().ok_or("BERT worker unavailable")?;
         stdin.write_all(request.as_bytes()).and_then(|_| stdin.write_all(b"\n")).and_then(|_| stdin.flush())
-            .map_err(|error| format!("Impossibile inviare il report a BERT: {error}"))?;
+            .map_err(|error| format!("Could not send the report to BERT: {error}"))?;
         let mut response = String::new();
-        let stdout = self.stdout.as_mut().ok_or("Worker BERT non disponibile")?;
+        let stdout = self.stdout.as_mut().ok_or("BERT worker unavailable")?;
         stdout.read_line(&mut response)
-            .map_err(|error| format!("Impossibile leggere la risposta BERT: {error}"))?;
+            .map_err(|error| format!("Could not read the BERT response: {error}"))?;
         if response.trim().is_empty() {
             self.child = None;
             self.stdin = None;
             self.stdout = None;
-            return Err("Il worker BERT si è interrotto. Riprova l'analisi.".to_string());
+            return Err("The BERT worker stopped. Try the analysis again.".to_string());
         }
         let payload: serde_json::Value = serde_json::from_str(&response)
-            .map_err(|_| "Il worker BERT ha restituito una risposta non valida.".to_string())?;
+            .map_err(|_| "The BERT worker returned an invalid response.".to_string())?;
         if payload.get("ok").and_then(|value| value.as_bool()) != Some(true) {
-            return Err(payload.get("error").and_then(|value| value.as_str()).unwrap_or("Analisi BERT non riuscita.").to_string());
+            return Err(payload.get("error").and_then(|value| value.as_str()).unwrap_or("BERT analysis failed.").to_string());
         }
-        payload.get("result").cloned().ok_or_else(|| "Risultato BERT mancante.".to_string())
+        payload.get("result").cloned().ok_or_else(|| "BERT result is missing.".to_string())
     }
 }
 
 fn analyze_eml_with_engine(file_name: String, contents: Vec<u8>, virustotal_api_key: String, abuseipdb_api_key: String) -> Result<serde_json::Value, String> {
     if !file_name.to_lowercase().ends_with(".eml") {
-        return Err("FishStop supporta esclusivamente file .eml.".to_string());
+        return Err("FishStop supports .eml files only.".to_string());
     }
     if contents.len() > 10 * 1024 * 1024 {
-        return Err("Il file EML supera il limite supportato di 10 MB.".to_string());
+        return Err("The EML file exceeds the supported 10 MB limit.".to_string());
     }
     let engine = python_engine_path();
     if !engine.is_file() {
-        return Err("Motore di analisi FishStop non disponibile nell'applicazione.".to_string());
+        return Err("FishStop analysis engine is unavailable in the application.".to_string());
     }
     let temporary_eml = std::env::temp_dir().join(format!("fishstop-{}.eml", random_url_safe(16)));
     fs::write(&temporary_eml, contents)
-        .map_err(|error| format!("Impossibile preparare il file per l'analisi: {error}"))?;
+        .map_err(|error| format!("Could not prepare the file for analysis: {error}"))?;
     let output = Command::new(python_interpreter())
         .arg(&engine)
         .arg(&temporary_eml)
         .env("VIRUSTOTAL_API_KEY", virustotal_api_key)
         .env("ABUSEIPDB_API_KEY", abuseipdb_api_key)
         .output()
-        .map_err(|error| format!("Impossibile avviare il motore FishStop: {error}"))?;
+        .map_err(|error| format!("Could not start the FishStop engine: {error}"))?;
     let _ = fs::remove_file(&temporary_eml);
     let response: serde_json::Value = serde_json::from_slice(&output.stdout)
         .map_err(|_| format!(
-            "Il motore di analisi ha restituito una risposta non valida: {}",
+            "The analysis engine returned an invalid response: {}",
             String::from_utf8_lossy(&output.stderr).trim()
         ))?;
     if !output.status.success() || response.get("ok").and_then(|value| value.as_bool()) != Some(true) {
         return Err(response.get("error").and_then(|value| value.as_str())
-            .unwrap_or("Analisi del file non riuscita.").to_string());
+            .unwrap_or("File analysis failed.").to_string());
     }
-    response.get("report").cloned().ok_or_else(|| "Il report di analisi è mancante.".to_string())
+    response.get("report").cloned().ok_or_else(|| "Analysis report is missing.".to_string())
 }
 
 #[tauri::command]
 async fn analyze_eml(file_name: String, contents: Vec<u8>, virustotal_api_key: String, abuseipdb_api_key: String) -> Result<serde_json::Value, String> {
     tauri::async_runtime::spawn_blocking(move || analyze_eml_with_engine(file_name, contents, virustotal_api_key, abuseipdb_api_key))
         .await
-        .map_err(|error| format!("Analisi interrotta: {error}"))?
+        .map_err(|error| format!("Analysis interrupted: {error}"))?
 }
 
 fn analyze_ai_with_engine(command: &str, report: serde_json::Value, ollama_model: &str) -> Result<serde_json::Value, String> {
     if !matches!(command, "bert" | "phi4") {
-        return Err("Motore AI non supportato.".to_string());
+        return Err("Unsupported AI engine.".to_string());
     }
     let engine = python_engine_path();
     if !engine.is_file() {
-        return Err("Motore di analisi FishStop non disponibile nell'applicazione.".to_string());
+        return Err("FishStop analysis engine is unavailable in the application.".to_string());
     }
     let temporary_report = std::env::temp_dir().join(format!("fishstop-{}.json", random_url_safe(16)));
     let contents = serde_json::to_vec(&report)
-        .map_err(|error| format!("Impossibile preparare il report per l'AI: {error}"))?;
+        .map_err(|error| format!("Could not prepare the report for AI: {error}"))?;
     fs::write(&temporary_report, contents)
-        .map_err(|error| format!("Impossibile preparare il report per l'AI: {error}"))?;
+        .map_err(|error| format!("Could not prepare the report for AI: {error}"))?;
     let output = Command::new(python_interpreter())
         .arg(&engine)
         .arg(command)
         .arg(&temporary_report)
         .env("OLLAMA_MODEL", ollama_model)
         .output()
-        .map_err(|error| format!("Impossibile avviare il motore AI: {error}"))?;
+        .map_err(|error| format!("Could not start the AI engine: {error}"))?;
     let _ = fs::remove_file(&temporary_report);
     let response: serde_json::Value = serde_json::from_slice(&output.stdout)
-        .map_err(|_| format!("Il motore AI ha restituito una risposta non valida: {}", String::from_utf8_lossy(&output.stderr).trim()))?;
+        .map_err(|_| format!("The AI engine returned an invalid response: {}", String::from_utf8_lossy(&output.stderr).trim()))?;
     if !output.status.success() || response.get("ok").and_then(|value| value.as_bool()) != Some(true) {
-        return Err(response.get("error").and_then(|value| value.as_str()).unwrap_or("Analisi AI non riuscita.").to_string());
+        return Err(response.get("error").and_then(|value| value.as_str()).unwrap_or("AI analysis failed.").to_string());
     }
-    response.get("result").cloned().ok_or_else(|| "Il risultato AI è mancante.".to_string())
+    response.get("result").cloned().ok_or_else(|| "AI result is missing.".to_string())
 }
 
 #[tauri::command]
 async fn analyze_bert(report: serde_json::Value, worker: tauri::State<'_, Arc<Mutex<BertWorker>>>) -> Result<serde_json::Value, String> {
     let worker = Arc::clone(&worker);
     tauri::async_runtime::spawn_blocking(move || worker.lock()
-        .map_err(|_| "Worker BERT non disponibile.".to_string())?
+        .map_err(|_| "BERT worker unavailable.".to_string())?
         .analyze(report))
         .await
-        .map_err(|error| format!("Analisi BERT interrotta: {error}"))?
+        .map_err(|error| format!("BERT analysis interrupted: {error}"))?
 }
 
 #[tauri::command]
@@ -351,7 +353,7 @@ async fn analyze_phi4(report: serde_json::Value, model: Option<String>) -> Resul
         analyze_ai_with_engine("phi4", report, &selected_model)
     })
         .await
-        .map_err(|error| format!("Analisi Phi-4 interrotta: {error}"))?
+        .map_err(|error| format!("Phi-4 analysis interrupted: {error}"))?
 }
 
 fn warm_phi4_with_ollama(model: Option<String>) -> Result<(), String> {
@@ -362,7 +364,7 @@ fn warm_phi4_with_ollama(model: Option<String>) -> Result<(), String> {
     reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(90))
         .build()
-        .map_err(|error| format!("Impossibile preparare Ollama: {error}"))?
+        .map_err(|error| format!("Could not prepare Ollama: {error}"))?
         .post(endpoint)
         .json(&serde_json::json!({
             "model": model,
@@ -373,7 +375,7 @@ fn warm_phi4_with_ollama(model: Option<String>) -> Result<(), String> {
         }))
         .send()
         .and_then(|response| response.error_for_status())
-        .map_err(|error| format!("Warm-up Phi-4 non riuscito: {error}"))?;
+        .map_err(|error| format!("Phi-4 warm-up failed: {error}"))?;
     Ok(())
 }
 
@@ -381,7 +383,7 @@ fn warm_phi4_with_ollama(model: Option<String>) -> Result<(), String> {
 async fn warm_phi4(model: Option<String>) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || warm_phi4_with_ollama(model))
         .await
-        .map_err(|error| format!("Warm-up Phi-4 interrotto: {error}"))?
+        .map_err(|error| format!("Phi-4 warm-up interrupted: {error}"))?
 }
 
 #[derive(Deserialize)]
@@ -390,24 +392,95 @@ struct OllamaTags { models: Option<Vec<OllamaTag>> }
 #[derive(Deserialize)]
 struct OllamaTag { name: String }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HuggingFaceModelResponse {
+    sha: Option<String>,
+    last_modified: Option<String>,
+}
+
+#[derive(Serialize)]
+struct HuggingFaceModelInfo {
+    repository: String,
+    runtime_revision: String,
+    latest_commit: Option<String>,
+    updated_at: Option<String>,
+}
+
 #[tauri::command]
 async fn list_ollama_models() -> Result<Vec<String>, String> {
     tauri::async_runtime::spawn_blocking(|| {
         let endpoint = std::env::var("OLLAMA_TAGS_ENDPOINT")
             .unwrap_or_else(|_| "http://localhost:11434/api/tags".to_string());
         let response = reqwest::blocking::Client::builder().timeout(Duration::from_secs(4)).build()
-            .map_err(|error| format!("Impossibile contattare Ollama: {error}"))?
+            .map_err(|error| format!("Could not contact Ollama: {error}"))?
             .get(endpoint).send().and_then(|response| response.error_for_status())
-            .map_err(|error| format!("Ollama non è disponibile: {error}"))?;
-        let tags: OllamaTags = response.json().map_err(|error| format!("Risposta Ollama non valida: {error}"))?;
+            .map_err(|error| format!("Ollama is unavailable: {error}"))?;
+        let tags: OllamaTags = response.json().map_err(|error| format!("Invalid Ollama response: {error}"))?;
         Ok(tags.models.unwrap_or_default().into_iter().map(|item| item.name).collect())
-    }).await.map_err(|error| format!("Lettura modelli Ollama interrotta: {error}"))?
+    }).await.map_err(|error| format!("Ollama model lookup interrupted: {error}"))?
+}
+
+#[tauri::command]
+async fn huggingface_bert_model_info() -> Result<HuggingFaceModelInfo, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let response: HuggingFaceModelResponse = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(6))
+            .build()
+            .map_err(|error| format!("Could not prepare the Hugging Face request: {error}"))?
+            .get(format!("https://huggingface.co/api/models/{BERT_MODEL_ID}"))
+            .send()
+            .and_then(|response| response.error_for_status())
+            .map_err(|error| format!("Hugging Face is unavailable: {error}"))?
+            .json()
+            .map_err(|error| format!("Invalid Hugging Face model response: {error}"))?;
+        Ok(HuggingFaceModelInfo {
+            repository: BERT_MODEL_ID.to_string(),
+            runtime_revision: BERT_MODEL_REVISION.to_string(),
+            latest_commit: response.sha,
+            updated_at: response.last_modified,
+        })
+    }).await.map_err(|error| format!("Hugging Face model lookup interrupted: {error}"))?
+}
+
+#[derive(Serialize)]
+struct LocalEngineStatus {
+    static_engine: bool,
+    python_runtime: bool,
+    bert_dependencies: bool,
+}
+
+#[tauri::command]
+async fn local_engine_status() -> LocalEngineStatus {
+    tauri::async_runtime::spawn_blocking(|| {
+        let engine = python_engine_path().is_file();
+        let python = python_interpreter();
+        let python_runtime = Command::new(&python)
+            .arg("--version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        let bert_dependencies = engine && python_runtime && Command::new(&python)
+            .args(["-c", "import torch, transformers, huggingface_hub"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        LocalEngineStatus { static_engine: engine, python_runtime, bert_dependencies }
+    }).await.unwrap_or(LocalEngineStatus {
+        static_engine: false,
+        python_runtime: false,
+        bert_dependencies: false,
+    })
 }
 
 fn main() {
     tauri::Builder::default()
         .manage(Arc::new(Mutex::new(BertWorker::default())))
-        .invoke_handler(tauri::generate_handler![sign_in_with_google, analyze_eml, analyze_bert, analyze_phi4, warm_phi4, list_ollama_models])
+        .invoke_handler(tauri::generate_handler![sign_in_with_google, analyze_eml, analyze_bert, analyze_phi4, warm_phi4, list_ollama_models, huggingface_bert_model_info, local_engine_status])
         .run(tauri::generate_context!())
-        .expect("errore durante l'avvio di FishStop");
+        .expect("FishStop failed to start");
 }

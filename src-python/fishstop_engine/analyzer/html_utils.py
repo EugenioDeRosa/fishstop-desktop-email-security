@@ -120,11 +120,11 @@ def _sanitize_preview_soup(html: str, block_images: bool = True) -> str:
         for img in soup.find_all("img"):
             src = str(img.get("src") or "").strip()
             alt = str(img.get("alt") or "").strip()
-            label = "Immagine remota bloccata"
+            label = "Remote image blocked"
             if alt:
                 label = f"{label}: {alt[:120]}"
             elif src:
-                label = f"{label}: sorgente esterna rimossa"
+                label = f"{label}: external source removed"
             placeholder = soup.new_tag("div")
             placeholder.string = label
             placeholder["style"] = (
@@ -133,7 +133,7 @@ def _sanitize_preview_soup(html: str, block_images: bool = True) -> str:
                 "background:#f6f8fa; color:#57606a; text-align:center; "
                 "font-family:Arial,sans-serif; font-size:14px;"
             )
-            placeholder["title"] = "Immagine remota non caricata per evitare tracking o contenuti esterni."
+            placeholder["title"] = "Remote image was not loaded to prevent tracking or external content."
             img.replace_with(placeholder)
 
     for tag in soup.find_all(True):
@@ -143,7 +143,7 @@ def _sanitize_preview_soup(html: str, block_images: bool = True) -> str:
             if attr_l.startswith("on") or attr_l in _URL_PREVIEW_ATTRS:
                 del tag.attrs[attr]
                 if tag.name == "a":
-                    tag.attrs["title"] = "Link rimosso per sicurezza: usa la box Links found in the email."
+                    tag.attrs["title"] = "Link removed for safety: use the Links found in the email section."
                     tag.attrs["style"] = "color: inherit; text-decoration: none; cursor: default;"
                 continue
             if attr_l == "style" and _DANGEROUS_STYLE_RE.search(str(value or "")):
@@ -266,12 +266,12 @@ def sanitize_html_for_preview(html: str) -> str:
     destinazioni href/src/action.
     """
     if not html or not html.strip():
-        return "<p><em>Nessun HTML disponibile.</em></p>"
+        return "<p><em>No HTML is available.</em></p>"
 
     if not _BS4_AVAILABLE:
         safe_html = re.sub(r"(?is)<(script|style|head|iframe|object|embed|form|button|input|meta|base|link|svg|math)\b[^>]*>.*?</\1>", " ", html)
         safe_html = re.sub(r"(?is)<(script|style|head|iframe|object|embed|form|button|input|meta|base|link|svg|math)\b[^>]*?/?>", " ", safe_html)
-        safe_html = re.sub(r"(?is)<img\b[^>]*>", "[Immagine remota bloccata]", safe_html)
+        safe_html = re.sub(r"(?is)<img\b[^>]*>", "[Remote image blocked]", safe_html)
         safe_html = re.sub(r"""(?is)\son[a-z0-9_-]+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)""", "", safe_html)
         safe_html = re.sub(r"""(?is)\s(?:href|src|srcset|xlink:href|action|formaction|poster|background|dynsrc|lowsrc|srcdoc|ping)\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)""", "", safe_html)
         safe_html = re.sub(r"(?i)\b(?:javascript|vbscript|data)\s*:", "#", safe_html)
@@ -293,7 +293,7 @@ def sanitize_html_for_js_preview(html: str) -> str:
     disabilita i click sui link anche se il DOM cambia.
     """
     if not html or not html.strip():
-        return "<p><em>Nessun HTML disponibile.</em></p>"
+        return "<p><em>No HTML is available.</em></p>"
 
     if _BS4_AVAILABLE:
         body = _sanitize_preview_soup(html, block_images=True)

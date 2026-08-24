@@ -157,7 +157,7 @@ def check_lookalike_domains(
         decoded_norm = normalize_homoglyphs(decoded_host)
 
         if _has_punycode_label(host) and decoded_host != host.lower():
-            detail = f"Dominio punycode `{host}` decodificato come `{decoded_host}`."
+            detail = f"Punycode domain `{host}` decoded as `{decoded_host}`."
             if decoded_norm != decoded_host:
                 detail += f" Normalizzazione omoglifi: `{decoded_norm}`."
             _alert(url, host, "-", "punycode_idna", detail)
@@ -228,7 +228,7 @@ def check_lookalike_domains(
                         host,
                         brand,
                         "punycode_homograph",
-                        f"Dominio punycode `{host}` decodificato come `{decoded_host}`; "
+                        f"Punycode domain `{host}` decoded as `{decoded_host}`; "
                         f"dopo normalizzazione omoglifi risulta simile a `{brand}`",
                     )
                     continue

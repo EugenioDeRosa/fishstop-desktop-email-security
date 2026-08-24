@@ -4,7 +4,10 @@
   "version": "0.1.0",
   "type": "module",
   "dependencies": {
-    "@tauri-apps/api": "^2.0.0"
+    "@tauri-apps/api": "^2.0.0",
+    "d3-geo": "^3.1.1",
+    "topojson-client": "^3.1.0",
+    "world-atlas": "^2.0.2"
   },
   "scripts": {
     "dev": "vite",
@@ -13,6 +16,8 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.0.0",
+    "@types/d3-geo": "^3.1.1",
+    "@types/topojson-client": "^3.1.5",
     "typescript": "^5.6.3",
     "vite": "^6.0.0"
   }

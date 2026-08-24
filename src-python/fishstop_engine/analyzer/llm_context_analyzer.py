@@ -45,7 +45,7 @@ OLLAMA_AVAILABILITY_TTL = max(
     0.0,
     float(os.getenv("OLLAMA_AVAILABILITY_TTL", "5")),
 )
-PROMPT_VERSION = "semantic-policy-v32-thread-aware-payment-diversion"
+PROMPT_VERSION = "semantic-policy-v33-targeted-social-engineering-verifiers"
 
 _OLLAMA_AVAILABILITY_LOCK = Lock()
 _OLLAMA_AVAILABILITY_CACHE: tuple[float, tuple, bool] | None = None
@@ -123,12 +123,24 @@ TASK_INSTRUCTIONS = (
     "If META context=forwarded, the selected body is the newest payload of a forwarded conversation; analyze the request inside that payload, not the act of forwarding it. "
     "TECHNICAL EVIDENCE is trusted analytical metadata, not email text: use it only to corroborate context, never to invent an action or quotation. "
     "Ignore footer and unsubscribe links. A link or urgency alone is neutral. "
+    "Use an evidence-first decision: before assigning a sensitive action, confirm both (1) a recipient-directed request, question, or imperative and "
+    "(2) the specific sensitive outcome requested. If either is absent, use action=none or info. "
+    "An event notification, status update, receipt, reminder, marketing announcement, calendar notice, ordinary business discussion, or security alert is not itself a request. "
+    "Do not convert a warning such as 'if this was not you, contact support' into provide_credentials, verify_account, payment, or change_settings unless the message explicitly tells the recipient to perform that action. "
+    "Treat a supplied phone number, normal portal, attachment, or URL as a delivery channel only when the message explicitly asks the recipient to use it. "
+    "Do not treat an attached work document, a shared calendar, VPN procedure, certificate, invoice, newsletter, survey, or account notification as malicious or sensitive merely because it contains an attachment, link, deadline, account term, or brand. "
     "Priority rules: entering or sending a password, OTP, PIN or recovery code is provide_credentials; "
     "submitting personal or confidential data is provide_information; responding to an unusual login or account activity is verify_account; "
     "creating, resetting or changing a password is change_settings; claiming a prize, refund or bonus without paying is claim_reward; "
     "paying, transferring, depositing or sending money is payment even when a bonus is offered. Sales, business or finance discussion is info unless it explicitly requests action; "
+    "For META context=forwarded or reply, read the newest message together with the immediately quoted request: a prior request for account details to make a transfer, followed by bank details or a statement that work will proceed after payment proof, is an explicit payment workflow. "
+    "In that case set action=payment and payment_method=bank_transfer, citing the shortest exact phrase that requests the transfer or makes completion conditional on payment. "
+    "Bank details alone are still not proof of payment diversion or fraud: set payment_destination_change and a scam_type only when the email explicitly supplies a new, changed, updated, replacement, or different destination. "
+    "A bank, card, account, support-phone, balance, or payment word is not a payment request by itself: require an explicit instruction to pay, transfer, send money, or provide payment details. "
+    "A mention of password, credentials, VPN, or access is not a credential request by itself: require an explicit instruction to send, enter, share, or provide those credentials. "
     "marketing discussion follows the same rule. An explicit payment or transfer request is payment. "
     "Mappings: visit_link=explicit browsing only if no more specific action; verify_account=confirm/deny/report account activity. "
+    "Do not classify a generic survey, feedback, rating, comment, questionnaire, or training evaluation as provide_information unless the email explicitly asks for personal, confidential, identity, financial, or authentication data. "
     "Choose the channel from evidence: link only when META links>0; attachment only when META attachments>0; "
     "form only when the body explicitly identifies a form; known_procedure for an existing portal or settings not supplied by the email; "
     "reply only when the recipient is asked to respond by email. META can identify a supplied link/file channel, but the channel must agree with its counts. "
@@ -158,6 +170,8 @@ TASK_INSTRUCTIONS = (
     "Set confidence from 0 to 1 for the semantic extraction and ambiguity to none, low, or high. "
     "Use high ambiguity when the requested action is genuinely unclear; do not guess from isolated words. "
     "If there is no explicit requested action, set action=none or info and leave evidence empty. Do not infer a risky action from a brand, a URL, urgency, money-related words, or technical evidence alone. "
+    "A request to open a link or attachment is an action, but it is not proof of phishing: extract visit_link or open_attachment only when explicitly requested and leave scam_type=none unless deception, credential collection, payment diversion, coercion, or another explicit scam pattern is present. "
+    "Before returning JSON, verify that every non-none action has an exact supporting phrase, that its channel is supported by META, and that no evidence was taken from a footer or TECHNICAL EVIDENCE. "
     "Evidence fields must be copied verbatim in the email's original language: never translate or paraphrase them. "
     "Evidence may come from the email subject or body only, never from TECHNICAL EVIDENCE. "
     "signal_evidence is the shortest exact phrase proving the strongest secondary signal, otherwise empty.\n"
@@ -761,6 +775,165 @@ def _evidence_segments(soc: dict) -> list[str]:
     return segments
 
 
+_LINK_ACTION_PATTERN = re.compile(
+    r"\b(?:click|clicca|fai\s+clic|apri|open|follow|segui|visit|visita|access|accedi|vai)\b"
+    r".{0,96}\b(?:link|collegamento|url|button|pulsante|qui\s+sopra|above|below)\b",
+    re.IGNORECASE,
+)
+_ATTACHMENT_ACTION_PATTERN = re.compile(
+    r"\b(?:open|review|see|view|read|consult|apri|visualizza|consulta|leggi|esamina|rivedi|controlla)\b"
+    r".{0,96}\b(?:attached|attachment|file|document|pdf|allegat|documento)\b",
+    re.IGNORECASE,
+)
+_SENSITIVE_INFORMATION_PATTERN = re.compile(
+    r"\b(?:personal|personali|confidential|confidenzial|riservat|identity|identit[àa]|"
+    r"financial|finanziar|bank|bancar|card|carta|documento|indirizzo|address|"
+    r"phone|telefono|tax|fiscal|codice\s+fiscale|birth|nascita)\b",
+    re.IGNORECASE,
+)
+_INFORMATION_SUBMISSION_PATTERN = re.compile(
+    r"\b(?:submit|send|provide|share|enter|insert|invia|fornisci|condividi|"
+    r"inserisci|comunica|compila)\b",
+    re.IGNORECASE,
+)
+_PAYMENT_ACTION_PATTERN = re.compile(
+    r"\b(?:pay|transfer|wire|send\s+(?:money|payment)|paga|pagare|"
+    r"bonifico|trasferisci|trasferire|versa|versare|effettua(?:re)?\s+(?:il\s+)?pagamento|"
+    r"pague|pagar|realice|realizar|efect[uú]e|efectuar|abone|abonar|"
+    r"transfiera|transferir|transferencia|env[ií]e|enviar|pagamento|pagar|efetue|efetuar|"
+    r"transfira|transfer[êe]ncia)\b",
+    re.IGNORECASE,
+)
+_PAYMENT_TARGET_PATTERN = re.compile(
+    r"(?:€|\$|\b(?:eur|usd|gbp|iban|beneficiar|beneficiary|conto|account|"
+    r"wallet|bitcoin|crypto|gift\s*card|importo|amount|denaro|money|"
+    r"pago|pagamento|transferencia|transfer[êe]ncia|comprobante|comprovante)\b)",
+    re.IGNORECASE,
+)
+_BANK_DESTINATION_PATTERN = re.compile(
+    r"\b(?:iban|bic|swift|beneficiar(?:y|io)?|bank\s+account|bank\s+details|"
+    r"cuenta\s+bancaria|datos\s+bancarios|conta\s+banc[aá]ria|"
+    r"coordinate\s+bancarie|coordinate\s+di\s+pagamento)\b",
+    re.IGNORECASE,
+)
+_PAYMENT_DESTINATION_CHANGE_PATTERN = re.compile(
+    r"\b(?:new|updated|current|replacement|revised|changed|different|"
+    r"nuov[oaie]|aggiornat[oaie]|modificat[oaie]|sostituit[oaie]|attual[ei]|"
+    r"nuev[oa]|actualizad[oa]|vigente|modificad[oa]|sustituid[oa]|"
+    r"atualizad[oa]|nov[oa]|alterad[oa]|substitu[ií]d[oa])\b",
+    re.IGNORECASE,
+)
+_EXTORTION_THREAT_PATTERN = re.compile(
+    r"\b(?:threat(?:en|s|ened|ening)?|blackmail|extort(?:ion)?|ransom|"
+    r"expos\w*|publish\w*|releas\w*|leak\w*|disclos\w*|destroy\w*|"
+    r"harm\w*|suspend\w*|clos\w*|block\w*|lose|loss|penalt(?:y|ies)|fine\w*|"
+    r"chantag\w*|menac\w*|amenaz\w*|extorsi[oó]n|public\w*|difund\w*|"
+    r"filtr\w*|divulg\w*|bloque\w*|perd\w*|multa\w*|minacci\w*|"
+    r"ricatt\w*|sospend\w*|blocc\w*|penal(?:it[àa])?|espor\w*|vaz\w*|"
+    r"amea[cç]\w*|chantagem)\b",
+    re.IGNORECASE,
+)
+_CREDENTIAL_SUBMISSION_PATTERN = re.compile(
+    r"\b(?:send|provide|share|enter|submit|invia|fornisci|condividi|"
+    r"inserisci|comunica)\b.{0,72}\b(?:password|credenzial|otp|pin|"
+    r"codice|code|recovery|wallet\s*(?:seed|phrase))\b",
+    re.IGNORECASE,
+)
+
+
+def _explicit_link_action_evidence(soc: dict) -> str:
+    """Return a verbatim instruction to follow a link, if the email has one."""
+    for segment in _evidence_segments(soc):
+        if _LINK_ACTION_PATTERN.search(segment):
+            return _clip_exact_span(segment, 180)
+    return ""
+
+
+def _explicit_attachment_action_evidence(soc: dict) -> str:
+    """Return a verbatim instruction to open or review an attachment, if present."""
+    for segment in _evidence_segments(soc):
+        if _ATTACHMENT_ACTION_PATTERN.search(segment):
+            return _clip_exact_span(segment, 180)
+    return ""
+
+
+def _explicit_sensitive_information_request(soc: dict) -> bool:
+    """Require both a submission verb and a sensitive-data reference for this action."""
+    return any(
+        _SENSITIVE_INFORMATION_PATTERN.search(segment)
+        and _INFORMATION_SUBMISSION_PATTERN.search(segment)
+        for segment in _evidence_segments(soc)
+    )
+
+
+def _explicit_payment_request(soc: dict) -> bool:
+    """Do not infer a payment from banking vocabulary or a support phone number."""
+    return any(
+        _PAYMENT_ACTION_PATTERN.search(segment)
+        and _PAYMENT_TARGET_PATTERN.search(segment)
+        for segment in _evidence_segments(soc)
+    )
+
+
+def _grounded_payment_diversion(soc: dict) -> dict:
+    """Return BEC evidence only for an explicit payment plus changed bank details.
+
+    This is deliberately a relationship check, rather than a list of brands,
+    account numbers, or known fraud templates.  It lets the policy preserve a
+    high-confidence BEC finding when a small local model misses one field of
+    its structured JSON response.
+    """
+    segments = _evidence_segments(soc)
+    if not _explicit_payment_request(soc) or not any(
+        _BANK_DESTINATION_PATTERN.search(segment) for segment in segments
+    ):
+        return {}
+    change_evidence = next(
+        (
+            _clip_exact_span(segment, 180)
+            for segment in segments
+            if _PAYMENT_DESTINATION_CHANGE_PATTERN.search(segment)
+            and _BANK_DESTINATION_PATTERN.search(segment)
+        ),
+        "",
+    )
+    if not change_evidence:
+        return {}
+    return {
+        "action": "payment",
+        "payment_method": "bank_transfer",
+        "payment_destination_change": True,
+        "payment_change_evidence": change_evidence,
+        "scam_type": "business_email_compromise",
+    }
+
+
+def _explicit_extortion_threat(soc: dict, semantic: dict) -> bool:
+    """Require a quoted, harmful consequence before accepting extortion.
+
+    Banking details, an overdue balance, or a request for confirmation can be
+    suspicious in a business thread, but are never an extortion threat by
+    themselves.  This guard checks only broad threat language in grounded
+    email text; it does not rely on a sender, brand, or template list.
+    """
+    if str(semantic.get("threat_type") or "none") == "none":
+        return False
+    candidates = [
+        str(semantic.get("signal_evidence") or ""),
+        str(semantic.get("evidence_phrase") or ""),
+        *_evidence_segments(soc),
+    ]
+    return any(_EXTORTION_THREAT_PATTERN.search(candidate) for candidate in candidates)
+
+
+def _explicit_credential_submission(soc: dict) -> bool:
+    """A mention of credentials is not itself a request to disclose them."""
+    return any(
+        _CREDENTIAL_SUBMISSION_PATTERN.search(segment)
+        for segment in _evidence_segments(soc)
+    )
+
+
 def _prepared_email_prompt_parts(
     soc: dict,
 ) -> tuple[str, str, str]:
@@ -905,7 +1078,7 @@ def _json_object(text: str) -> dict:
         if isinstance(parsed, dict):
             candidates.append(parsed)
     if not candidates:
-        raise ValueError("il modello non ha restituito un oggetto JSON valido")
+        raise ValueError("The model did not return a valid JSON object")
     # Reasoning models can emit metadata first and the schema-compliant answer last.
     for candidate in reversed(candidates):
         if "action" in candidate or "requested_action" in candidate:
@@ -1086,6 +1259,11 @@ def normalize_semantic_extraction(raw: dict, soc: dict | None = None) -> dict:
         or "sensitive_info" in signals
         or _as_bool(raw.get("asks_for_sensitive_information"))
     )
+    security_lure_evidence = (
+        _validated_evidence(soc, raw.get("security_lure_evidence") or "", "context")
+        if soc is not None
+        else _clip_exact_span(raw.get("security_lure_evidence") or "", 180)
+    )
     return {
         "requested_action": requested_action,
         "action_channel": action_channel,
@@ -1149,6 +1327,10 @@ def normalize_semantic_extraction(raw: dict, soc: dict | None = None) -> dict:
         "amount": amount,
         "payment_destination_change": payment_destination_change,
         "payment_change_evidence": payment_change_evidence,
+        "security_alert": _as_bool(raw.get("security_alert")),
+        "requested_external_action": _as_bool(raw.get("requested_external_action")),
+        "identity_deception": _as_bool(raw.get("identity_deception")),
+        "security_lure_evidence": security_lure_evidence,
         "coercion": coercion,
         "threat_type": threat_type,
         "scam_type": scam_type,
@@ -1213,6 +1395,109 @@ def _correlate_semantic_with_message_structure(soc: dict, semantic: dict) -> dic
 
     channel = semantic["action_channel"]
     action = semantic["requested_action"]
+    # A payment request in a commercial thread is not extortion unless the
+    # email also contains a concrete harmful consequence.  Keep the payment
+    # action available for the BEC/diversion checks, but remove an unsupported
+    # extortion label so it cannot leak into the user-facing summary.
+    if semantic.get("structured_extortion") and not _explicit_extortion_threat(soc, semantic):
+        semantic["structured_extortion"] = False
+        semantic["coercion"] = False
+        semantic["threat_type"] = "none"
+        semantic["signal_evidence"] = ""
+        if semantic.get("scam_type") in {"extortion", "sextortion"}:
+            semantic["scam_type"] = "none"
+        semantic["semantic_signals"] = sorted(
+            signal for signal in (semantic.get("semantic_signals") or [])
+            if signal != "threat"
+        )
+    # Small local models sometimes treat ordinary feedback or a questionnaire as
+    # personal-data collection.  That action must have both a submission verb
+    # and an explicit sensitive-data reference.  When the actual email instead
+    # gives a direct link instruction, preserve that grounded instruction.
+    if action == "provide_information" and not _explicit_sensitive_information_request(soc):
+        link_evidence = _explicit_link_action_evidence(soc)
+        semantic["asks_for_sensitive_information"] = False
+        semantic["semantic_signals"] = sorted(
+            signal for signal in (semantic.get("semantic_signals") or [])
+            if signal != "sensitive_info"
+        )
+        if links and link_evidence:
+            semantic["requested_action"] = "visit_link"
+            semantic["action_channel"] = "supplied_link"
+            semantic["asks_to_click_link"] = True
+            semantic["evidence_phrase"] = link_evidence
+            semantic["reason"] = "The email explicitly asks the recipient to follow a supplied link."
+            semantic["content_summary"] = "The email asks the recipient to follow a supplied link."
+            semantic["ambiguity"] = "low"
+            action = "visit_link"
+            channel = "supplied_link"
+        else:
+            semantic["requested_action"] = "informational"
+            semantic["action_channel"] = "none"
+            semantic["evidence_phrase"] = ""
+            semantic["ambiguity"] = "high"
+            action = "informational"
+            channel = "none"
+    if action == "pay_or_transfer" and not _explicit_payment_request(soc):
+        link_evidence = _explicit_link_action_evidence(soc)
+        semantic["asks_for_payment"] = False
+        semantic["payment_method"] = "none"
+        semantic["payment_asset"] = ""
+        semantic["amount"] = ""
+        if links and link_evidence:
+            semantic["requested_action"] = "visit_link"
+            semantic["action_channel"] = "supplied_link"
+            semantic["asks_to_click_link"] = True
+            semantic["evidence_phrase"] = link_evidence
+            semantic["reason"] = "The email explicitly asks the recipient to follow a supplied link."
+            semantic["content_summary"] = "The email asks the recipient to follow a supplied link."
+            semantic["ambiguity"] = "low"
+            action = "visit_link"
+            channel = "supplied_link"
+        else:
+            semantic["requested_action"] = "informational"
+            semantic["action_channel"] = "none"
+            semantic["evidence_phrase"] = ""
+            semantic["ambiguity"] = "high"
+            action = "informational"
+            channel = "none"
+    if action == "provide_credentials" and not _explicit_credential_submission(soc):
+        semantic["requested_action"] = "informational"
+        semantic["action_channel"] = "none"
+        semantic["asks_for_credentials"] = False
+        semantic["credential_type"] = "none"
+        semantic["evidence_phrase"] = ""
+        semantic["ambiguity"] = "high"
+        action = "informational"
+        channel = "none"
+    # Treat a generic/no-action model response as incomplete when the parsed
+    # message itself contains an actionable resource and a verbatim instruction
+    # to open it. This relies on the message structure and exact evidence, not
+    # on a sender, brand, campaign, or fixed email template.
+    if action in {"none", "informational"}:
+        link_evidence = _explicit_link_action_evidence(soc)
+        if links and link_evidence:
+            semantic["requested_action"] = "visit_link"
+            semantic["action_channel"] = "supplied_link"
+            semantic["asks_to_click_link"] = True
+            semantic["evidence_phrase"] = link_evidence
+            semantic["reason"] = "The email explicitly asks the recipient to follow a supplied link."
+            semantic["content_summary"] = "The email asks the recipient to follow a supplied link."
+            semantic["ambiguity"] = "low"
+            action = "visit_link"
+            channel = "supplied_link"
+        else:
+            attachment_evidence = _explicit_attachment_action_evidence(soc)
+            if attachments and attachment_evidence:
+                semantic["requested_action"] = "open_attachment"
+                semantic["action_channel"] = "supplied_attachment"
+                semantic["asks_to_open_attachment"] = True
+                semantic["evidence_phrase"] = attachment_evidence
+                semantic["reason"] = "The email explicitly asks the recipient to open or review an attachment."
+                semantic["content_summary"] = "The email asks the recipient to open or review an attachment."
+                semantic["ambiguity"] = "low"
+                action = "open_attachment"
+                channel = "supplied_attachment"
     if channel == "supplied_link":
         if links:
             semantic["asks_to_click_link"] = True
@@ -1244,11 +1529,18 @@ def _correlate_semantic_with_message_structure(soc: dict, semantic: dict) -> dic
     if action not in {"none", "informational", "other"} and not semantic.get(
         "evidence_phrase"
     ):
+        semantic["requested_action"] = "informational"
+        semantic["action_channel"] = "none"
+        semantic["asks_to_click_link"] = False
+        semantic["asks_to_open_attachment"] = False
+        semantic["asks_for_credentials"] = False
+        semantic["asks_for_sensitive_information"] = False
+        semantic["asks_for_payment"] = False
+        semantic["asks_to_verify_account"] = False
+        semantic["asks_to_change_account_settings"] = False
         semantic["ambiguity"] = "high"
         semantic["confidence"] = min(semantic.get("confidence", 0.5), 0.49)
-        semantic["reason"] = (
-            "The semantic action was not accompanied by a grounded quotation."
-        )
+        semantic["reason"] = "The semantic action was not accompanied by a grounded quotation."
 
     if semantic.get("claimed_brand") and _claimed_brand_domain_mismatch(
         soc, semantic
@@ -1286,6 +1578,12 @@ def _content_risk(semantic: dict) -> tuple[str, list[str]]:
             "business_email_compromise", "invoice_fraud",
         }
     )
+    deceptive_security_lure = (
+        semantic.get("security_alert")
+        and semantic.get("requested_external_action")
+        and semantic.get("identity_deception")
+        and bool(semantic.get("security_lure_evidence"))
+    )
 
     if semantic.get("structured_extortion") and semantic["asks_for_payment"]:
         return "malicious", [
@@ -1295,7 +1593,11 @@ def _content_risk(semantic: dict) -> tuple[str, list[str]]:
         return "malicious", [
             "the message introduces changed payment details in a transfer request, a business-email-compromise pattern"
         ]
-    if credential_submission:
+    if deceptive_security_lure:
+        return "malicious", [
+            "the message combines a claimed security or service event, an external action, and an inconsistent claimed identity"
+        ]
+    if credential_submission and risky_channel:
         return "malicious", ["the message asks the recipient to provide credentials"]
     if semantic["asks_to_bypass_procedure"]:
         return "malicious", ["the message asks the recipient to bypass normal procedures"]
@@ -1306,6 +1608,8 @@ def _content_risk(semantic: dict) -> tuple[str, list[str]]:
         reasons.append("the message requests a payment or transfer")
     if semantic["asks_for_sensitive_information"]:
         reasons.append("the message requests sensitive information")
+    if credential_submission:
+        reasons.append("the message mentions a request for credentials without a supplied external channel")
     if settings_via_supplied_channel:
         reasons.append("account changes are requested through a channel supplied by the message")
     if verification_via_supplied_channel:
@@ -1525,23 +1829,9 @@ def _technical_risk(soc: dict, semantic: dict | None = None) -> tuple[str, list[
         suspicious.append("a lookalike or deceptive domain was detected")
     if semantic and _sensitive_link_domain_mismatch(soc, semantic):
         suspicious.append("a requested-action link uses a domain unrelated to the sender")
-    if (
-        semantic
-        and semantic.get("action_channel") == "supplied_link"
-        and "link_reputation" in soc
-    ):
-        actionable_links = _actionable_links(soc)
-        reputation = soc.get("link_reputation") or {}
-        actionable_statuses = {
-            str((reputation.get(link.get("url") or "") or {}).get("status") or "").lower()
-            for link in actionable_links
-        }
-        if actionable_links and not (
-            actionable_statuses & {"clean", "malicious", "suspicious"}
-        ):
-            suspicious.append(
-                "the requested-action link has no conclusive reputation result"
-            )
+    # A missing VirusTotal report or API key is not negative evidence. It is
+    # surfaced in the UI as unavailable, but must not turn an ordinary link
+    # into a suspicious technical signal.
     return ("uncertain", suspicious) if suspicious else ("clean", ["no strong technical threat was detected"])
 
 
@@ -1610,11 +1900,15 @@ def apply_email_risk_policy(soc: dict, semantic: dict) -> dict:
     semantic = normalize_semantic_extraction(semantic, soc=soc)
     original_action = semantic["requested_action"]
     original_summary = semantic["content_summary"]
+    original_structured_extortion = semantic.get("structured_extortion", False)
     semantic = _correlate_semantic_with_message_structure(soc, semantic)
     if semantic.get("structured_extortion"):
         semantic["content_summary"] = _fallback_content_summary(soc, semantic)
     elif (
-        semantic["requested_action"] != original_action
+        (
+            semantic["requested_action"] != original_action
+            or semantic.get("structured_extortion", False) != original_structured_extortion
+        )
         and semantic["content_summary"] == original_summary
     ) or semantic["content_summary"] == "The model did not summarize the content.":
         semantic["content_summary"] = _fallback_content_summary(soc, semantic)
@@ -1638,7 +1932,11 @@ def apply_email_risk_policy(soc: dict, semantic: dict) -> dict:
         and identity_risk in {"uncertain", "spoofing_evidence"}
     ):
         verdict = "phishing"
-    elif bert_result == "malicious" and supplied_action:
+    elif (
+        bert_result == "malicious"
+        and supplied_action
+        and (identity_risk != "verified" or technical_risk != "clean")
+    ):
         verdict = "review"
     elif content_risk == "suspicious" or identity_risk == "spoofing_evidence" or technical_risk == "uncertain":
         verdict = "review"
@@ -1909,7 +2207,10 @@ TARGETED_INTENT_INSTRUCTIONS = (
     "claim_reward=obtain a prize, refund or bonus; bypass=evade a normal control. "
     "Also identify payment_method, payment_asset, amount, coercion, threat_type, and scam_type from meaning rather than keywords. "
     "A demand for payment backed by a threat is extortion; use sextortion when the threatened consequence exposes intimate material. "
+    "For a reply or forwarded conversation, evaluate the latest answer and the immediately quoted request together. If one participant asks for account details in order to make a transfer and the answer supplies those details or makes delivery conditional on payment confirmation, this is payment=bank_transfer even if the answer does not repeat the verb 'pay'. "
+    "Do not call it payment diversion unless the destination is explicitly described as new, changed, updated, replacement, or different. "
     "Opening a link first does not replace the more specific final action. Return action=none when none is explicitly requested. "
+    "Generic feedback, ratings, comments, surveys, questionnaires, and training evaluations are not personal or confidential information unless the email explicitly requests sensitive data. "
     "Copy the shortest exact supporting phrase as evidence. Choose channel using META and the email text. JSON only.\n"
 )
 
@@ -1943,6 +2244,59 @@ PAYMENT_DIVERSION_INSTRUCTIONS = (
     "A bank account without that surrounding context is false. If true, copy the shortest exact phrase proving the update/current-change into payment_change_evidence. "
     "Set scam_type=business_email_compromise when the conversation combines an updated payment destination and an instruction or request to transfer; "
     "use invoice_fraud only when it is specifically framed as invoice fraud. JSON only.\n"
+)
+
+
+SECURITY_LURE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "security_alert": {"type": "boolean"},
+        "requested_external_action": {"type": "boolean"},
+        "identity_deception": {"type": "boolean"},
+        "claimed_brand": {"type": "string", "maxLength": 80},
+        "evidence": {"type": "string", "maxLength": 180},
+    },
+    "required": [
+        "security_alert", "requested_external_action", "identity_deception",
+        "claimed_brand", "evidence",
+    ],
+    "additionalProperties": False,
+}
+
+SECURITY_LURE_INSTRUCTIONS = (
+    "Check one narrow social-engineering pattern only. Determine whether the email claims an account, sign-in, security, "
+    "document-sharing, delivery, or service event and asks the recipient to take an action through a supplied external channel. "
+    "Use requested_external_action=true only for an explicit instruction to open, view, report, verify, sign in, scan, download, or otherwise continue through a supplied link, button, QR code, or attachment. "
+    "Sender metadata is trusted context but is not email evidence. Set identity_deception=true only when the email claims a brand/organization and the trusted sender metadata is clearly unrelated to that claimed identity. "
+    "Do not infer deception from a brand name alone and do not treat an ordinary document share as malicious without both an external action and the identity inconsistency. "
+    "Copy one shortest exact email phrase proving the claimed event or requested action into evidence. JSON only.\n"
+)
+
+
+EXTORTION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "extortion": {"type": "boolean"},
+        "sextortion": {"type": "boolean"},
+        "evidence": {"type": "string", "maxLength": 180},
+        "threat_evidence": {"type": "string", "maxLength": 180},
+        "payment_method": PHI4_OUTPUT_SCHEMA["properties"]["payment_method"],
+        "payment_asset": PHI4_OUTPUT_SCHEMA["properties"]["payment_asset"],
+        "amount": PHI4_OUTPUT_SCHEMA["properties"]["amount"],
+    },
+    "required": [
+        "extortion", "sextortion", "evidence", "threat_evidence",
+        "payment_method", "payment_asset", "amount",
+    ],
+    "additionalProperties": False,
+}
+
+EXTORTION_INSTRUCTIONS = (
+    "Check one narrow social-engineering pattern only. Determine whether the email demands money or value while threatening a harmful consequence. "
+    "This includes exposure of private/intimate material, disclosure of data, reputational damage, account loss, financial penalty, or physical harm. "
+    "A threat to distribute an intimate or sexual video, image, recording, or private act is sextortion: set sextortion=true. "
+    "Otherwise use extortion=true when payment and threat are both explicit. Treat a cryptocurrency name, wallet, blockchain address, or token as payment_method=cryptocurrency. "
+    "Copy the shortest exact payment demand into evidence and the shortest exact threat into threat_evidence. Do not classify ordinary invoices, collections, marketing, or a payment without a threat as extortion. JSON only.\n"
 )
 
 
@@ -2079,8 +2433,10 @@ def _request_targeted_intent(
     return {}
 
 
-def _needs_payment_diversion_verifier(semantic: dict) -> bool:
-    """Run a focused BEC check only for a transfer extracted from the email."""
+def _needs_payment_diversion_verifier(soc: dict, semantic: dict) -> bool:
+    """Run the focused BEC pass for a transfer or grounded changed destination."""
+    if _grounded_payment_diversion(soc):
+        return True
     return (
         semantic.get("requested_action") == "pay_or_transfer"
         and semantic.get("payment_method") == "bank_transfer"
@@ -2136,6 +2492,151 @@ def _request_payment_diversion_verifier(
                 "payment_change_evidence": evidence,
                 "scam_type": scam_type,
                 "payment_diversion_verifier_used": True,
+            }
+    except (ValueError, json.JSONDecodeError, requests.RequestException):
+        return {}
+    return {}
+
+
+_SECURITY_LURE_CONTEXT_PATTERN = re.compile(
+    r"\b(?:account|sign[ -]?in|login|password|credential|security|secure|verify|"
+    r"access|document|shared|delivery|service|invoice|sicurezza|accesso|"
+    r"credenzial|verifica|documento|condivis[oa]|consegna|servizio|fattura)\b",
+    re.IGNORECASE,
+)
+
+
+def _needs_security_lure_verifier(soc: dict, semantic: dict) -> bool:
+    """Run the extra pass only where a deceptive external-action lure is plausible.
+
+    The primary extraction remains the source of truth for ordinary email.  This
+    verifier is useful for messages whose rendered button/link obscured the
+    action, but running it for every newsletter or conversational message both
+    slows analysis down and gives small models another opportunity to invent a
+    security scenario.  The gate uses only generic message structure and broad
+    event context, never a sender or brand allow/block list.
+    """
+    has_external_channel = bool(
+        _actionable_links(soc)
+        or soc.get("attachments")
+        or semantic.get("action_channel") in {
+            "supplied_link", "external_form", "supplied_attachment"
+        }
+    )
+    if not has_external_channel:
+        return False
+    context = "\n".join(
+        str(value or "")
+        for value in (
+            soc.get("subject"),
+            soc.get("body_for_ai"),
+            semantic.get("evidence_phrase"),
+        )
+    )
+    return bool(_SECURITY_LURE_CONTEXT_PATTERN.search(context))
+
+
+def _request_security_lure_verifier(
+    soc: dict,
+    *,
+    model: str,
+    timeout: int,
+    email_prompt: str | None = None,
+    cancellation_requested=None,
+) -> dict:
+    if cancellation_requested and cancellation_requested():
+        return {}
+    sender_context = _clip(_normalize_obfuscated_text(str(soc.get("from_") or "")), 180)
+    messages = [
+        {"role": "system", "content": TARGETED_SYSTEM_MESSAGE},
+        {
+            "role": "user",
+            "content": (
+                SECURITY_LURE_INSTRUCTIONS
+                + f"TRUSTED SENDER METADATA: visible sender={sender_context or '-'}\n"
+                + (email_prompt or build_fast_email_prompt(soc))
+            ),
+        },
+    ]
+    try:
+        for event in _stream_ollama(
+            messages,
+            model,
+            min(timeout, 45),
+            output_schema=SECURITY_LURE_SCHEMA,
+        ):
+            if cancellation_requested and cancellation_requested():
+                return {}
+            if event.get("status") != "ok":
+                continue
+            raw = _json_object(event.get("text") or "")
+            evidence = _validated_evidence(soc, raw.get("evidence") or "", "context")
+            if not evidence:
+                return {}
+            return {
+                "security_alert": _as_bool(raw.get("security_alert")),
+                "requested_external_action": _as_bool(raw.get("requested_external_action")),
+                "identity_deception": _as_bool(raw.get("identity_deception")),
+                "claimed_brand": _clip_exact_span(raw.get("claimed_brand") or "", 80),
+                "security_lure_evidence": evidence,
+                "security_lure_verifier_used": True,
+            }
+    except (ValueError, json.JSONDecodeError, requests.RequestException):
+        return {}
+    return {}
+
+
+def _needs_extortion_verifier(semantic: dict) -> bool:
+    return (
+        semantic.get("requested_action") in {"pay_or_transfer", "provide_credentials"}
+        or semantic.get("scam_type") in {"business_email_compromise", "extortion", "sextortion"}
+    )
+
+
+def _request_extortion_verifier(
+    soc: dict,
+    *,
+    model: str,
+    timeout: int,
+    email_prompt: str | None = None,
+    cancellation_requested=None,
+) -> dict:
+    if cancellation_requested and cancellation_requested():
+        return {}
+    messages = [
+        {"role": "system", "content": TARGETED_SYSTEM_MESSAGE},
+        {
+            "role": "user",
+            "content": EXTORTION_INSTRUCTIONS + (email_prompt or build_fast_email_prompt(soc)),
+        },
+    ]
+    try:
+        for event in _stream_ollama(
+            messages,
+            model,
+            min(timeout, 45),
+            output_schema=EXTORTION_SCHEMA,
+        ):
+            if cancellation_requested and cancellation_requested():
+                return {}
+            if event.get("status") != "ok":
+                continue
+            raw = _json_object(event.get("text") or "")
+            evidence = _validated_evidence(soc, raw.get("evidence") or "", "context")
+            threat_evidence = _validated_evidence(soc, raw.get("threat_evidence") or "", "context")
+            if not _as_bool(raw.get("extortion")) or not evidence or not threat_evidence:
+                return {}
+            return {
+                "action": "payment",
+                "evidence": evidence,
+                "coercion": True,
+                "threat_type": "private_material_exposure" if _as_bool(raw.get("sextortion")) else "other",
+                "scam_type": "sextortion" if _as_bool(raw.get("sextortion")) else "extortion",
+                "payment_method": raw.get("payment_method") or "other",
+                "payment_asset": raw.get("payment_asset") or "",
+                "amount": raw.get("amount") or "",
+                "signal_evidence": threat_evidence,
+                "extortion_verifier_used": True,
             }
     except (ValueError, json.JSONDecodeError, requests.RequestException):
         return {}
@@ -2253,7 +2754,7 @@ def stream_phi4_email_analysis(
         yield {
             "status": "error",
             "message": (
-                "LLM analysis unavailable: avvia Ollama locale e installa il modello selezionato."
+                "LLM analysis unavailable: start local Ollama and install the selected model."
             ),
             "text": "",
         }
@@ -2361,8 +2862,8 @@ def stream_phi4_email_analysis(
                     yield {
                         "status": "error",
                         "message": (
-                            f"{model} non ha restituito JSON strutturato per la sezione "
-                            f"{section_number}/{total_sections}, anche dopo il retry: {retry_exc}"
+                            f"{model} did not return structured JSON for section "
+                            f"{section_number}/{total_sections}, even after retry: {retry_exc}"
                         ),
                         "text": "",
                     }
@@ -2393,7 +2894,7 @@ def stream_phi4_email_analysis(
                         )
                         semantic["intent_verifier_used"] = True
                 payment_primary = normalize_semantic_extraction(semantic, soc=section_soc)
-                if _needs_payment_diversion_verifier(payment_primary):
+                if _needs_payment_diversion_verifier(soc, payment_primary):
                     payment_diversion = _request_payment_diversion_verifier(
                         section_soc,
                         model=model,
@@ -2406,6 +2907,41 @@ def stream_phi4_email_analysis(
                         return
                     if payment_diversion:
                         semantic.update(payment_diversion)
+                # The model verifier is valuable for borderline threads, but a
+                # quoted updated payment destination plus an explicit transfer
+                # request is already a complete, language-independent BEC
+                # relationship.  Preserve it if the model omitted a JSON field.
+                grounded_diversion = _grounded_payment_diversion(soc)
+                if grounded_diversion:
+                    semantic.update(grounded_diversion)
+                security_primary = normalize_semantic_extraction(semantic, soc=section_soc)
+                if _needs_security_lure_verifier(section_soc, security_primary):
+                    security_lure = _request_security_lure_verifier(
+                        section_soc,
+                        model=model,
+                        timeout=timeout,
+                        email_prompt=email_prompt,
+                        cancellation_requested=cancellation_requested,
+                    )
+                    if cancellation_requested and cancellation_requested():
+                        yield {"status": "cancelled", "text": ""}
+                        return
+                    if security_lure:
+                        semantic.update(security_lure)
+                extortion_primary = normalize_semantic_extraction(semantic, soc=section_soc)
+                if _needs_extortion_verifier(extortion_primary):
+                    extortion = _request_extortion_verifier(
+                        section_soc,
+                        model=model,
+                        timeout=timeout,
+                        email_prompt=email_prompt,
+                        cancellation_requested=cancellation_requested,
+                    )
+                    if cancellation_requested and cancellation_requested():
+                        yield {"status": "cancelled", "text": ""}
+                        return
+                    if extortion:
+                        semantic.update(extortion)
                 semantic_candidates.append(semantic)
             except (ValueError, json.JSONDecodeError) as exc:
                 yield {
@@ -2510,17 +3046,17 @@ def _stream_ollama(
                 if event.get("done"):
                     break
     except requests.exceptions.Timeout:
-        yield {"status": "error", "message": f"Ollama ha superato il timeout di {timeout} secondi.", "text": "".join(chunks)}
+        yield {"status": "error", "message": f"Ollama timed out after {timeout} seconds.", "text": "".join(chunks)}
         return
     except requests.exceptions.HTTPError as exc:
         code = exc.response.status_code if exc.response is not None else "?"
-        yield {"status": "error", "message": f"Ollama HTTP {code}: verifica che il modello '{model}' sia installato. ({exc})", "text": "".join(chunks)}
+        yield {"status": "error", "message": f"Ollama HTTP {code}: verify that model '{model}' is installed. ({exc})", "text": "".join(chunks)}
         return
     except requests.exceptions.RequestException as exc:
-        yield {"status": "error", "message": f"Ollama non raggiungibile su {OLLAMA_CHAT_ENDPOINT}: {exc}", "text": "".join(chunks)}
+        yield {"status": "error", "message": f"Ollama is unreachable at {OLLAMA_CHAT_ENDPOINT}: {exc}", "text": "".join(chunks)}
         return
     except Exception as exc:
-        yield {"status": "error", "message": f"Error durante la generazione con Ollama: {exc}", "text": "".join(chunks)}
+        yield {"status": "error", "message": f"Error while generating with Ollama: {exc}", "text": "".join(chunks)}
         return
 
     yield {"status": "ok", "model": model, "backend": "ollama", "text": "".join(chunks).strip()}

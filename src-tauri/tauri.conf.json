@@ -17,7 +17,6 @@
     "active": true,
     "targets": "all",
     "externalBin": ["binaries/fishstop-engine"],
-    "resources": ["resources/ollama"],
-    "icon": []
+    "resources": ["resources/ollama"]
   }
 }

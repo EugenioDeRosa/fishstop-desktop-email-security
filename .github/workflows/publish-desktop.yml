@@ -55,6 +55,7 @@ jobs:
       - uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FISHSTOP_GOOGLE_CLIENT_SECRET: ${{ secrets.FISHSTOP_GOOGLE_CLIENT_SECRET }}
         with:
           tagName: v__VERSION__
           releaseName: FishSTOP v__VERSION__

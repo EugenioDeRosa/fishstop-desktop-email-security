@@ -25,6 +25,9 @@ use ollama_runtime::OllamaRuntime;
 // Un Client ID di un'app desktop è pubblico per definizione. Non inserire mai qui
 // un client secret o credenziali personali.
 const GOOGLE_CLIENT_ID: &str = "676285460838-ddntr70n2um8s68r56aludqt4qkgc6hs.apps.googleusercontent.com";
+// This value is injected only while producing the distributable application.
+// It is intentionally not stored in the repository.
+const GOOGLE_CLIENT_SECRET: Option<&str> = option_env!("FISHSTOP_GOOGLE_CLIENT_SECRET");
 const AUTHORIZATION_ENDPOINT: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_ENDPOINT: &str = "https://oauth2.googleapis.com/token";
 const USERINFO_ENDPOINT: &str = "https://openidconnect.googleapis.com/v1/userinfo";
@@ -200,6 +203,9 @@ fn wait_for_callback(listener: TcpListener, expected_state: &str) -> Result<Stri
 }
 
 fn google_sign_in() -> Result<GoogleUser, String> {
+    let client_secret = GOOGLE_CLIENT_SECRET.ok_or(
+        "The Google sign-in credential is missing from this build. Download the latest FishStop installer.",
+    )?;
     let listener = TcpListener::bind("127.0.0.1:0")
         .map_err(|error| format!("Could not start the local callback: {error}"))?;
     let port = listener

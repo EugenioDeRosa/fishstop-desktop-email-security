@@ -6,25 +6,31 @@ use std::{
     collections::HashMap,
     fs,
     io::{BufRead, BufReader, BufWriter, Read, Write},
-    path::PathBuf,
     net::TcpListener,
+    path::PathBuf,
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
     sync::{Arc, Mutex},
     thread,
     time::{Duration, Instant},
 };
 
+use aes_gcm::{
+    aead::{Aead, KeyInit, Payload},
+    Aes256Gcm, Nonce,
+};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use keyring::v1::Entry;
+use ollama_runtime::OllamaRuntime;
 use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use tauri::Manager;
 use url::Url;
-use ollama_runtime::OllamaRuntime;
 
 // Un Client ID di un'app desktop è pubblico per definizione. Non inserire mai qui
 // un client secret o credenziali personali.
-const GOOGLE_CLIENT_ID: &str = "676285460838-ddntr70n2um8s68r56aludqt4qkgc6hs.apps.googleusercontent.com";
+const GOOGLE_CLIENT_ID: &str =
+    "676285460838-ddntr70n2um8s68r56aludqt4qkgc6hs.apps.googleusercontent.com";
 const GOOGLE_CLIENT_SECRET_RESOURCE: &str = "google-oauth-client-secret";
 const AUTHORIZATION_ENDPOINT: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_ENDPOINT: &str = "https://oauth2.googleapis.com/token";
@@ -37,11 +43,20 @@ const KEYRING_SERVICE: &str = "it.fishstop.desktop";
 struct ReputationCredentials {
     virustotal: String,
     abuseipdb: String,
+    #[serde(default)]
+    history_key: String,
 }
 
 #[derive(Default)]
 struct ReputationCredentialCache {
     by_user: HashMap<String, ReputationCredentials>,
+}
+
+#[derive(Deserialize, Serialize)]
+struct EncryptedHistory {
+    version: u8,
+    nonce: String,
+    ciphertext: String,
 }
 
 #[derive(Serialize)]
@@ -58,8 +73,159 @@ fn reputation_key_entry(user_sub: &str) -> Result<Entry, String> {
         .map_err(|error| format!("Could not access the system credential store: {error}"))
 }
 
-fn load_reputation_credentials(user_sub: &str, cache: &Arc<Mutex<ReputationCredentialCache>>) -> Result<ReputationCredentials, String> {
-    let mut cache = cache.lock().map_err(|_| "Secure credential cache is unavailable.".to_string())?;
+fn history_key_entry(user_sub: &str) -> Result<Entry, String> {
+    if user_sub.trim().is_empty() {
+        return Err("A signed-in user is required to access secure history.".to_string());
+    }
+    Entry::new(KEYRING_SERVICE, &format!("{user_sub}:analysis-history-key"))
+        .map_err(|error| format!("Could not access the system credential store: {error}"))
+}
+
+fn history_file(app: &tauri::AppHandle, user_sub: &str) -> Result<PathBuf, String> {
+    if user_sub.trim().is_empty() {
+        return Err("A signed-in user is required to access history.".to_string());
+    }
+    let directory = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("Could not locate FishStop data: {error}"))?
+        .join("history");
+    fs::create_dir_all(&directory)
+        .map_err(|error| format!("Could not prepare secure history storage: {error}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))
+            .map_err(|error| format!("Could not secure history storage: {error}"))?;
+    }
+    let digest = Sha256::digest(user_sub.as_bytes());
+    let identifier = digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    Ok(directory.join(format!("{identifier}.json.enc")))
+}
+
+fn history_cipher(key: &[u8; 32]) -> Result<Aes256Gcm, String> {
+    Aes256Gcm::new_from_slice(key)
+        .map_err(|_| "Could not initialize secure history encryption.".to_string())
+}
+
+#[tauri::command]
+fn load_analysis_history(
+    app: tauri::AppHandle,
+    user_sub: String,
+    cache: tauri::State<'_, Arc<Mutex<ReputationCredentialCache>>>,
+) -> Result<Vec<serde_json::Value>, String> {
+    let path = history_file(&app, &user_sub)?;
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let encrypted: EncryptedHistory = serde_json::from_slice(
+        &fs::read(&path).map_err(|error| format!("Could not read secure history: {error}"))?,
+    )
+    .map_err(|_| "The secure history file is unreadable.".to_string())?;
+    if encrypted.version != 1 {
+        return Err(
+            "The secure history format is not supported by this version of FishStop.".to_string(),
+        );
+    }
+    let nonce_bytes = URL_SAFE_NO_PAD
+        .decode(encrypted.nonce)
+        .map_err(|_| "The secure history nonce is invalid.".to_string())?;
+    if nonce_bytes.len() != 12 {
+        return Err("The secure history nonce has an invalid length.".to_string());
+    }
+    let ciphertext = URL_SAFE_NO_PAD
+        .decode(encrypted.ciphertext)
+        .map_err(|_| "The secure history ciphertext is invalid.".to_string())?;
+    let key = history_key(&user_sub, &cache)?;
+    let plaintext = history_cipher(&key)?
+        .decrypt(
+            Nonce::from_slice(&nonce_bytes),
+            Payload {
+                msg: &ciphertext,
+                aad: user_sub.as_bytes(),
+            },
+        )
+        .map_err(|_| "The secure history could not be verified. It was not loaded.".to_string())?;
+    serde_json::from_slice(&plaintext)
+        .map_err(|_| "The secure history data is invalid. It was not loaded.".to_string())
+}
+
+#[tauri::command]
+fn save_analysis_history(
+    app: tauri::AppHandle,
+    user_sub: String,
+    history: Vec<serde_json::Value>,
+    cache: tauri::State<'_, Arc<Mutex<ReputationCredentialCache>>>,
+) -> Result<(), String> {
+    let plaintext = serde_json::to_vec(&history)
+        .map_err(|error| format!("Could not encode secure history: {error}"))?;
+    if plaintext.len() > 64 * 1024 * 1024 {
+        return Err("The secure history exceeds the 64 MB local storage limit.".to_string());
+    }
+    let mut nonce = [0_u8; 12];
+    OsRng.fill_bytes(&mut nonce);
+    let key = history_key(&user_sub, &cache)?;
+    let ciphertext = history_cipher(&key)?
+        .encrypt(
+            Nonce::from_slice(&nonce),
+            Payload {
+                msg: &plaintext,
+                aad: user_sub.as_bytes(),
+            },
+        )
+        .map_err(|_| "Could not encrypt secure history.".to_string())?;
+    let serialized = serde_json::to_vec(&EncryptedHistory {
+        version: 1,
+        nonce: URL_SAFE_NO_PAD.encode(nonce),
+        ciphertext: URL_SAFE_NO_PAD.encode(ciphertext),
+    })
+    .map_err(|error| format!("Could not encode encrypted history: {error}"))?;
+    let path = history_file(&app, &user_sub)?;
+    let temporary = path.with_extension(format!("{}.tmp", random_url_safe(8)));
+    fs::write(&temporary, serialized)
+        .map_err(|error| format!("Could not write secure history: {error}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&temporary, fs::Permissions::from_mode(0o600))
+            .map_err(|error| format!("Could not secure history file: {error}"))?;
+    }
+    #[cfg(windows)]
+    if path.exists() {
+        fs::remove_file(&path)
+            .map_err(|error| format!("Could not replace secure history: {error}"))?;
+    }
+    fs::rename(&temporary, path)
+        .map_err(|error| format!("Could not finalize secure history: {error}"))?;
+    Ok(())
+}
+
+#[tauri::command]
+fn clear_analysis_history(
+    app: tauri::AppHandle,
+    user_sub: String,
+    cache: tauri::State<'_, Arc<Mutex<ReputationCredentialCache>>>,
+) -> Result<(), String> {
+    let path = history_file(&app, &user_sub)?;
+    if path.exists() {
+        fs::remove_file(path)
+            .map_err(|error| format!("Could not remove secure history: {error}"))?;
+    }
+    let mut credentials = load_reputation_credentials(&user_sub, &cache)?;
+    credentials.history_key.clear();
+    save_secure_material(&user_sub, credentials, &cache)
+}
+
+fn load_reputation_credentials(
+    user_sub: &str,
+    cache: &Arc<Mutex<ReputationCredentialCache>>,
+) -> Result<ReputationCredentials, String> {
+    let mut cache = cache
+        .lock()
+        .map_err(|_| "Secure credential cache is unavailable.".to_string())?;
     if let Some(credentials) = cache.by_user.get(user_sub) {
         return Ok(credentials.clone());
     }
@@ -70,12 +236,69 @@ fn load_reputation_credentials(user_sub: &str, cache: &Arc<Mutex<ReputationCrede
         Err(keyring::v1::Error::NoEntry) => ReputationCredentials::default(),
         Err(error) => return Err(format!("Could not read secure credentials: {error}")),
     };
-    cache.by_user.insert(user_sub.to_string(), credentials.clone());
+    cache
+        .by_user
+        .insert(user_sub.to_string(), credentials.clone());
     Ok(credentials)
 }
 
+fn save_secure_material(
+    user_sub: &str,
+    credentials: ReputationCredentials,
+    cache: &Arc<Mutex<ReputationCredentialCache>>,
+) -> Result<(), String> {
+    let serialized = serde_json::to_string(&credentials)
+        .map_err(|error| format!("Could not encode secure credentials: {error}"))?;
+    reputation_key_entry(user_sub)?
+        .set_password(&serialized)
+        .map_err(|error| format!("Could not save secure credentials: {error}"))?;
+    cache
+        .lock()
+        .map_err(|_| "Secure credential cache is unavailable.".to_string())?
+        .by_user
+        .insert(user_sub.to_string(), credentials);
+    Ok(())
+}
+
+fn decode_history_key(encoded: &str) -> Result<[u8; 32], String> {
+    let bytes = URL_SAFE_NO_PAD
+        .decode(encoded)
+        .map_err(|_| "The secure history key is invalid.".to_string())?;
+    bytes
+        .try_into()
+        .map_err(|_| "The secure history key has an invalid length.".to_string())
+}
+
+fn history_key(
+    user_sub: &str,
+    cache: &Arc<Mutex<ReputationCredentialCache>>,
+) -> Result<[u8; 32], String> {
+    let mut credentials = load_reputation_credentials(user_sub, cache)?;
+    if !credentials.history_key.trim().is_empty() {
+        return decode_history_key(&credentials.history_key);
+    }
+    // One-time migration for archives encrypted by versions that used a
+    // separate keychain item. All later reads use the single secure entry.
+    let encoded = match history_key_entry(user_sub)?.get_password() {
+        Ok(value) => value,
+        Err(keyring::v1::Error::NoEntry) => {
+            let mut key = [0_u8; 32];
+            OsRng.fill_bytes(&mut key);
+            URL_SAFE_NO_PAD.encode(key)
+        }
+        Err(error) => return Err(format!("Could not read the secure history key: {error}")),
+    };
+    let key = decode_history_key(&encoded)?;
+    credentials.history_key = encoded;
+    save_secure_material(user_sub, credentials, cache)?;
+    Ok(key)
+}
+
 #[tauri::command]
-fn reputation_key_status(user_sub: String, cache: tauri::State<'_, Arc<Mutex<ReputationCredentialCache>>>) -> Result<ReputationKeyStatus, String> {
+fn reputation_key_status(
+    user_sub: String,
+    cache: tauri::State<'_, Arc<Mutex<ReputationCredentialCache>>>,
+) -> Result<ReputationKeyStatus, String> {
     let credentials = load_reputation_credentials(&user_sub, &cache)?;
     Ok(ReputationKeyStatus {
         virustotal: !credentials.virustotal.trim().is_empty(),
@@ -84,18 +307,20 @@ fn reputation_key_status(user_sub: String, cache: tauri::State<'_, Arc<Mutex<Rep
 }
 
 #[tauri::command]
-fn save_reputation_keys(user_sub: String, virustotal: String, abuseipdb: String, cache: tauri::State<'_, Arc<Mutex<ReputationCredentialCache>>>) -> Result<(), String> {
+fn save_reputation_keys(
+    user_sub: String,
+    virustotal: String,
+    abuseipdb: String,
+    cache: tauri::State<'_, Arc<Mutex<ReputationCredentialCache>>>,
+) -> Result<(), String> {
     let mut credentials = load_reputation_credentials(&user_sub, &cache)?;
-    if !virustotal.trim().is_empty() { credentials.virustotal = virustotal.trim().to_string(); }
-    if !abuseipdb.trim().is_empty() { credentials.abuseipdb = abuseipdb.trim().to_string(); }
-    let serialized = serde_json::to_string(&credentials)
-        .map_err(|error| format!("Could not encode secure credentials: {error}"))?;
-    reputation_key_entry(&user_sub)?
-        .set_password(&serialized)
-        .map_err(|error| format!("Could not save secure credentials: {error}"))?;
-    cache.lock().map_err(|_| "Secure credential cache is unavailable.".to_string())?
-        .by_user.insert(user_sub, credentials);
-    Ok(())
+    if !virustotal.trim().is_empty() {
+        credentials.virustotal = virustotal.trim().to_string();
+    }
+    if !abuseipdb.trim().is_empty() {
+        credentials.abuseipdb = abuseipdb.trim().to_string();
+    }
+    save_secure_material(&user_sub, credentials, &cache)
 }
 
 #[derive(Debug, Deserialize)]
@@ -134,11 +359,18 @@ fn google_client_secret() -> Result<String, String> {
     let resource = executable
         .parent()
         .and_then(|directory| directory.parent())
-        .map(|directory| directory.join("Resources").join("resources").join(GOOGLE_CLIENT_SECRET_RESOURCE));
+        .map(|directory| {
+            directory
+                .join("Resources")
+                .join("resources")
+                .join(GOOGLE_CLIENT_SECRET_RESOURCE)
+        });
     #[cfg(not(target_os = "macos"))]
-    let resource = executable
-        .parent()
-        .map(|directory| directory.join("resources").join(GOOGLE_CLIENT_SECRET_RESOURCE));
+    let resource = executable.parent().map(|directory| {
+        directory
+            .join("resources")
+            .join(GOOGLE_CLIENT_SECRET_RESOURCE)
+    });
 
     resource
         .ok_or_else(|| "The Google sign-in credential is missing from this build. Download the latest FishStop installer.".to_string())
@@ -158,18 +390,20 @@ fn launch_browser(url: &str) -> Result<(), String> {
     let result = Command::new("open").arg(url).spawn();
 
     #[cfg(target_os = "windows")]
-    let result = Command::new("cmd")
-        .args(["/C", "start", "", url])
-        .spawn();
+    let result = Command::new("cmd").args(["/C", "start", "", url]).spawn();
 
     #[cfg(target_os = "linux")]
     let result = Command::new("xdg-open").arg(url).spawn();
 
     #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
-    let result: Result<std::process::Child, std::io::Error> =
-        Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "unsupported system"));
+    let result: Result<std::process::Child, std::io::Error> = Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "unsupported system",
+    ));
 
-    result.map(|_| ()).map_err(|error| format!("Could not open the browser: {error}"))
+    result
+        .map(|_| ())
+        .map_err(|error| format!("Could not open the browser: {error}"))
 }
 
 fn reply(stream: &mut std::net::TcpStream, title: &str, body: &str) {
@@ -208,18 +442,34 @@ fn wait_for_callback(listener: TcpListener, expected_state: &str) -> Result<Stri
                     callback.query_pairs().into_owned().collect();
 
                 if parameters.get("state").map(String::as_str) != Some(expected_state) {
-                    reply(&mut stream, "Sign-in cancelled", "Security verification failed. Return to FishStop and try again.");
+                    reply(
+                        &mut stream,
+                        "Sign-in cancelled",
+                        "Security verification failed. Return to FishStop and try again.",
+                    );
                     return Err("OAuth security verification failed".to_string());
                 }
                 if let Some(error) = parameters.get("error") {
-                    reply(&mut stream, "Sign-in cancelled", "You can close this page and return to FishStop.");
+                    reply(
+                        &mut stream,
+                        "Sign-in cancelled",
+                        "You can close this page and return to FishStop.",
+                    );
                     return Err(format!("Google cancelled the sign-in: {error}"));
                 }
                 if let Some(code) = parameters.get("code") {
-                    reply(&mut stream, "Sign-in complete", "You can close this page and return to FishStop.");
+                    reply(
+                        &mut stream,
+                        "Sign-in complete",
+                        "You can close this page and return to FishStop.",
+                    );
                     return Ok(code.clone());
                 }
-                reply(&mut stream, "Sign-in cancelled", "Google did not return a sign-in code.");
+                reply(
+                    &mut stream,
+                    "Sign-in cancelled",
+                    "Google did not return a sign-in code.",
+                );
                 return Err("Google did not return a sign-in code".to_string());
             }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -263,6 +513,7 @@ fn google_sign_in() -> Result<GoogleUser, String> {
         .post(TOKEN_ENDPOINT)
         .form(&[
             ("client_id", GOOGLE_CLIENT_ID),
+            ("client_secret", client_secret.as_str()),
             ("code", code.as_str()),
             ("code_verifier", code_verifier.as_str()),
             ("grant_type", "authorization_code"),
@@ -307,7 +558,10 @@ fn development_engine_path() -> PathBuf {
 fn python_interpreter() -> PathBuf {
     let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
     #[cfg(target_os = "windows")]
-    let venv_python = project_root.join(".venv").join("Scripts").join("python.exe");
+    let venv_python = project_root
+        .join(".venv")
+        .join("Scripts")
+        .join("python.exe");
     #[cfg(not(target_os = "windows"))]
     let venv_python = project_root.join(".venv").join("bin").join("python");
     if venv_python.is_file() {
@@ -329,6 +583,19 @@ fn packaged_engine_path() -> Option<PathBuf> {
 }
 
 fn engine_command() -> Result<Command, String> {
+    // A packaged engine can sit next to the debug executable after a local
+    // build. During development it would shadow src-python changes and make
+    // the desktop app run stale analysis rules, so always prefer sources.
+    #[cfg(debug_assertions)]
+    {
+        let engine = development_engine_path();
+        if engine.is_file() {
+            let mut command = Command::new(python_interpreter());
+            command.arg(engine);
+            return Ok(command);
+        }
+    }
+
     if let Some(engine) = packaged_engine_path() {
         return Ok(Command::new(engine));
     }
@@ -376,11 +643,15 @@ impl IdentityWorker {
         let request = serde_json::to_string(&report)
             .map_err(|error| format!("Could not serialize the identity report: {error}"))?;
         let stdin = self.stdin.as_mut().ok_or("Identity worker unavailable")?;
-        stdin.write_all(request.as_bytes()).and_then(|_| stdin.write_all(b"\n")).and_then(|_| stdin.flush())
+        stdin
+            .write_all(request.as_bytes())
+            .and_then(|_| stdin.write_all(b"\n"))
+            .and_then(|_| stdin.flush())
             .map_err(|error| format!("Could not send the report to identity analysis: {error}"))?;
         let mut response = String::new();
         let stdout = self.stdout.as_mut().ok_or("Identity worker unavailable")?;
-        stdout.read_line(&mut response)
+        stdout
+            .read_line(&mut response)
             .map_err(|error| format!("Could not read the identity response: {error}"))?;
         if response.trim().is_empty() {
             self.child = None;
@@ -391,13 +662,23 @@ impl IdentityWorker {
         let payload: serde_json::Value = serde_json::from_str(&response)
             .map_err(|_| "The identity worker returned an invalid response.".to_string())?;
         if payload.get("ok").and_then(|value| value.as_bool()) != Some(true) {
-            return Err(payload.get("error").and_then(|value| value.as_str()).unwrap_or("Identity analysis failed.").to_string());
+            return Err(payload
+                .get("error")
+                .and_then(|value| value.as_str())
+                .unwrap_or("Identity analysis failed.")
+                .to_string());
         }
-        payload.get("result").cloned().ok_or_else(|| "Identity result is missing.".to_string())
+        payload
+            .get("result")
+            .cloned()
+            .ok_or_else(|| "Identity result is missing.".to_string())
     }
 }
 
-fn run_eml_engine(temporary_eml: PathBuf, credentials: ReputationCredentials) -> Result<serde_json::Value, String> {
+fn run_eml_engine(
+    temporary_eml: PathBuf,
+    credentials: ReputationCredentials,
+) -> Result<serde_json::Value, String> {
     let output = engine_command().and_then(|mut command| {
         command
             .arg(&temporary_eml)
@@ -408,24 +689,44 @@ fn run_eml_engine(temporary_eml: PathBuf, credentials: ReputationCredentials) ->
     });
     let _ = fs::remove_file(&temporary_eml);
     let output = output?;
-    let response: serde_json::Value = serde_json::from_slice(&output.stdout)
-        .map_err(|_| format!(
+    let response: serde_json::Value = serde_json::from_slice(&output.stdout).map_err(|_| {
+        format!(
             "The analysis engine returned an invalid response: {}",
             String::from_utf8_lossy(&output.stderr).trim()
-        ))?;
-    if !output.status.success() || response.get("ok").and_then(|value| value.as_bool()) != Some(true) {
-        return Err(response.get("error").and_then(|value| value.as_str())
-            .unwrap_or("File analysis failed.").to_string());
+        )
+    })?;
+    if !output.status.success()
+        || response.get("ok").and_then(|value| value.as_bool()) != Some(true)
+    {
+        return Err(response
+            .get("error")
+            .and_then(|value| value.as_str())
+            .unwrap_or("File analysis failed.")
+            .to_string());
     }
-    response.get("report").cloned().ok_or_else(|| "Analysis report is missing.".to_string())
+    response
+        .get("report")
+        .cloned()
+        .ok_or_else(|| "Analysis report is missing.".to_string())
 }
 
-fn analyze_eml_with_engine(path: String, user_sub: String, cache: Arc<Mutex<ReputationCredentialCache>>) -> Result<serde_json::Value, String> {
+fn analyze_eml_with_engine(
+    path: String,
+    user_sub: String,
+    cache: Arc<Mutex<ReputationCredentialCache>>,
+) -> Result<serde_json::Value, String> {
     let source = PathBuf::from(path);
-    if !source.is_file() || source.extension().and_then(|extension| extension.to_str()).map(|extension| extension.eq_ignore_ascii_case("eml")) != Some(true) {
+    if !source.is_file()
+        || source
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .map(|extension| extension.eq_ignore_ascii_case("eml"))
+            != Some(true)
+    {
         return Err("FishStop supports .eml files only.".to_string());
     }
-    let size = source.metadata()
+    let size = source
+        .metadata()
         .map_err(|error| format!("Could not read the selected EML file: {error}"))?
         .len();
     if size > 10 * 1024 * 1024 {
@@ -438,7 +739,12 @@ fn analyze_eml_with_engine(path: String, user_sub: String, cache: Arc<Mutex<Repu
     run_eml_engine(temporary_eml, credentials)
 }
 
-fn analyze_eml_contents_with_engine(file_name: String, contents: Vec<u8>, user_sub: String, cache: Arc<Mutex<ReputationCredentialCache>>) -> Result<serde_json::Value, String> {
+fn analyze_eml_contents_with_engine(
+    file_name: String,
+    contents: Vec<u8>,
+    user_sub: String,
+    cache: Arc<Mutex<ReputationCredentialCache>>,
+) -> Result<serde_json::Value, String> {
     if !file_name.to_lowercase().ends_with(".eml") {
         return Err("FishStop supports .eml files only.".to_string());
     }
@@ -453,7 +759,11 @@ fn analyze_eml_contents_with_engine(file_name: String, contents: Vec<u8>, user_s
 }
 
 #[tauri::command]
-async fn analyze_eml(path: String, user_sub: String, cache: tauri::State<'_, Arc<Mutex<ReputationCredentialCache>>>) -> Result<serde_json::Value, String> {
+async fn analyze_eml(
+    path: String,
+    user_sub: String,
+    cache: tauri::State<'_, Arc<Mutex<ReputationCredentialCache>>>,
+) -> Result<serde_json::Value, String> {
     let cache = Arc::clone(&cache);
     tauri::async_runtime::spawn_blocking(move || analyze_eml_with_engine(path, user_sub, cache))
         .await
@@ -461,18 +771,30 @@ async fn analyze_eml(path: String, user_sub: String, cache: tauri::State<'_, Arc
 }
 
 #[tauri::command]
-async fn analyze_eml_contents(file_name: String, contents: Vec<u8>, user_sub: String, cache: tauri::State<'_, Arc<Mutex<ReputationCredentialCache>>>) -> Result<serde_json::Value, String> {
+async fn analyze_eml_contents(
+    file_name: String,
+    contents: Vec<u8>,
+    user_sub: String,
+    cache: tauri::State<'_, Arc<Mutex<ReputationCredentialCache>>>,
+) -> Result<serde_json::Value, String> {
     let cache = Arc::clone(&cache);
-    tauri::async_runtime::spawn_blocking(move || analyze_eml_contents_with_engine(file_name, contents, user_sub, cache))
-        .await
-        .map_err(|error| format!("Analysis interrupted: {error}"))?
+    tauri::async_runtime::spawn_blocking(move || {
+        analyze_eml_contents_with_engine(file_name, contents, user_sub, cache)
+    })
+    .await
+    .map_err(|error| format!("Analysis interrupted: {error}"))?
 }
 
-fn analyze_ai_with_engine(command: &str, report: serde_json::Value, ollama_model: &str) -> Result<serde_json::Value, String> {
+fn analyze_ai_with_engine(
+    command: &str,
+    report: serde_json::Value,
+    ollama_model: &str,
+) -> Result<serde_json::Value, String> {
     if !matches!(command, "identity" | "phi4" | "content-summary" | "summary") {
         return Err("Unsupported AI engine.".to_string());
     }
-    let temporary_report = std::env::temp_dir().join(format!("fishstop-{}.json", random_url_safe(16)));
+    let temporary_report =
+        std::env::temp_dir().join(format!("fishstop-{}.json", random_url_safe(16)));
     let contents = serde_json::to_vec(&report)
         .map_err(|error| format!("Could not prepare the report for AI: {error}"))?;
     fs::write(&temporary_report, contents)
@@ -487,59 +809,90 @@ fn analyze_ai_with_engine(command: &str, report: serde_json::Value, ollama_model
     });
     let _ = fs::remove_file(&temporary_report);
     let output = output?;
-    let response: serde_json::Value = serde_json::from_slice(&output.stdout)
-        .map_err(|_| format!("The AI engine returned an invalid response: {}", String::from_utf8_lossy(&output.stderr).trim()))?;
-    if !output.status.success() || response.get("ok").and_then(|value| value.as_bool()) != Some(true) {
-        return Err(response.get("error").and_then(|value| value.as_str()).unwrap_or("AI analysis failed.").to_string());
+    let response: serde_json::Value = serde_json::from_slice(&output.stdout).map_err(|_| {
+        format!(
+            "The AI engine returned an invalid response: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )
+    })?;
+    if !output.status.success()
+        || response.get("ok").and_then(|value| value.as_bool()) != Some(true)
+    {
+        return Err(response
+            .get("error")
+            .and_then(|value| value.as_str())
+            .unwrap_or("AI analysis failed.")
+            .to_string());
     }
-    response.get("result").cloned().ok_or_else(|| "AI result is missing.".to_string())
+    response
+        .get("result")
+        .cloned()
+        .ok_or_else(|| "AI result is missing.".to_string())
 }
 
 #[tauri::command]
-async fn analyze_identity(report: serde_json::Value, worker: tauri::State<'_, Arc<Mutex<IdentityWorker>>>) -> Result<serde_json::Value, String> {
+async fn analyze_identity(
+    report: serde_json::Value,
+    worker: tauri::State<'_, Arc<Mutex<IdentityWorker>>>,
+) -> Result<serde_json::Value, String> {
     let worker = Arc::clone(&worker);
-    tauri::async_runtime::spawn_blocking(move || worker.lock()
-        .map_err(|_| "Identity worker unavailable.".to_string())?
-        .analyze(report))
-        .await
-        .map_err(|error| format!("Identity analysis interrupted: {error}"))?
+    tauri::async_runtime::spawn_blocking(move || {
+        worker
+            .lock()
+            .map_err(|_| "Identity worker unavailable.".to_string())?
+            .analyze(report)
+    })
+    .await
+    .map_err(|error| format!("Identity analysis interrupted: {error}"))?
 }
 
 #[tauri::command]
-async fn analyze_phi4(report: serde_json::Value, model: Option<String>) -> Result<serde_json::Value, String> {
+async fn analyze_phi4(
+    report: serde_json::Value,
+    model: Option<String>,
+) -> Result<serde_json::Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let selected_model = model.unwrap_or_else(|| "qwen3:4b-q4_K_M".to_string());
         analyze_ai_with_engine("phi4", report, &selected_model)
     })
-        .await
-        .map_err(|error| format!("Phi-4 analysis interrupted: {error}"))?
+    .await
+    .map_err(|error| format!("Phi-4 analysis interrupted: {error}"))?
 }
 
 #[tauri::command]
-async fn analyze_content_summary(report: serde_json::Value, model: Option<String>) -> Result<serde_json::Value, String> {
+async fn analyze_content_summary(
+    report: serde_json::Value,
+    model: Option<String>,
+) -> Result<serde_json::Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let selected_model = model.unwrap_or_else(|| "qwen3:4b-q4_K_M".to_string());
         analyze_ai_with_engine("content-summary", report, &selected_model)
     })
-        .await
-        .map_err(|error| format!("Content summary interrupted: {error}"))?
+    .await
+    .map_err(|error| format!("Content summary interrupted: {error}"))?
 }
 
 #[tauri::command]
-async fn analyze_summary(report: serde_json::Value, model: Option<String>) -> Result<serde_json::Value, String> {
+async fn analyze_summary(
+    report: serde_json::Value,
+    model: Option<String>,
+) -> Result<serde_json::Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let selected_model = model.unwrap_or_else(|| "qwen3:4b-q4_K_M".to_string());
         analyze_ai_with_engine("summary", report, &selected_model)
     })
-        .await
-        .map_err(|error| format!("AI summary interrupted: {error}"))?
+    .await
+    .map_err(|error| format!("AI summary interrupted: {error}"))?
 }
 
 fn warm_phi4_with_ollama(model: Option<String>) -> Result<(), String> {
     let endpoint = std::env::var("OLLAMA_GENERATE_ENDPOINT")
         .unwrap_or_else(|_| "http://localhost:11434/api/generate".to_string());
-    let model = model.filter(|value| !value.trim().is_empty()).unwrap_or_else(|| std::env::var("OLLAMA_MODEL")
-        .unwrap_or_else(|_| "qwen3:4b-q4_K_M".to_string()));
+    let model = model
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| {
+            std::env::var("OLLAMA_MODEL").unwrap_or_else(|_| "qwen3:4b-q4_K_M".to_string())
+        });
     reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(90))
         .build()
@@ -581,32 +934,58 @@ struct HuggingFaceModelInfo {
 }
 
 #[tauri::command]
-async fn list_ollama_models(app: tauri::AppHandle, runtime: tauri::State<'_, Arc<Mutex<OllamaRuntime>>>) -> Result<Vec<String>, String> {
+async fn list_ollama_models(
+    app: tauri::AppHandle,
+    runtime: tauri::State<'_, Arc<Mutex<OllamaRuntime>>>,
+) -> Result<Vec<String>, String> {
     let runtime = Arc::clone(&runtime);
     tauri::async_runtime::spawn_blocking(move || ollama_runtime::list_models(&app, &runtime))
-        .await.map_err(|error| format!("Ollama model lookup interrupted: {error}"))?
+        .await
+        .map_err(|error| format!("Ollama model lookup interrupted: {error}"))?
 }
 
 #[tauri::command]
-async fn ollama_runtime_status(app: tauri::AppHandle, runtime: tauri::State<'_, Arc<Mutex<OllamaRuntime>>>) -> Result<ollama_runtime::OllamaRuntimeStatus, String> {
+async fn ollama_runtime_status(
+    app: tauri::AppHandle,
+    runtime: tauri::State<'_, Arc<Mutex<OllamaRuntime>>>,
+) -> Result<ollama_runtime::OllamaRuntimeStatus, String> {
     let runtime = Arc::clone(&runtime);
-    Ok(tauri::async_runtime::spawn_blocking(move || ollama_runtime::status(&app, &runtime)).await.unwrap_or_else(|_| ollama_runtime::OllamaRuntimeStatus {
-        runtime_ready: false, model_ready: false, managed: false, model: ollama_runtime::DEFAULT_MODEL.to_string(),
-    }))
+    Ok(
+        tauri::async_runtime::spawn_blocking(move || ollama_runtime::status(&app, &runtime))
+            .await
+            .unwrap_or_else(|_| ollama_runtime::OllamaRuntimeStatus {
+                runtime_ready: false,
+                model_ready: false,
+                managed: false,
+                model: ollama_runtime::DEFAULT_MODEL.to_string(),
+            }),
+    )
 }
 
 #[tauri::command]
-async fn install_default_ollama_model(app: tauri::AppHandle, runtime: tauri::State<'_, Arc<Mutex<OllamaRuntime>>>) -> Result<(), String> {
+async fn install_default_ollama_model(
+    app: tauri::AppHandle,
+    runtime: tauri::State<'_, Arc<Mutex<OllamaRuntime>>>,
+) -> Result<(), String> {
     let runtime = Arc::clone(&runtime);
-    tauri::async_runtime::spawn_blocking(move || ollama_runtime::install_default_model(&app, &runtime))
-        .await.map_err(|error| format!("Qwen installation interrupted: {error}"))?
+    tauri::async_runtime::spawn_blocking(move || {
+        ollama_runtime::install_default_model(&app, &runtime)
+    })
+    .await
+    .map_err(|error| format!("Qwen installation interrupted: {error}"))?
 }
 
 #[tauri::command]
-async fn remove_default_ollama_model(app: tauri::AppHandle, runtime: tauri::State<'_, Arc<Mutex<OllamaRuntime>>>) -> Result<(), String> {
+async fn remove_default_ollama_model(
+    app: tauri::AppHandle,
+    runtime: tauri::State<'_, Arc<Mutex<OllamaRuntime>>>,
+) -> Result<(), String> {
     let runtime = Arc::clone(&runtime);
-    tauri::async_runtime::spawn_blocking(move || ollama_runtime::remove_default_model(&app, &runtime))
-        .await.map_err(|error| format!("Qwen removal interrupted: {error}"))?
+    tauri::async_runtime::spawn_blocking(move || {
+        ollama_runtime::remove_default_model(&app, &runtime)
+    })
+    .await
+    .map_err(|error| format!("Qwen removal interrupted: {error}"))?
 }
 
 #[tauri::command]
@@ -616,7 +995,9 @@ async fn huggingface_identity_model_info() -> Result<HuggingFaceModelInfo, Strin
             .timeout(Duration::from_secs(6))
             .build()
             .map_err(|error| format!("Could not prepare the Hugging Face request: {error}"))?
-            .get(format!("https://huggingface.co/api/models/{IDENTITY_MODEL_ID}"))
+            .get(format!(
+                "https://huggingface.co/api/models/{IDENTITY_MODEL_ID}"
+            ))
             .send()
             .and_then(|response| response.error_for_status())
             .map_err(|error| format!("Hugging Face is unavailable: {error}"))?
@@ -628,7 +1009,9 @@ async fn huggingface_identity_model_info() -> Result<HuggingFaceModelInfo, Strin
             latest_commit: response.sha,
             updated_at: response.last_modified,
         })
-    }).await.map_err(|error| format!("Hugging Face model lookup interrupted: {error}"))?
+    })
+    .await
+    .map_err(|error| format!("Hugging Face model lookup interrupted: {error}"))?
 }
 
 #[derive(Serialize)]
@@ -643,25 +1026,37 @@ async fn local_engine_status() -> LocalEngineStatus {
     tauri::async_runtime::spawn_blocking(|| {
         let static_engine = engine_command().is_ok();
         let python_runtime = engine_command()
-            .and_then(|mut command| command
-                .arg("--health")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map_err(|error| format!("Could not start the FishStop engine: {error}")))
+            .and_then(|mut command| {
+                command
+                    .arg("--health")
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status()
+                    .map_err(|error| format!("Could not start the FishStop engine: {error}"))
+            })
             .map(|status| status.success())
             .unwrap_or(false);
-        let identity_dependencies = static_engine && python_runtime && engine_command()
-            .and_then(|mut command| command
-                .args(["--health", "identity"])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map_err(|error| format!("Could not start the FishStop engine: {error}")))
-            .map(|status| status.success())
-            .unwrap_or(false);
-        LocalEngineStatus { static_engine, python_runtime, identity_dependencies }
-    }).await.unwrap_or(LocalEngineStatus {
+        let identity_dependencies = static_engine
+            && python_runtime
+            && engine_command()
+                .and_then(|mut command| {
+                    command
+                        .args(["--health", "identity"])
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .status()
+                        .map_err(|error| format!("Could not start the FishStop engine: {error}"))
+                })
+                .map(|status| status.success())
+                .unwrap_or(false);
+        LocalEngineStatus {
+            static_engine,
+            python_runtime,
+            identity_dependencies,
+        }
+    })
+    .await
+    .unwrap_or(LocalEngineStatus {
         static_engine: false,
         python_runtime: false,
         identity_dependencies: false,
@@ -670,7 +1065,8 @@ async fn local_engine_status() -> LocalEngineStatus {
 
 #[tauri::command]
 fn open_external_url(url: String) -> Result<(), String> {
-    let parsed = Url::parse(&url).map_err(|_| "The external link is not a valid URL.".to_string())?;
+    let parsed =
+        Url::parse(&url).map_err(|_| "The external link is not a valid URL.".to_string())?;
     if !matches!(parsed.scheme(), "https" | "http") {
         return Err("Only HTTP and HTTPS links can be opened.".to_string());
     }
@@ -686,7 +1082,28 @@ fn main() {
         .manage(Arc::new(Mutex::new(IdentityWorker::default())))
         .manage(Arc::new(Mutex::new(OllamaRuntime::default())))
         .manage(Arc::new(Mutex::new(ReputationCredentialCache::default())))
-        .invoke_handler(tauri::generate_handler![sign_in_with_google, reputation_key_status, save_reputation_keys, analyze_eml, analyze_eml_contents, analyze_identity, analyze_phi4, analyze_content_summary, analyze_summary, warm_phi4, list_ollama_models, ollama_runtime_status, install_default_ollama_model, remove_default_ollama_model, huggingface_identity_model_info, local_engine_status, open_external_url])
+        .invoke_handler(tauri::generate_handler![
+            sign_in_with_google,
+            reputation_key_status,
+            save_reputation_keys,
+            load_analysis_history,
+            save_analysis_history,
+            clear_analysis_history,
+            analyze_eml,
+            analyze_eml_contents,
+            analyze_identity,
+            analyze_phi4,
+            analyze_content_summary,
+            analyze_summary,
+            warm_phi4,
+            list_ollama_models,
+            ollama_runtime_status,
+            install_default_ollama_model,
+            remove_default_ollama_model,
+            huggingface_identity_model_info,
+            local_engine_status,
+            open_external_url
+        ])
         .run(tauri::generate_context!())
         .expect("FishStop failed to start");
 }

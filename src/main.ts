@@ -41,6 +41,7 @@ type AnalysisReport = {
 };
 type ReputationResult = { status?: string; message?: string; detection_ratio?: string; malicious?: number; suspicious?: number; total_engines?: number; threat_label?: string; file_type?: string; file_name?: string; last_analysis?: string | number; permalink?: string; abuseConfidenceScore?: number; totalReports?: number; country?: string; country_code?: string; city?: string; region?: string; isp?: string; org?: string; asn?: string; timezone?: string; lat?: number; lon?: number; is_proxy?: boolean; is_hosting?: boolean; resolved_ip?: string; resolved_domain?: string; used_parent_fallback?: string; url?: string; title?: string; crowdsourced_context_summary?: string };
 type AnalysisRecord = { id: string; analyzedAt: string; report: AnalysisReport; analysisDurationMs?: number };
+type ActiveAnalysis = { userSub: string; fileName: string; status: "processing" | "complete" | "error"; report?: AnalysisReport; recordId?: string | null; error?: string };
 type StatisticsPeriod = "today" | "week" | "month" | "3m" | "6m" | "9m" | "12m" | "all";
 type CopyEvent = { copiedAt: string };
 
@@ -51,6 +52,12 @@ const OLLAMA_MODEL_PREFIX = "fishstop.ollama-model.";
 const INDICATOR_COPY_STORAGE_PREFIX = "fishstop.indicator-copies.";
 const STATISTICS_PERIOD_PREFIX = "fishstop.statistics-period.";
 const DEFAULT_OLLAMA_MODEL = "qwen3:4b-q4_K_M";
+const analysisHistoryCache = new Map<string, AnalysisRecord[]>();
+const analysisHistoryReady = new Set<string>();
+const analysisHistoryRequests = new Map<string, Promise<void>>();
+const analysisHistoryErrors = new Map<string, string>();
+const reputationMigrationRequests = new Map<string, Promise<void>>();
+let activeAnalysis: ActiveAnalysis | null = null;
 let phi4WarmupRequested = false;
 type ProtectionStatusSnapshot = { userSub: string; tone: ProtectionTone; message: string };
 let protectionStatusSnapshot: ProtectionStatusSnapshot | null = null;
@@ -91,10 +98,16 @@ function maskedSecret(value: string): string {
 }
 
 async function migrateLegacyReputationKeys(user: GoogleUser): Promise<void> {
+  const pending = reputationMigrationRequests.get(user.sub);
+  if (pending) return pending;
   const legacy = legacyReputationKeys(user);
   if (!legacy.virustotal && !legacy.abuseipdb) return;
-  await invoke("save_reputation_keys", { userSub: user.sub, ...legacy });
-  localStorage.removeItem(`${REPUTATION_KEYS_PREFIX}${user.sub}`);
+  const request = (async () => {
+    await invoke("save_reputation_keys", { userSub: user.sub, ...legacy });
+    localStorage.removeItem(`${REPUTATION_KEYS_PREFIX}${user.sub}`);
+  })().finally(() => reputationMigrationRequests.delete(user.sub));
+  reputationMigrationRequests.set(user.sub, request);
+  return request;
 }
 
 async function refreshReputationSettings(user: GoogleUser): Promise<void> {
@@ -172,14 +185,19 @@ function analysisFingerprint(report: AnalysisReport): string {
     .join("|");
 }
 
-function readAnalysisHistory(user: GoogleUser): AnalysisRecord[] {
+function validAnalysisRecords(value: unknown): AnalysisRecord[] {
   try {
-    const value = JSON.parse(localStorage.getItem(historyStorageKey(user)) || "[]") as unknown;
     if (!Array.isArray(value)) return [];
     const fingerprints = new Set<string>();
     return value.filter((item): item is AnalysisRecord => {
-      if (!item || typeof item !== "object" || !("id" in item) || !("report" in item)) return false;
-      const fingerprint = analysisFingerprint((item as AnalysisRecord).report);
+      if (!item || typeof item !== "object" || !("id" in item) || !("analyzedAt" in item) || !("report" in item)) return false;
+      const record = item as AnalysisRecord;
+      if (
+        typeof record.id !== "string"
+        || !record.report || typeof record.report !== "object"
+        || !Number.isFinite(Date.parse(String(record.analyzedAt)))
+      ) return false;
+      const fingerprint = analysisFingerprint(record.report);
       if (!fingerprint) return true;
       if (fingerprints.has(fingerprint)) return false;
       fingerprints.add(fingerprint);
@@ -188,33 +206,90 @@ function readAnalysisHistory(user: GoogleUser): AnalysisRecord[] {
   } catch { return []; }
 }
 
-function saveAnalysis(user: GoogleUser, report: AnalysisReport): string | null {
-  const { body_clean, body_ai, ...storedReport } = report;
-  try {
-    const history = readAnalysisHistory(user);
-    const id = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    const fingerprint = analysisFingerprint(storedReport);
-    const existing = fingerprint ? history.find((record) => analysisFingerprint(record.report) === fingerprint) : undefined;
-    if (existing) {
-      const updated = history.map((record) => record.id === existing.id ? { ...record, analyzedAt: new Date().toISOString(), report: storedReport } : record);
-      localStorage.setItem(historyStorageKey(user), JSON.stringify(updated));
-      return existing.id;
-    }
-    const record: AnalysisRecord = { id, analyzedAt: new Date().toISOString(), report: storedReport };
-    localStorage.setItem(historyStorageKey(user), JSON.stringify([record, ...history].slice(0, 100)));
-    return id;
-  } catch { return null; }
+function legacyAnalysisHistory(user: GoogleUser): AnalysisRecord[] {
+  try { return validAnalysisRecords(JSON.parse(localStorage.getItem(historyStorageKey(user)) || "[]") as unknown); }
+  catch { return []; }
 }
 
-function updateStoredAnalysis(user: GoogleUser, id: string, report: Partial<AnalysisReport>, analysisDurationMs?: number): void {
+function mergeAnalysisHistory(...groups: AnalysisRecord[][]): AnalysisRecord[] {
+  const records = groups.flat();
+  const seen = new Set<string>();
+  return records
+    .sort((left, right) => Date.parse(right.analyzedAt) - Date.parse(left.analyzedAt))
+    .filter((record) => {
+      const fingerprint = analysisFingerprint(record.report) || record.id;
+      if (seen.has(fingerprint)) return false;
+      seen.add(fingerprint);
+      return true;
+    });
+}
+
+function readAnalysisHistory(user: GoogleUser): AnalysisRecord[] {
+  return analysisHistoryCache.get(user.sub) || [];
+}
+
+async function ensureAnalysisHistory(user: GoogleUser): Promise<void> {
+  if (analysisHistoryReady.has(user.sub)) return;
+  const pending = analysisHistoryRequests.get(user.sub);
+  if (pending) return pending;
+  const request = (async () => {
+    const legacy = legacyAnalysisHistory(user);
+    try {
+      const native = validAnalysisRecords(await invoke<unknown[]>("load_analysis_history", { userSub: user.sub }));
+      const merged = mergeAnalysisHistory(native, legacy);
+      if (legacy.length) {
+        await invoke("save_analysis_history", { userSub: user.sub, history: merged });
+        localStorage.removeItem(historyStorageKey(user));
+      }
+      analysisHistoryCache.set(user.sub, merged);
+      analysisHistoryErrors.delete(user.sub);
+    } catch (error) {
+      // Do not overwrite the legacy cache when protected storage is unavailable.
+      analysisHistoryCache.set(user.sub, legacy);
+      analysisHistoryErrors.set(user.sub, String(error));
+    } finally {
+      analysisHistoryReady.add(user.sub);
+      analysisHistoryRequests.delete(user.sub);
+    }
+  })();
+  analysisHistoryRequests.set(user.sub, request);
+  return request;
+}
+
+async function saveAnalysis(user: GoogleUser, report: AnalysisReport): Promise<string | null> {
+  await ensureAnalysisHistory(user);
+  if (analysisHistoryErrors.has(user.sub)) return null;
+  const history = readAnalysisHistory(user);
+  const id = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const fingerprint = analysisFingerprint(report);
+  const existing = fingerprint ? history.find((record) => analysisFingerprint(record.report) === fingerprint) : undefined;
+  const updated = existing
+    ? history.map((record) => record.id === existing.id ? { ...record, analyzedAt: new Date().toISOString(), report } : record)
+    : [{ id, analyzedAt: new Date().toISOString(), report }, ...history];
   try {
-    const history = readAnalysisHistory(user).map((record) => record.id === id ? {
-      ...record,
-      ...(analysisDurationMs === undefined ? {} : { analysisDurationMs }),
-      report: { ...record.report, ...report },
-    } : record);
-    localStorage.setItem(historyStorageKey(user), JSON.stringify(history));
-  } catch { /* The immediate result remains available even if persistence fails. */ }
+    await invoke("save_analysis_history", { userSub: user.sub, history: updated });
+    analysisHistoryCache.set(user.sub, updated);
+    return existing?.id || id;
+  } catch (error) {
+    analysisHistoryErrors.set(user.sub, String(error));
+    return null;
+  }
+}
+
+async function updateStoredAnalysis(user: GoogleUser, id: string, report: Partial<AnalysisReport>, analysisDurationMs?: number): Promise<void> {
+  await ensureAnalysisHistory(user);
+  if (analysisHistoryErrors.has(user.sub)) return;
+  const history = readAnalysisHistory(user).map((record) => record.id === id ? {
+    ...record,
+    ...(analysisDurationMs === undefined ? {} : { analysisDurationMs }),
+    report: { ...record.report, ...report },
+  } : record);
+  try {
+    await invoke("save_analysis_history", { userSub: user.sub, history });
+    analysisHistoryCache.set(user.sub, history);
+  } catch (error) {
+    analysisHistoryErrors.set(user.sub, String(error));
+  }
 }
 
 function readIndicatorCopyEvents(user: GoogleUser): CopyEvent[] {
@@ -1141,7 +1216,7 @@ async function runAiAnalysis(user: GoogleUser, report: AnalysisReport, recordId:
     onSettled?.("content-summary");
     onSettled?.("summary");
   }
-  if (recordId) updateStoredAnalysis(user, recordId, {
+  if (recordId) await updateStoredAnalysis(user, recordId, {
     identity_analysis: report.identity_analysis,
     phi4_analysis: report.phi4_analysis,
     ai_content_summary: report.ai_content_summary,
@@ -1195,7 +1270,12 @@ function riskReasons(report: AnalysisReport): string[] {
 
   if (report.reply_to_mismatch || report.return_path_domain_mismatch || report.display_name_spoofing || /reply-to|return-path|display.?name|sender.*mismatch|spoof/.test(flags)) reasons.add("Sender mismatch");
   if ((report.links || []).some((link) => link.display_mismatch || link.is_ip || maliciousLink(report.link_reputation?.[link.url || ""])) || /malicious.*url|suspicious.*url|dangerous.*link|lookalike/.test(flags)) reasons.add("Suspicious link");
-  if ((report.attachments || []).some((file) => Boolean(file.anomaly) || ["medium", "high", "critical", "warning"].includes((file.pdf_security?.risk_level || "").toLowerCase()) || maliciousLink(file.file_reputation)) || /attachment.*(malicious|suspicious)|pdf.*risk/.test(flags)) reasons.add("Suspicious attachment");
+  if ((report.attachments || []).some((file) => {
+    const anomaly = String(file.anomaly || "").trim().toLowerCase();
+    return Boolean(anomaly && anomaly !== "none")
+      || ["medium", "high", "critical", "warning"].includes((file.pdf_security?.risk_level || "").toLowerCase())
+      || maliciousLink(file.file_reputation);
+  }) || /attachment.*(malicious|suspicious)|pdf.*risk/.test(flags)) reasons.add("Suspicious attachment");
   if (requestedAction === "provide_credentials" || /credential|password|otp|mfa|login|sign.?in/.test(intentSignals)) reasons.add("Credential request");
   if (semantic?.payment_destination_change || /payment.?destination|payment.?diversion|new.?iban|changed.?iban|beneficiary.?change/.test(intentSignals)) reasons.add("Payment diversion");
   return [...reasons];
@@ -1205,6 +1285,30 @@ function riskReasonCounts(history: AnalysisRecord[]): Array<{ label: string; cou
   const counts = new Map<string, number>();
   history.forEach((record) => riskReasons(record.report).forEach((reason) => counts.set(reason, (counts.get(reason) || 0) + 1)));
   return [...counts.entries()].map(([label, count]) => ({ label, count })).sort((left, right) => right.count - left.count || left.label.localeCompare(right.label));
+}
+
+function currentAnalysis(user: GoogleUser): ActiveAnalysis | null {
+  return activeAnalysis?.userSub === user.sub ? activeAnalysis : null;
+}
+
+function analysisPageContent(user: GoogleUser): string {
+  const active = currentAnalysis(user);
+  const isProcessing = active?.status === "processing";
+  const hasReport = Boolean(active?.report);
+  const title = escapeHtml(active?.fileName || "Analyse a message");
+  const status = active?.status === "error"
+    ? `Analysis did not complete: ${escapeHtml(active.error || "Unknown error")}`
+    : isProcessing
+      ? `Local analysis of ${title} in progress…`
+      : hasReport
+        ? `Analysis complete: ${title}.`
+        : "Nothing is sent to external services.";
+  const result = hasReport
+    ? reportMarkup(active!.report!)
+    : isProcessing
+      ? analysisLoadingMarkup(active!.fileName)
+      : "";
+  return `<div class="page-heading analysis-heading"><div><p class="page-kicker">NEW CHECK</p><h1 id="analysis-title">${title}</h1><p>The file stays on your device and is processed locally.</p></div><button class="change-analysis" id="change-eml" type="button" ${hasReport || active?.status === "error" ? "" : "hidden"}>Change email</button></div><section class="eml-intake" id="eml-intake" ${isProcessing || hasReport ? "hidden" : ""}><button class="drop-zone" id="eml-drop" type="button"><span class="drop-icon">↥</span><strong>Drop an .eml file here</strong><span>or select it from your computer · max 10 MB</span></button><input id="eml-input" type="file" accept=".eml,message/rfc822" hidden /><p class="upload-status" id="upload-status">${status}</p></section>${isProcessing || hasReport ? `<p class="upload-status" id="upload-status">${status}</p>` : ""}<div id="analysis-result">${result}</div>`;
 }
 
 function contentFor(section: Section, user: GoogleUser): string {
@@ -1224,19 +1328,24 @@ function contentFor(section: Section, user: GoogleUser): string {
   const maxActivity = Math.max(1, ...activity.map((item) => item.count));
   const ollamaRuns = history.filter((record) => record.report.phi4_analysis?.model);
   const modelStats = Array.from(ollamaRuns.reduce((groups, record) => { const analysis = record.report.phi4_analysis!; const model = analysis.model || DEFAULT_OLLAMA_MODEL; const current = groups.get(model) || { count: 0, duration: 0, timed: 0 }; current.count += 1; if (analysis.duration_ms) { current.duration += analysis.duration_ms; current.timed += 1; } groups.set(model, current); return groups; }, new Map<string, { count: number; duration: number; timed: number }>())).map(([model, stat]) => ({ model, ...stat }));
-  const periodLabels: Record<StatisticsPeriod, string> = { today: "Today", week: "Last 7 days", month: "Last month", "3m": "Last 3 months", "6m": "Last 6 months", "9m": "Last 9 months", "12m": "Last 12 months", all: "All time" };
+  const periodLabels: Record<StatisticsPeriod, string> = { today: "Today", week: "Last 7 days", month: "Last month", "3m": "Last 3 months", "6m": "Last 6 months", "9m": "Last 9 months", "12m": "Last 12 months", all: "Saved history" };
   const periodChoices = (Object.keys(periodLabels) as StatisticsPeriod[]).map((period) => `<button class="statistics-period ${period === selectedPeriod ? "active" : ""}" data-statistics-period="${period}" type="button">${periodLabels[period]}</button>`).join("");
   const reasonItems = reasonCounts.length
     ? reasonCounts.slice(0, 6).map(({ label, count }) => `<li><span>${escapeHtml(label)} <b>${count}</b></span><i><em style="width:${(count / reasonCounts[0].count) * 100}%"></em></i></li>`).join("")
     : `<li class="statistics-empty">No risk reasons were recorded in this period.</li>`;
-  if (section === "analyse") return `<div class="page-heading analysis-heading"><div><p class="page-kicker">NEW CHECK</p><h1 id="analysis-title">Analyse a message</h1><p>The file stays on your device and is processed locally.</p></div><button class="change-analysis" id="change-eml" type="button" hidden>Change email</button></div><section class="eml-intake" id="eml-intake"><button class="drop-zone" id="eml-drop" type="button"><span class="drop-icon">↥</span><strong>Drop an .eml file here</strong><span>or select it from your computer · max 10 MB</span></button><input id="eml-input" type="file" accept=".eml,message/rfc822" hidden /><p class="upload-status" id="upload-status">Nothing is sent to external services.</p></section><div id="analysis-result"></div>`;
+  if (section === "analyse") return analysisPageContent(user);
   if (section === "history") return `<div class="page-heading"><div><p class="page-kicker">PERSONAL WORKSPACE</p><h1>Analysis history</h1><p>Analyses are stored only for this account, on this device.</p></div><div class="history-actions"><span class="period">${history.length} ANALYSES</span>${history.length ? `<button id="clear-history" type="button">Clear history</button>` : ""}</div></div>${history.length ? `<section class="history-list">${history.map((record) => { const high = (record.report.flags || []).filter((flag) => flag.level === "HIGH").length; return `<button class="history-item" data-open-history="${record.id}" type="button"><span class="history-risk ${high ? "high" : "clear"}">${high ? `${high} HIGH` : "OK"}</span><span><strong>${escapeHtml(record.report.subject || "No subject")}</strong><small>${escapeHtml(record.report.from_ || "Sender unavailable")} · ${formatAnalysisDate(record.analyzedAt)}</small></span><b>Open →</b></button>`; }).join("")}</section>` : `<section class="empty-state"><span class="empty-icon">⌁</span><h2>No analyses yet.</h2><p>Your first EML analysis will appear here.</p><button class="soft-action" data-go="analyse" type="button">Analyse an email <span>→</span></button></section>`}`;
-  if (section === "statistics") return `<div class="page-heading statistics-heading"><div><p class="page-kicker">RISK OVERVIEW</p><h1>Statistics</h1><p>Signals, investigation activity and performance for this account.</p></div><div class="statistics-periods" role="group" aria-label="Statistics period">${periodChoices}</div></div><section class="metrics stats-metrics"><article><span>Emails analysed</span><strong>${filteredHistory.length}</strong><small>${periodLabels[selectedPeriod]}</small></article><article><span>Average analysis time</span><strong>${formatDuration(averageDuration)}</strong><small>${timedAnalyses.length ? `Based on ${timedAnalyses.length} completed analyses` : "Available after new analyses"}</small></article><article><span>Indicators copied</span><strong>${filteredCopyEvents.length}</strong><small>Copied individually from the Indicators section</small></article></section><section class="stats-layout"><article class="risk-breakdown"><div><p class="page-kicker">DISTRIBUTION</p><h2>Analysis outcomes</h2></div><div class="risk-bars"><div><span>High risk <b>${highRiskCount}</b></span><i><em class="high" style="width:${filteredHistory.length ? (highRiskCount / filteredHistory.length) * 100 : 0}%"></em></i></div><div><span>To review <b>${mediumRiskCount}</b></span><i><em class="medium" style="width:${filteredHistory.length ? (mediumRiskCount / filteredHistory.length) * 100 : 0}%"></em></i></div><div><span>No high-risk signals <b>${clearCount}</b></span><i><em class="clear" style="width:${filteredHistory.length ? (clearCount / filteredHistory.length) * 100 : 0}%"></em></i></div></div></article><article class="activity-card"><div><p class="page-kicker">ACTIVITY</p><h2>Daily activity</h2></div><div class="activity-chart">${activity.map((item) => `<div><i style="height:${Math.max(5, (item.count / maxActivity) * 100)}%" title="${item.count} analyses"></i><span>${item.label}</span></div>`).join("")}</div></article></section><section class="risk-reasons"><div><p class="page-kicker">RISK PATTERNS</p><h2>Top risk reasons</h2><p>Signals that appeared most often in the selected period.</p></div><ol>${reasonItems}</ol></section>`;
+  if (section === "statistics") return `<div class="page-heading statistics-heading"><div><p class="page-kicker">RISK OVERVIEW</p><h1>Statistics</h1><p>Signals, investigation activity and performance for this account.</p></div><div class="statistics-periods" role="group" aria-label="Statistics period">${periodChoices}</div></div><section class="metrics stats-metrics"><article><span>Emails analysed</span><strong>${filteredHistory.length}</strong><small>${periodLabels[selectedPeriod]}</small></article><article><span>Average analysis time</span><strong>${formatDuration(averageDuration)}</strong><small>${timedAnalyses.length ? `Based on ${timedAnalyses.length} completed analyses` : "Available after new analyses"}</small></article><article><span>Indicators copied</span><strong>${filteredCopyEvents.length}</strong><small>Copied individually from the Indicators section</small></article></section><section class="stats-layout"><article class="risk-breakdown"><div><p class="page-kicker">DISTRIBUTION</p><h2>Analysis outcomes</h2></div><div class="risk-bars"><div><span>High risk <b>${highRiskCount}</b></span><i><em class="high" style="width:${filteredHistory.length ? (highRiskCount / filteredHistory.length) * 100 : 0}%"></em></i></div><div><span>To review <b>${mediumRiskCount}</b></span><i><em class="medium" style="width:${filteredHistory.length ? (mediumRiskCount / filteredHistory.length) * 100 : 0}%"></em></i></div><div><span>Likely legitimate <b>${clearCount}</b></span><i><em class="clear" style="width:${filteredHistory.length ? (clearCount / filteredHistory.length) * 100 : 0}%"></em></i></div></div></article><article class="activity-card"><div><p class="page-kicker">ACTIVITY</p><h2>Last 7 days</h2></div><div class="activity-chart">${activity.map((item) => `<div><i style="height:${Math.max(5, (item.count / maxActivity) * 100)}%" title="${item.count} analyses"></i><span>${item.label}</span></div>`).join("")}</div></article></section><section class="risk-reasons"><div><p class="page-kicker">RISK PATTERNS</p><h2>Top risk reasons</h2><p>Signals that appeared most often in the selected period.</p></div><ol>${reasonItems}</ol></section>`;
   if (section === "settings") { const keys = reputationKeys(user); const selectedModel = ollamaModel(user); const reputationReady = Boolean(keys.virustotal || keys.abuseipdb); const keyRow = (name: string, value: string) => `<li class="credential-${value ? "ready" : "missing"}"><i>${value ? "✓" : "—"}</i><div><strong>${name}</strong><small>${value ? `Stored locally · ${escapeHtml(maskedSecret(value))}` : "Key not configured"}</small></div><b>${value ? "Ready" : "Required"}</b></li>`; return `<div class="page-heading"><div><p class="page-kicker">LOCAL CONFIGURATION</p><h1>Settings</h1><p>Intelligence tokens and a lab for local Ollama models.</p></div></div><div class="settings-grid"><section class="settings-card settings-reputation"><p class="page-kicker">EXTERNAL INTELLIGENCE</p><h2>Reputation</h2><p class="settings-note">Only technical indicators are sent to external services — never the EML file or email body.</p><ul class="credential-list">${keyRow("VirusTotal API key", keys.virustotal)}${keyRow("AbuseIPDB API key", keys.abuseipdb)}</ul><button class="soft-action edit-credentials" id="edit-reputation-keys" type="button">${reputationReady ? "Edit keys" : "Configure keys"}</button><form id="reputation-settings" ${reputationReady ? "hidden" : ""}><label>VirusTotal API key<input name="virustotal" type="password" autocomplete="new-password" placeholder="${keys.virustotal ? "Leave empty to keep the current key" : "Enter the VirusTotal token"}" /></label><label>AbuseIPDB API key<input name="abuseipdb" type="password" autocomplete="new-password" placeholder="${keys.abuseipdb ? "Leave empty to keep the current key" : "Enter the AbuseIPDB token"}" /></label><div><button class="primary-action" type="submit">Save changes</button>${reputationReady ? `<button class="cancel-credentials" id="cancel-reputation-edit" type="button">Cancel</button>` : ""}<span id="settings-status" aria-live="polite"></span></div></form></section><section class="settings-card ollama-lab"><p class="page-kicker">OLLAMA LAB</p><h2>Semantic model</h2><p class="settings-note">Only models already installed in Ollama are shown. The selection will be used for the next analysis.</p><form id="ollama-settings"><label for="ollama-model">Installed model<select id="ollama-model" name="model" disabled><option value="${escapeHtml(selectedModel)}">Loading local models…</option></select></label><div class="ollama-actions"><button class="soft-action" id="refresh-ollama-models" type="button">Refresh list</button><button class="primary-action" type="submit">Use this model</button></div><p class="settings-status" id="ollama-status" aria-live="polite"></p></form><div class="model-benchmark"><div><h3>Local comparison</h3><span>${modelStats.length ? `${ollamaRuns.length} analyses` : "No data"}</span></div>${modelStats.length ? `<ul>${modelStats.map((stat) => `<li><strong>${escapeHtml(stat.model)}</strong><small>${stat.count} analyses${stat.timed ? ` · average ${(stat.duration / stat.timed / 1000).toFixed(1)} s` : " · timings available after new analyses"}</small></li>`).join("")}</ul>` : `<p>Analyse the same email with the models you want to compare. Usage and average time will appear here; compare verdict quality on test cases with known outcomes.</p>`}</div></section><section class="settings-card model-provenance model-provenance-card" aria-live="polite"><div><p class="page-kicker">CONTEXTUAL TEXT ANALYSIS</p><h2>Hugging Face model</h2></div><p id="bert-model-provenance">Loading model provenance…</p></section></div>`; }
   return `<div class="page-heading dashboard-heading"><div><p class="page-kicker">YOUR PRIVATE WORKSPACE</p><h1>Good morning, ${greeting}.</h1><p>Keep track of your inbox security.</p></div><span class="period">TODAY</span></div><section class="welcome-card"><div><p class="page-kicker">READY WHEN YOU ARE</p><h2>Received a suspicious email?</h2><p>Upload the EML file and let FishStop inspect its risk signals.</p><button class="primary-action" data-go="analyse" type="button">Analyse a file <span>→</span></button></div><div class="mail-art" aria-hidden="true"><span></span><i></i></div></section><div class="overview-row"><section class="mini-panel"><div class="panel-top"><h2>Recent activity</h2><button data-go="history" type="button">View history</button></div><div class="no-activity"><span>✓</span><div><strong>All clear</strong><p>You have not run an analysis yet.</p></div></div></section><section class="mini-panel security-panel"><span class="lock">⌾</span><h2>Your data stays yours.</h2><p>History and statistics are separated by account.</p></section></div>`;
 }
 
 function renderDashboard(user: GoogleUser, section: Section = "dashboard"): void {
+  if (!analysisHistoryReady.has(user.sub)) {
+    void ensureAnalysisHistory(user).then(() => {
+      if (storedUser()?.sub === user.sub) renderDashboard(user, section);
+    });
+  }
   if (!phi4WarmupRequested) {
     phi4WarmupRequested = true;
     void invoke("warm_phi4", { model: ollamaModel(user) }).catch(() => { /* Ollama remains optional until it is running. */ });
@@ -1248,6 +1357,14 @@ function renderDashboard(user: GoogleUser, section: Section = "dashboard"): void
   const safeEmail = escapeHtml(user.email);
   const safePicture = user.picture ? escapeHtml(user.picture) : "";
   root.innerHTML = `<div class="app-shell"><aside class="sidebar"><div class="sidebar-brand"><span class="brand-mark">⌁</span><span>fish<span>stop</span></span></div><nav aria-label="Primary navigation">${(Object.keys(labels) as Section[]).map((key) => `<button class="nav-item ${section === key ? "selected" : ""}" data-section="${key}" type="button"><span>${icons[key]}</span>${labels[key]}</button>`).join("")}</nav><div class="sidebar-bottom"><div class="account"><span class="avatar">${safePicture ? `<img src="${safePicture}" alt="" />` : initial}</span><div><strong>${safeName}</strong><small>${safeEmail}</small></div></div><button class="logout" id="logout" type="button">Sign out <span>↗</span></button></div></aside><main class="workspace"><header class="topbar"><div class="crumb"><span>FishStop</span><b>/</b><strong>${labels[section]}</strong></div><div class="top-status top-status-checking" data-protection-status role="status" aria-live="polite"><i aria-hidden="true"></i><span>Checking protection…</span></div></header><section class="content">${contentFor(section, user)}</section></main></div>`;
+  const active = currentAnalysis(user);
+  if (section === "analyse" && active?.report) {
+    const result = document.querySelector<HTMLDivElement>("#analysis-result");
+    if (result) {
+      bindReportInteractions(user, active.report);
+      restoreAiAnalysis(active.report, result);
+    }
+  }
   if (section === "settings") {
     const settingsGrid = document.querySelector<HTMLElement>(".settings-grid");
     const reputation = document.querySelector<HTMLElement>(".settings-reputation");
@@ -1285,10 +1402,14 @@ function renderDashboard(user: GoogleUser, section: Section = "dashboard"): void
   document.querySelectorAll<HTMLButtonElement>("[data-open-history]").forEach((button) => button.addEventListener("click", () => {
     const record = readAnalysisHistory(user).find((item) => item.id === button.dataset.openHistory);
     if (!record) return;
+    activeAnalysis = {
+      userSub: user.sub,
+      fileName: record.report.subject || "Saved analysis",
+      status: "complete",
+      report: record.report,
+      recordId: record.id,
+    };
     renderDashboard(user, "analyse");
-    document.querySelector<HTMLElement>("#eml-intake")?.setAttribute("hidden", "");
-    const changeEmail = document.querySelector<HTMLButtonElement>("#change-eml"); if (changeEmail) changeEmail.hidden = false;
-    const result = document.querySelector<HTMLDivElement>("#analysis-result"); if (result) { result.innerHTML = reportMarkup(record.report); bindReportInteractions(user, record.report); restoreAiAnalysis(record.report, result); }
   }));
   document.querySelector<HTMLButtonElement>("#clear-history")?.addEventListener("click", () => {
     document.querySelector<HTMLDialogElement>("#clear-history-dialog")?.showModal();
@@ -1297,10 +1418,15 @@ function renderDashboard(user: GoogleUser, section: Section = "dashboard"): void
     document.querySelector<HTMLDialogElement>("#clear-history-dialog")?.close();
   });
   document.querySelector<HTMLButtonElement>("#confirm-clear-history")?.addEventListener("click", () => {
-    localStorage.removeItem(historyStorageKey(user));
-    renderDashboard(user, "history");
+    void ensureAnalysisHistory(user).then(async () => {
+      if (analysisHistoryErrors.has(user.sub)) return;
+      await invoke("clear_analysis_history", { userSub: user.sub });
+      analysisHistoryCache.set(user.sub, []);
+      localStorage.removeItem(historyStorageKey(user));
+      renderDashboard(user, "history");
+    }).catch(() => { /* Keep existing history visible when secure deletion fails. */ });
   });
-  document.querySelector<HTMLButtonElement>("#logout")?.addEventListener("click", () => { localStorage.removeItem(USER_STORAGE_KEY); renderLogin(); });
+  document.querySelector<HTMLButtonElement>("#logout")?.addEventListener("click", () => { activeAnalysis = null; localStorage.removeItem(USER_STORAGE_KEY); renderLogin(); });
   document.querySelector<HTMLButtonElement>("#edit-reputation-keys")?.addEventListener("click", () => {
     document.querySelector<HTMLFormElement>("#reputation-settings")?.removeAttribute("hidden");
     document.querySelector<HTMLInputElement>('#reputation-settings input')?.focus();
@@ -1404,6 +1530,8 @@ function renderDashboard(user: GoogleUser, section: Section = "dashboard"): void
   const displayAnalysis = async (fileName: string, request: () => Promise<AnalysisReport>) => {
     if (!uploadStatus) return;
     const run = ++analysisRun;
+    const session: ActiveAnalysis = { userSub: user.sub, fileName, status: "processing" };
+    activeAnalysis = session;
     const startedAt = performance.now();
     const title = document.querySelector<HTMLHeadingElement>("#analysis-title");
     if (title) title.textContent = fileName;
@@ -1414,33 +1542,36 @@ function renderDashboard(user: GoogleUser, section: Section = "dashboard"): void
     dropZone?.setAttribute("disabled", "true");
     try {
       const report = await request();
-      if (run !== analysisRun) return;
+      if (run !== analysisRun || activeAnalysis !== session) return;
+      session.report = report;
       if (result) markLoadingCheck(result, 0);
-      const recordId = saveAnalysis(user, report);
+      const recordId = await saveAnalysis(user, report);
+      session.recordId = recordId;
       uploadStatus.textContent = "Identity, intent and AI summaries in progress…";
       await runAiAnalysis(user, report, recordId, document.createElement("div"), startedAt, (engine) => {
         if (run === analysisRun && result) markLoadingCheck(result, engine === "identity" ? 1 : engine === "phi4" ? 2 : engine === "content-summary" ? 3 : 4);
       });
-      if (run !== analysisRun) return;
+      if (run !== analysisRun || activeAnalysis !== session) return;
       // Let the browser paint the completed AI-summary step before completing
       // the final-report step, then keep the fully checked state visible.
       await pause(180);
-      if (run !== analysisRun) return;
+      if (run !== analysisRun || activeAnalysis !== session) return;
       const completedResult = document.querySelector<HTMLDivElement>("#analysis-result");
       if (completedResult) {
         markLoadingCheck(completedResult, 5);
         completeAnalysisLoading(completedResult);
         await pause(780);
-        if (run !== analysisRun) return;
+        if (run !== analysisRun || activeAnalysis !== session) return;
         completedResult.querySelector<HTMLElement>(".analysis-loading")?.classList.add("is-leaving");
         await pause(260);
-        if (run !== analysisRun) return;
+        if (run !== analysisRun || activeAnalysis !== session) return;
         completedResult.innerHTML = reportMarkup(report);
         bindReportInteractions(user, report);
         restoreAiAnalysis(report, completedResult);
       }
+      session.status = "complete";
       uploadStatus.textContent = recordId ? `Analysis complete: ${fileName}.` : `Analysis complete: ${fileName}. Local history could not be updated.`;
-    } catch (error) { if (run === analysisRun) { if (intake) intake.hidden = false; if (changeEmail) changeEmail.hidden = true; uploadStatus.textContent = `Analysis did not complete: ${String(error)}`; if (result) result.innerHTML = ""; } }
+    } catch (error) { if (run === analysisRun && activeAnalysis === session) { session.status = "error"; session.error = String(error); if (intake) intake.hidden = false; if (changeEmail) changeEmail.hidden = true; uploadStatus.textContent = `Analysis did not complete: ${String(error)}`; if (result) result.innerHTML = ""; } }
     finally { if (run === analysisRun) dropZone?.removeAttribute("disabled"); }
   };
   const displayFile = (path?: string) => {

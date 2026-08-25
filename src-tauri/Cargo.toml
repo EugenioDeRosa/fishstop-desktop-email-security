@@ -9,6 +9,7 @@ edition = "2021"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+aes-gcm = "0.10"
 base64 = "0.22"
 keyring = { version = "4", features = ["v1"] }
 rand = "0.8"

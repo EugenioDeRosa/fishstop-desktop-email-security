@@ -17,7 +17,7 @@ type AnalysisReport = {
   body_source?: string; body_clean?: string; body_ai?: string; body_context?: string; body_html?: string; body_html_safe?: string; injection_sender_ip?: string;
   eml_sha256?: string;
   return_path_domain_mismatch?: boolean; reply_to_mismatch?: boolean; display_name_spoofing?: string;
-  links?: Array<{ url?: string; host?: string; is_ip?: boolean; scheme?: string; source?: string; display_text?: string; display_host?: string; display_mismatch?: boolean; is_possible_shortener?: boolean; shortener_reason?: string; has_userinfo?: boolean; has_credentials?: boolean; nonstandard_port?: boolean; port?: number; nested_redirect_count?: number; redirect_hosts?: string[]; unicode_path_or_query?: boolean; role?: string; actionable?: boolean; sources?: string[] }>;
+  links?: Array<{ url?: string; host?: string; is_ip?: boolean; scheme?: string; source?: string; display_text?: string; display_host?: string; display_mismatch?: boolean; resolved_display_destination?: boolean; signature_tracking_redirect?: boolean; html_call_to_action?: boolean; is_possible_shortener?: boolean; shortener_reason?: string; has_userinfo?: boolean; has_credentials?: boolean; nonstandard_port?: boolean; port?: number; nested_redirect_count?: number; redirect_hosts?: string[]; unicode_path_or_query?: boolean; role?: string; actionable?: boolean; sources?: string[] }>;
   link_reputation?: Record<string, ReputationResult>;
   hop_reputation?: Record<string, ReputationResult>;
   domain_reputation?: Record<string, { infrastructure?: ReputationResult; virustotal?: ReputationResult & { registrar?: string; creation_date?: string | number }; rdap?: ReputationResult & { registration_date?: string; registrar?: string } }>;
@@ -33,6 +33,8 @@ type AnalysisReport = {
   received_hops?: ReceivedHop[];
   identity_analysis?: { status?: string; model?: string; message?: string; segments_analyzed?: number; entities?: Array<{ name?: string; confidence?: number; occurrences?: Array<{ source?: string; evidence?: string }> }>; coherence?: Array<{ brand?: string; official_website?: string; official_domain?: string; status?: string; message?: string; mismatches?: Array<{ source?: string; domain?: string }> }> };
   phi4_analysis?: { status?: string; model?: string; duration_ms?: number; analysis?: { final_verdict?: string; content_summary?: string; semantic_reason?: string; explanation?: string; confidence?: number; requested_action?: string; action_channel?: string; intent_evidence?: string; intent_signals?: string[]; signal_evidence?: string; content_risk?: string; identity_risk?: string; technical_risk?: string; ambiguity?: string; claimed_brand?: string; payment_destination_change?: boolean; corroboration?: { supports_decision?: boolean; details?: string[]; caveats?: string[] } }; message?: string };
+  ai_content_summary?: { status?: string; summary?: string; model?: string; backend?: string; message?: string };
+  ai_summary?: { status?: string; summary?: string; model?: string; backend?: string; message?: string };
 };
 type ReputationResult = { status?: string; message?: string; detection_ratio?: string; malicious?: number; suspicious?: number; total_engines?: number; threat_label?: string; file_type?: string; file_name?: string; last_analysis?: string | number; permalink?: string; abuseConfidenceScore?: number; totalReports?: number; country?: string; country_code?: string; city?: string; region?: string; isp?: string; org?: string; asn?: string; timezone?: string; lat?: number; lon?: number; is_proxy?: boolean; is_hosting?: boolean; resolved_ip?: string; resolved_domain?: string; used_parent_fallback?: string; url?: string; title?: string; crowdsourced_context_summary?: string };
 type AnalysisRecord = { id: string; analyzedAt: string; report: AnalysisReport; analysisDurationMs?: number };
@@ -45,7 +47,7 @@ const REPUTATION_KEYS_PREFIX = "fishstop.reputation-keys.";
 const OLLAMA_MODEL_PREFIX = "fishstop.ollama-model.";
 const INDICATOR_COPY_STORAGE_PREFIX = "fishstop.indicator-copies.";
 const STATISTICS_PERIOD_PREFIX = "fishstop.statistics-period.";
-const DEFAULT_OLLAMA_MODEL = "phi4-mini:3.8b-q4_K_M";
+const DEFAULT_OLLAMA_MODEL = "qwen3:4b-q4_K_M";
 let phi4WarmupRequested = false;
 const app = document.querySelector<HTMLDivElement>("#app");
 if (!app) throw new Error("FishStop could not start.");
@@ -66,7 +68,11 @@ function reputationKeys(user: GoogleUser): { virustotal: string; abuseipdb: stri
   try { return { virustotal: "", abuseipdb: "", ...JSON.parse(localStorage.getItem(`${REPUTATION_KEYS_PREFIX}${user.sub}`) || "{}") }; }
   catch { return { virustotal: "", abuseipdb: "" }; }
 }
-function ollamaModel(user: GoogleUser): string { return localStorage.getItem(`${OLLAMA_MODEL_PREFIX}${user.sub}`)?.trim() || DEFAULT_OLLAMA_MODEL; }
+function ollamaModel(user: GoogleUser): string {
+  const selected = localStorage.getItem(`${OLLAMA_MODEL_PREFIX}${user.sub}`)?.trim();
+  // Migrate the old application default without overriding a deliberate model choice.
+  return !selected || selected === "phi4-mini:3.8b-q4_K_M" ? DEFAULT_OLLAMA_MODEL : selected;
+}
 function maskedSecret(value: string): string {
   if (!value) return "Not configured";
   return value.length <= 8 ? "••••••••" : `${value.slice(0, 4)}••••••${value.slice(-4)}`;
@@ -299,7 +305,7 @@ function orderedReceivedHops(hops: ReceivedHop[] = []): ReceivedHop[] {
 }
 
 function analysisLoadingMarkup(fileName: string): string {
-  const checks = ["Static checks and reputation", "Identity intelligence", "AI analysis", "Final report"];
+  const checks = ["Static checks and reputation", "Identity intelligence", "Intent analysis", "Content summary", "Verdict explanation", "Final report"];
   return `<section class="analysis-loading" aria-live="polite"><div class="loading-orbit"><i></i><b>⌁</b></div><div><p class="page-kicker">LOCAL ANALYSIS IN PROGRESS</p><h2>Checking ${escapeHtml(fileName)}</h2><p class="loading-copy">Each signal is processed on this device.</p></div><ol>${checks.map((label, index) => `<li data-loading-check="${index}"><span>✓</span>${label}</li>`).join("")}</ol></section>`;
 }
 
@@ -309,6 +315,21 @@ function markLoadingCheck(container: HTMLElement, index: number): void {
 
 function completeAnalysisLoading(container: HTMLElement): void {
   container.querySelectorAll<HTMLElement>("[data-loading-check]").forEach((item) => item.classList.add("done"));
+  const loading = container.querySelector<HTMLElement>(".analysis-loading");
+  if (!loading) return;
+  loading.classList.add("is-complete");
+  const kicker = loading.querySelector<HTMLElement>(".page-kicker");
+  const title = loading.querySelector<HTMLElement>("h2");
+  const copy = loading.querySelector<HTMLElement>(".loading-copy");
+  const mark = loading.querySelector<HTMLElement>(".loading-orbit b");
+  if (kicker) kicker.textContent = "ANALYSIS COMPLETE";
+  if (title) title.textContent = "All checks completed";
+  if (copy) copy.textContent = "Preparing your report…";
+  if (mark) mark.textContent = "✓";
+}
+
+function pause(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
 }
 
 // Mirrors the Streamlit `_auth_from_eml_header` fallback order exactly.
@@ -367,11 +388,59 @@ function highSeverityStaticReason(report: AnalysisReport): string | null {
   return `A high-severity static check failed: ${decisive.field} — ${decisive.message}`;
 }
 
+function mailboxDomain(value?: string): string {
+  const matches = String(value || "").toLowerCase().match(/@([a-z0-9.-]+\.[a-z]{2,})/g);
+  return matches?.at(-1)?.slice(1).replace(/\.+$/, "") || "";
+}
+
+function registrableDomain(value?: string): string {
+  const host = String(value || "").toLowerCase().replace(/^\[|\]$/g, "").replace(/\.+$/, "");
+  const labels = host.split(".").filter(Boolean);
+  if (labels.length <= 2) return host;
+  const multipartSuffixes = new Set([
+    "ac.uk", "co.uk", "gov.uk", "org.uk",
+    "com.au", "net.au", "org.au",
+    "com.br", "net.br", "org.br",
+    "co.jp", "co.nz", "co.za",
+  ]);
+  const suffix = labels.slice(-2).join(".");
+  return labels.slice(multipartSuffixes.has(suffix) ? -3 : -2).join(".");
+}
+
+function stronglyAuthenticatedSender(report: AnalysisReport): boolean {
+  const passed = (protocol: "SPF" | "DKIM" | "DMARC") =>
+    ["pass", "bestguesspass"].includes(authFromEmlHeader(report, protocol).status.toLowerCase());
+  return passed("DMARC") || (passed("SPF") && passed("DKIM"));
+}
+
+function isAuthenticatedFirstPartyLink(report: AnalysisReport, link: NonNullable<AnalysisReport["links"]>[number]): boolean {
+  if (!stronglyAuthenticatedSender(report)) return false;
+  if (link.is_ip || link.display_mismatch || link.has_userinfo || link.has_credentials || link.is_possible_shortener) return false;
+  const linkDomain = registrableDomain(link.host);
+  if (!linkDomain) return false;
+  const trustedDomains = new Set([
+    registrableDomain(mailboxDomain(report.from_)),
+    ...(report.identity_analysis?.coherence || []).map((item) => registrableDomain(item.official_domain)),
+  ].filter(Boolean));
+  const lookalikeDomains = new Set((report.lookalike_alerts || []).map((alert) => registrableDomain(alert.host)));
+  return trustedDomains.has(linkDomain) && !lookalikeDomains.has(linkDomain);
+}
+
 function unverifiedRequestedResourceReason(report: AnalysisReport): string | null {
   const action = (report.phi4_analysis?.analysis?.requested_action || "").toLowerCase();
   const cannotVerify = (result?: ReputationResult) => !["clean", "malicious", "suspicious"].includes((result?.status || "").toLowerCase());
-  if (action === "visit_link" && (report.links || []).some((link) => link.actionable !== false && cannotVerify(report.link_reputation?.[link.url || ""]))) {
-    return "The message asks you to open a link, but its reputation could not be verified.";
+  if (action === "visit_link") {
+    const actionable = (report.links || []).filter((link) => link.actionable !== false && (link.scheme || "").toLowerCase() !== "mailto");
+    const explicitCallsToAction = actionable.filter((link) => link.html_call_to_action);
+    // When HTML contains explicit buttons, footer and navigation links must not
+    // decide the verdict. A missing VT report is also not suspicious by itself
+    // when the CTA belongs to the strongly authenticated sender's own domain.
+    const requestedLinks = explicitCallsToAction.length ? explicitCallsToAction : actionable;
+    if (requestedLinks.some((link) =>
+      cannotVerify(report.link_reputation?.[link.url || ""]) && !isAuthenticatedFirstPartyLink(report, link),
+    )) {
+      return "The message asks you to open a link, but its reputation could not be verified.";
+    }
   }
   if (action === "open_attachment" && (report.attachments || []).some((attachment) => attachment.actionable !== false && attachment.mime_role !== "inline_resource" && cannotVerify(attachment.file_reputation))) {
     return "The message asks you to open an attachment, but its reputation could not be verified.";
@@ -402,26 +471,43 @@ function conciseAiVerdict(report: AnalysisReport, fallback: string): string {
 }
 
 function assessment(report: AnalysisReport): { tone: "safe" | "review" | "danger"; label: string; detail: string } {
-  const phi = (report.phi4_analysis?.analysis?.final_verdict || "").toLowerCase();
+  const semantic = report.phi4_analysis?.analysis;
+  const phi = (semantic?.final_verdict || "").toLowerCase();
   const high = (report.flags || []).some((flag) => flag.level === "HIGH");
-  const medium = (report.flags || []).some((flag) => flag.level === "MEDIUM");
+  const mediumFlags = (report.flags || []).filter((flag) => flag.level === "MEDIUM");
+  const medium = mediumFlags.length > 0;
   const staticReason = highSeverityStaticReason(report);
   const unverifiedRequestedResource = unverifiedRequestedResourceReason(report);
   const authenticationReview = authenticationReviewReason(report);
+  const action = (semantic?.requested_action || "").toLowerCase();
+  const noExternalOrSensitiveAction = ["none", "informational", "info"].includes(action);
+  const benignContent = (semantic?.content_risk || "").toLowerCase() === "benign";
+  const isolatedMissingDkim = mediumFlags.length > 0 && mediumFlags.every((flag) =>
+    flag.field.toLowerCase() === "dkim" && /\bnone\b|missing|signature validation/i.test(flag.message),
+  );
+  const identityMismatch = Boolean(report.reply_to_mismatch || report.return_path_domain_mismatch || report.display_name_spoofing && !["none", "false", "no"].includes(String(report.display_name_spoofing).toLowerCase()));
+  const aiClearsInformationalMessage = phi === "legitimate" && benignContent && noExternalOrSensitiveAction && isolatedMissingDkim && !identityMismatch;
+  const generatedSummary = report.ai_summary?.status === "ok" ? report.ai_summary.summary?.replace(/\s+/g, " ").trim() : "";
+  const result = (tone: "safe" | "review" | "danger", label: string, fallback: string) => ({ tone, label, detail: generatedSummary || fallback });
   // The Ollama policy receives static, reputation and identity evidence: when available,
   // it is the final synthesis. Confirmed external detections and strong static
   // findings can never be downgraded by an unavailable or disagreeing model.
-  if (staticReason) return { tone: "danger", label: "HIGH RISK", detail: staticReason };
-  if (phi === "phishing") return { tone: "danger", label: "HIGH RISK", detail: conciseAiVerdict(report, "Risk indicators were found. Do not interact with this message.") };
-  if (unverifiedRequestedResource) return { tone: "review", label: "REVIEW REQUIRED", detail: unverifiedRequestedResource };
-  if (high) return { tone: "danger", label: "HIGH RISK", detail: "A high-severity static check failed. Do not interact with this message." };
-  if (phi === "review" || medium) return { tone: "review", label: "REVIEW REQUIRED", detail: authenticationReview || conciseAiVerdict(report, "Anomalies were found. Verify the message before taking any action.") };
-  if (phi === "legitimate") return { tone: "safe", label: "LIKELY LEGITIMATE", detail: conciseAiVerdict(report, "No relevant technical or content indicators were found.") };
-  return { tone: "safe", label: "LIKELY LEGITIMATE", detail: "No relevant technical or semantic signals were found." };
+  if (staticReason) return result("danger", "HIGH RISK", staticReason);
+  if (phi === "phishing") return result("danger", "HIGH RISK", conciseAiVerdict(report, "Risk indicators were found. Do not interact with this message."));
+  if (unverifiedRequestedResource) return result("review", "REVIEW REQUIRED", unverifiedRequestedResource);
+  if (high) return result("danger", "HIGH RISK", "A high-severity static check failed. Do not interact with this message.");
+  // A missing DKIM signature alone is common in exports, forwarded mail, and
+  // legitimate routing. Let an explicit benign, informational intent prevail
+  // when there is no sender inconsistency or actionable external request.
+  if (aiClearsInformationalMessage) return result("safe", "LIKELY LEGITIMATE", conciseAiVerdict(report, "The message is informational and no meaningful risk indicator was found."));
+  if (phi === "review" || medium) return result("review", "REVIEW REQUIRED", authenticationReview || conciseAiVerdict(report, "Anomalies were found. Verify the message before taking any action."));
+  if (phi === "legitimate") return result("safe", "LIKELY LEGITIMATE", conciseAiVerdict(report, "No relevant technical or content indicators were found."));
+  return result("safe", "LIKELY LEGITIMATE", "No relevant technical or semantic signals were found.");
 }
 
 function verdictRationale(report: AnalysisReport): string {
   const semantic = report.phi4_analysis?.analysis;
+  const verdict = assessment(report);
   const findings = (report.flags || []).filter((flag) => flag.level === "HIGH" || flag.level === "MEDIUM").sort((left, right) => {
     const priority = (flag: SocFlag) => (flag.level === "HIGH" ? 100 : 0) + (/pdf/i.test(flag.field) ? 20 : /attachment/i.test(flag.field) ? 10 : 0);
     return priority(right) - priority(left);
@@ -430,13 +516,21 @@ function verdictRationale(report: AnalysisReport): string {
   const emailText = `${report.subject || ""}\n${report.body_ai || report.body_clean || ""}`.toLowerCase();
   const genericLinkInvite = Boolean((report.links || []).length) && /\b(apri|clicca|click|visita|accedi|vai|segu[i]?|open|visit|access)\b/.test(emailText);
   const hasPreviousConversation = report.body_context === "reply" || report.body_context === "forwarded";
+  const actionableWebLinks = (report.links || []).filter((link) => link.actionable !== false && (link.scheme || "").toLowerCase() !== "mailto");
+  const callToActionLinks = actionableWebLinks.filter((link) => link.html_call_to_action);
+  const requestedWebLinks = callToActionLinks.length ? callToActionLinks : actionableWebLinks;
+  const authenticatedFirstPartyRequest = requestedWebLinks.length > 0
+    && requestedWebLinks.every((link) => isAuthenticatedFirstPartyLink(report, link));
   const intent = semantic?.requested_action && semantic.requested_action !== "none" && semantic.requested_action !== "informational"
     ? `Detected action: ${semanticLabel(semantic.requested_action)}${semantic.action_channel ? ` · ${semanticLabel(semantic.action_channel)}` : ""}.`
     : "Content analysis did not detect an explicit risky request.";
   const linkContextSummary = genericLinkInvite
     ? `The message asks you to open a link${hasPreviousConversation ? ", but its purpose should be verified in the conversation context." : ", without a previous conversation in the message that clarifies its purpose."}`
     : "";
-  const aiSummary = highSeverityStaticReason(report) || unverifiedRequestedResourceReason(report) || authenticationReviewReason(report) || linkContextSummary || semantic?.content_summary || semantic?.explanation || intent;
+  const authenticatedLinkSummary = verdict.tone === "safe" && authenticatedFirstPartyRequest
+    ? "The requested link belongs to the strongly authenticated sender domain, and no malicious link or identity mismatch was detected."
+    : "";
+  const aiSummary = highSeverityStaticReason(report) || unverifiedRequestedResourceReason(report) || authenticationReviewReason(report) || authenticatedLinkSummary || linkContextSummary || semantic?.content_summary || semantic?.explanation || intent;
   const technical = findings.length
     ? findings.map((flag) => `<li><b>${escapeHtml(flag.level)}</b><span>${escapeHtml(flag.field)} · ${escapeHtml(flag.message)}</span></li>`).join("")
     : corroboration.length
@@ -579,25 +673,27 @@ function reportMarkup(report: AnalysisReport): string {
     senderConsistencyItem(displayNameSpoofed ? "fail" : "pass", "Display name", displayNameSpoofed ? displayNameSpoofing : "No display-name impersonation detected.", displayNameSpoofed ? "Impersonation detected" : "Aligned"),
   ].join("");
   const lookalikeHosts = new Set((report.lookalike_alerts || []).map((alert) => (alert.host || "").toLowerCase()));
-  const sourceLabel: Record<string, string> = { html_href: "HTML link", html_text: "HTML text", plain_text: "Email text", attachment: "Attachment URL" };
+  const sourceLabel: Record<string, string> = { html_href: "HTML link", html_button: "HTML button", html_text: "HTML text", plain_text: "Email text", attachment: "Attachment URL" };
   const techniqueLabel: Record<string, string> = {
     edit_distance: "Edit distance", homoglyph: "Unicode homoglyphs", unicode_homoglyph: "Confusable Unicode characters",
     punycode_idna: "Punycode / IDNA domain", punycode_homograph: "Punycode homograph", typosquatting: "Typosquatting",
   };
   const links = (report.links || []).filter((link) => (link.scheme || "").toLowerCase() !== "mailto").map((link) => {
+    const signatureTracking = Boolean(link.signature_tracking_redirect);
+    const htmlCallToAction = Boolean(link.html_call_to_action);
     const dangerous = Boolean(link.is_ip || lookalikeHosts.has((link.host || "").toLowerCase()));
     const structuralDanger = Boolean(link.has_userinfo || link.has_credentials);
     const structuralWarning = Boolean(link.nonstandard_port || link.nested_redirect_count || link.unicode_path_or_query);
     const reputationResult = report.link_reputation?.[link.url || ""];
     const reputation = reputationCheckTone(reputationResult);
-    const tone = dangerous || structuralDanger || link.display_mismatch ? "fail" : reputation || (structuralWarning || link.is_possible_shortener ? "warn" : "pass");
-    const status = dangerous ? (link.is_ip ? "Direct IP" : "Lookalike domain") : structuralDanger ? "Hidden destination userinfo" : link.display_mismatch ? "Destination differs from visible text" : reputation === "fail" ? "Detected by VirusTotal" : reputation === "warn" ? "Review required" : reputation === "pass" ? "VirusTotal clean" : link.nested_redirect_count ? "Nested redirect destination" : link.nonstandard_port ? "Non-standard port" : link.unicode_path_or_query ? "Unicode path or query" : link.is_possible_shortener ? "Possible URL shortener" : "Valid URL structure";
+    const tone = signatureTracking ? "pass" : dangerous || structuralDanger || link.display_mismatch ? "fail" : reputation || (structuralWarning || link.is_possible_shortener ? "warn" : "pass");
+    const status = signatureTracking ? "Signature tracking redirect" : dangerous ? (link.is_ip ? "Direct IP" : "Lookalike domain") : structuralDanger ? "Hidden destination userinfo" : link.display_mismatch ? "Destination differs from visible text" : reputation === "fail" ? "Detected by VirusTotal" : reputation === "warn" ? "Review required" : reputation === "pass" ? "VirusTotal clean" : link.nested_redirect_count ? "Nested redirect destination" : link.nonstandard_port ? "Non-standard port" : link.unicode_path_or_query ? "Unicode path or query" : link.is_possible_shortener ? "Possible URL shortener" : "Valid URL structure";
     const host = link.host || "URL without host";
     const vtUrl = reputationResult?.permalink || `https://www.virustotal.com/gui/domain/${encodeURIComponent(host)}`;
     const whoisUrl = `https://www.whois.com/whois/${encodeURIComponent(host)}`;
     const isWebLink = ["http", "https"].includes((link.scheme || "").toLowerCase());
     const metadata = [sourceLabel[link.source || ""] || link.source, link.scheme ? link.scheme.toUpperCase() : ""].filter(Boolean).join(" · ");
-    const notes = [link.display_mismatch && `Visible text: ${link.display_host || link.display_text || "different domain"}`, link.has_credentials && "Username or password is embedded before the destination host", link.has_userinfo && "Userinfo is present before the destination host", link.nonstandard_port && `Port ${link.port}`, link.nested_redirect_count && `Redirects to: ${(link.redirect_hosts || []).join(", ") || "embedded target"}`, link.unicode_path_or_query && "Unicode characters in path or query", link.is_possible_shortener && link.shortener_reason, reputationResult?.detection_ratio && `VirusTotal: ${reputationResult.detection_ratio}`, reputationResult?.last_analysis && `Last analysis: ${reputationResult.last_analysis}`].filter(Boolean).join(" · ");
+    const notes = [htmlCallToAction && "Clickable HTML call-to-action", signatureTracking && `Final destination: ${(link.redirect_hosts || []).join(", ") || "embedded target"}`, link.display_mismatch && `Visible text: ${link.display_host || link.display_text || "different domain"}`, link.has_credentials && "Username or password is embedded before the destination host", link.has_userinfo && "Userinfo is present before the destination host", link.nonstandard_port && `Port ${link.port}`, !signatureTracking && link.nested_redirect_count && `Redirects to: ${(link.redirect_hosts || []).join(", ") || "embedded target"}`, link.unicode_path_or_query && "Unicode characters in path or query", link.is_possible_shortener && link.shortener_reason, reputationResult?.detection_ratio && `VirusTotal: ${reputationResult.detection_ratio}`, reputationResult?.last_analysis && `Last analysis: ${reputationResult.last_analysis}`].filter(Boolean).join(" · ");
     const virusTotalAction = !isWebLink ? ""
       : reputationResult?.status === "not_found"
       ? `<a class="manual-vt-action" href="https://www.virustotal.com/gui/home/url" target="_blank" rel="noopener noreferrer" data-vt-manual-url="${escapeHtml(link.url || "")}">Copy URL &amp; open VirusTotal ↗</a>`
@@ -663,7 +759,7 @@ function reputationRows(items: Array<{ title: string; detail: string; result?: R
         : status === "clean" || (status === "ok" && score !== undefined) ? "safe" : "neutral";
     const displayStatus = status === "ok" && score === 0 ? "CLEAN" : status === "ok" ? (score !== undefined && score < 25 ? "LOW RISK" : "REVIEW") : status === "skipped" && result?.message?.startsWith("Domain resolution") ? "UNRESOLVED" : status.toUpperCase();
     const metrics = result?.detection_ratio || (result?.abuseConfidenceScore !== undefined ? `${score === 0 ? "No abuse reports · " : ""}Abuse confidence ${result.abuseConfidenceScore}/100 · Reports ${result.totalReports || 0}` : result?.message || "No check available");
-    const extra = [result?.used_parent_fallback && `Subdomain could not be resolved: analysed ${result.used_parent_fallback}`, result?.threat_label && `Threat: ${result.threat_label}`, result?.file_type && `Type: ${result.file_type}`, result?.last_analysis && `Last analysis: ${result.last_analysis}`, result?.crowdsourced_context_summary && `Community context: ${result.crowdsourced_context_summary}`, result?.city || result?.country ? `Location: ${[result?.city, result?.region, result?.country].filter(Boolean).join(", ")}` : "", result?.isp && `ISP: ${result.isp}`].filter(Boolean).join(" · ");
+    const extra = [result?.used_parent_fallback && `Fallback indicator analysed: ${result.used_parent_fallback}`, result?.threat_label && `Threat: ${result.threat_label}`, result?.file_type && `Type: ${result.file_type}`, result?.last_analysis && `Last analysis: ${result.last_analysis}`, result?.crowdsourced_context_summary && `Community context: ${result.crowdsourced_context_summary}`, result?.city || result?.country ? `Location: ${[result?.city, result?.region, result?.country].filter(Boolean).join(", ")}` : "", result?.isp && `ISP: ${result.isp}`].filter(Boolean).join(" · ");
     const external = result?.permalink || (result?.url?.startsWith("https://www.abuseipdb.com/") ? result.url : "");
     const canManuallySearchVirusTotal = status === "not_found" && detail === "VirusTotal URL" && /^https?:\/\//i.test(title);
     const action = external
@@ -837,10 +933,10 @@ function integrateReputation(report: AnalysisReport): void {
   const panel = (name: string) => document.querySelector<HTMLElement>(`[data-report-panel="${name}"]`);
   const sender = panel("sender");
   const domains = reputationRows(Object.entries(report.domain_reputation || {}).map(([domain, intelligence]) => {
-    const result = intelligence.infrastructure;
-    return { title: `From (${domain})`, detail: result?.resolved_ip ? `Resolved IP ${result.resolved_ip}` : "Resolved-IP infrastructure reputation", result, copyValue: domain };
+    const result = intelligence.virustotal;
+    return { title: `From (${domain})`, detail: "VirusTotal domain reputation", result, copyValue: domain };
   }));
-  sender?.insertAdjacentHTML("beforeend", `<section class="evidence-card inline-reputation"><h3>Sender infrastructure reputation</h3><ul>${domains}</ul></section>`);
+  sender?.insertAdjacentHTML("beforeend", `<section class="evidence-card inline-reputation"><h3>Sender domain reputation</h3><ul>${domains}</ul></section>`);
   const auth = panel("auth");
   const hops = orderedReceivedHops(report.received_hops).map((hop, index) => {
     const ips = hop.all_ips || (hop.sender_ip ? [hop.sender_ip] : []);
@@ -935,18 +1031,17 @@ function semanticLabel(value: string | undefined): string {
   return labels[value || ""] || (value ? value.replaceAll("_", " ") : "—");
 }
 
-function setPhiSemanticPanel(container: HTMLElement, analysis: NonNullable<NonNullable<AnalysisReport["phi4_analysis"]>["analysis"]>, model: string, durationMs?: number): void {
+function setPhiSemanticPanel(container: HTMLElement, analysis: NonNullable<NonNullable<AnalysisReport["phi4_analysis"]>["analysis"]>, model: string, durationMs?: number, generatedContentSummary?: string): void {
   const panel = container.querySelector<HTMLElement>('[data-ai-panel="phi4"]');
   if (!panel) return;
-  const verdict = (analysis.final_verdict || "review").toLowerCase();
-  const tone = verdict === "phishing" ? "danger" : verdict === "legitimate" ? "safe" : "review";
   const signals = (analysis.intent_signals || []).filter(Boolean);
   const corroboration = analysis.corroboration || {};
   const details = [...(corroboration.details || []), ...(corroboration.caveats || []).map((item) => `Nota: ${item}`)].slice(0, 5);
-  panel.innerHTML = `<p class="page-kicker">OLLAMA · ${escapeHtml(model)}</p><div class="semantic-verdict semantic-${tone}"><span>${escapeHtml(semanticLabel(verdict))}</span></div><h3>Semantic assessment</h3><p class="semantic-summary">${escapeHtml(analysis.content_summary || analysis.explanation || "Semantic analysis complete.")}</p><dl class="semantic-facts"><div><dt>Detected action</dt><dd>${escapeHtml(semanticLabel(analysis.requested_action))}</dd></div><div><dt>Channel</dt><dd>${escapeHtml(semanticLabel(analysis.action_channel))}</dd></div><div><dt>Content risk</dt><dd>${escapeHtml(semanticLabel(analysis.content_risk))}</dd></div><div><dt>Technical risk</dt><dd>${escapeHtml(semanticLabel(analysis.technical_risk))}</dd></div></dl>${analysis.intent_evidence ? `<blockquote>“${escapeHtml(analysis.intent_evidence)}”</blockquote>` : ""}${signals.length || details.length ? `<details class="semantic-details"><summary>Reasoning and evidence <span>${signals.length + details.length}</span></summary>${signals.length ? `<p><b>Signals:</b> ${escapeHtml(signals.map(semanticLabel).join(" · "))}</p>` : ""}${analysis.signal_evidence ? `<p><b>Context:</b> ${escapeHtml(analysis.signal_evidence)}</p>` : ""}${details.length ? `<ul>${details.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>` : ""}</details>` : ""}<small class="semantic-meta">${durationMs ? `${(durationMs / 1000).toFixed(1)} s · ` : ""}${corroboration.supports_decision ? "Independent evidence is available" : "Assessment should be confirmed with technical evidence"}</small>`;
+  const contentSummary = generatedContentSummary?.replace(/\s+/g, " ").trim() || analysis.content_summary || analysis.explanation || "Content analysis complete.";
+  panel.innerHTML = `<p class="page-kicker">OLLAMA · ${escapeHtml(model)}</p><h3>Content summary</h3><p class="semantic-summary">${escapeHtml(contentSummary)}</p>${signals.length || details.length ? `<details class="semantic-details"><summary>Reasoning and evidence <span>${signals.length + details.length}</span></summary>${signals.length ? `<p><b>Signals:</b> ${escapeHtml(signals.map(semanticLabel).join(" · "))}</p>` : ""}${analysis.signal_evidence ? `<p><b>Context:</b> ${escapeHtml(analysis.signal_evidence)}</p>` : ""}${details.length ? `<ul>${details.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>` : ""}</details>` : ""}<small class="semantic-meta">${durationMs ? `${(durationMs / 1000).toFixed(1)} s · ` : ""}${corroboration.supports_decision ? "Independent evidence is available" : "Assessment should be confirmed with technical evidence"}</small>`;
 }
 
-async function runAiAnalysis(user: GoogleUser, report: AnalysisReport, recordId: string | null, container: HTMLElement, startedAt: number, onSettled?: (engine: "identity" | "phi4") => void): Promise<void> {
+async function runAiAnalysis(user: GoogleUser, report: AnalysisReport, recordId: string | null, container: HTMLElement, startedAt: number, onSettled?: (engine: "identity" | "phi4" | "content-summary" | "summary") => void): Promise<void> {
   const model = ollamaModel(user);
   renderAiPanels(container, model);
   await invoke<NonNullable<AnalysisReport["identity_analysis"]>>("analyze_identity", { report }).then((value) => {
@@ -962,16 +1057,39 @@ async function runAiAnalysis(user: GoogleUser, report: AnalysisReport, recordId:
   await invoke<NonNullable<AnalysisReport["phi4_analysis"]>>("analyze_phi4", { report, model }).then((value) => {
     report.phi4_analysis = { ...value, model: value.model || model, duration_ms: Math.round(performance.now() - phiStartedAt) };
     const analysis = value.analysis || {};
-    setPhiSemanticPanel(container, analysis, value.model || model, report.phi4_analysis.duration_ms);
+    setPhiSemanticPanel(container, analysis, value.model || model, report.phi4_analysis.duration_ms, report.ai_content_summary?.summary);
     onSettled?.("phi4");
   }).catch((error) => {
     report.phi4_analysis = { status: "error", message: String(error) };
     setAiPanel(container, "phi4", "Analysis unavailable", String(error), "error", model);
     onSettled?.("phi4");
   });
+  if (report.phi4_analysis?.status === "ok" && report.phi4_analysis.analysis) {
+    await invoke<NonNullable<AnalysisReport["ai_content_summary"]>>("analyze_content_summary", { report, model }).then((value) => {
+      report.ai_content_summary = value;
+      setPhiSemanticPanel(container, report.phi4_analysis!.analysis!, report.phi4_analysis!.model || model, report.phi4_analysis!.duration_ms, value.summary);
+      onSettled?.("content-summary");
+    }).catch((error) => {
+      report.ai_content_summary = { status: "error", message: String(error), model };
+      onSettled?.("content-summary");
+    });
+    const summaryReport = { ...report, summary_verdict: assessment(report).label };
+    await invoke<NonNullable<AnalysisReport["ai_summary"]>>("analyze_summary", { report: summaryReport, model }).then((value) => {
+      report.ai_summary = value;
+      onSettled?.("summary");
+    }).catch((error) => {
+      report.ai_summary = { status: "error", message: String(error), model };
+      onSettled?.("summary");
+    });
+  } else {
+    onSettled?.("content-summary");
+    onSettled?.("summary");
+  }
   if (recordId) updateStoredAnalysis(user, recordId, {
     identity_analysis: report.identity_analysis,
     phi4_analysis: report.phi4_analysis,
+    ai_content_summary: report.ai_content_summary,
+    ai_summary: report.ai_summary,
   }, Math.round(performance.now() - startedAt));
 }
 
@@ -985,7 +1103,7 @@ function restoreAiAnalysis(report: AnalysisReport, container: HTMLElement): void
   }
   const phi4 = report.phi4_analysis;
   if (phi4) {
-    if (phi4.status === "ok" && phi4.analysis) setPhiSemanticPanel(container, phi4.analysis, phi4.model || DEFAULT_OLLAMA_MODEL, phi4.duration_ms);
+    if (phi4.status === "ok" && phi4.analysis) setPhiSemanticPanel(container, phi4.analysis, phi4.model || DEFAULT_OLLAMA_MODEL, phi4.duration_ms, report.ai_content_summary?.summary);
     else setAiPanel(container, "phi4", "Analysis unavailable", phi4.message || "Ollama error", "error", phi4.model);
   }
 }
@@ -1200,13 +1318,28 @@ function renderDashboard(user: GoogleUser, section: Section = "dashboard"): void
       if (run !== analysisRun) return;
       if (result) markLoadingCheck(result, 0);
       const recordId = saveAnalysis(user, report);
-      uploadStatus.textContent = "Identity and semantic analysis in progress…";
+      uploadStatus.textContent = "Identity, intent and AI summaries in progress…";
       await runAiAnalysis(user, report, recordId, document.createElement("div"), startedAt, (engine) => {
-        if (run === analysisRun && result) markLoadingCheck(result, engine === "identity" ? 1 : 2);
+        if (run === analysisRun && result) markLoadingCheck(result, engine === "identity" ? 1 : engine === "phi4" ? 2 : engine === "content-summary" ? 3 : 4);
       });
       if (run !== analysisRun) return;
+      // Let the browser paint the completed AI-summary step before completing
+      // the final-report step, then keep the fully checked state visible.
+      await pause(180);
+      if (run !== analysisRun) return;
       const completedResult = document.querySelector<HTMLDivElement>("#analysis-result");
-      if (completedResult) { markLoadingCheck(completedResult, 3); completedResult.innerHTML = reportMarkup(report); bindReportInteractions(user, report); restoreAiAnalysis(report, completedResult); }
+      if (completedResult) {
+        markLoadingCheck(completedResult, 5);
+        completeAnalysisLoading(completedResult);
+        await pause(780);
+        if (run !== analysisRun) return;
+        completedResult.querySelector<HTMLElement>(".analysis-loading")?.classList.add("is-leaving");
+        await pause(260);
+        if (run !== analysisRun) return;
+        completedResult.innerHTML = reportMarkup(report);
+        bindReportInteractions(user, report);
+        restoreAiAnalysis(report, completedResult);
+      }
       uploadStatus.textContent = recordId ? `Analysis complete: ${file.name}.` : `Analysis complete: ${file.name}. Local history could not be updated.`;
     } catch (error) { if (run === analysisRun) { if (intake) intake.hidden = false; if (changeEmail) changeEmail.hidden = true; uploadStatus.textContent = `Analysis did not complete: ${String(error)}`; if (result) result.innerHTML = ""; } }
     finally { if (run === analysisRun) dropZone?.removeAttribute("disabled"); }

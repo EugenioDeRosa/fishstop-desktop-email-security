@@ -65,12 +65,23 @@ def check_file(api_key: str, sha256: str) -> dict:
 
 
 def check_vt_domain(api_key: str, domain: str) -> dict:
-    base = {"domain": domain, "status": "skipped", "malicious": 0, "suspicious": 0, "detection_ratio": "-"}
+    domain = (domain or "").lower().strip().strip(".")
+    base = {"domain": domain, "domain_queried": domain, "status": "skipped", "malicious": 0, "suspicious": 0, "detection_ratio": "-"}
     if not api_key: return {**base, "message": "VirusTotal is not configured: add the API key in Settings."}
     if requests is None: return {**base, "message": "Reputation check unavailable: install requests."}
     try:
         response = requests.get(f"{VT}/domains/{domain}", headers={"x-apikey": api_key}, timeout=10)
-        if response.status_code == 404: return {**base, "status": "not_found", "message": "Domain not found on VirusTotal"}
+        if response.status_code == 404:
+            parent = _parent_domain_for_reputation(domain)
+            if parent != domain:
+                fallback = check_vt_domain(api_key, parent)
+                return {
+                    **fallback,
+                    "domain_queried": domain,
+                    "used_parent_fallback": parent,
+                    "message": f"Exact subdomain not found on VirusTotal; analysed parent domain {parent}.",
+                }
+            return {**base, "status": "not_found", "message": "Domain not found on VirusTotal"}
         if response.status_code == 401: return {**base, "status": "error", "message": "Invalid VirusTotal API key"}
         if response.status_code == 429: return {**base, "status": "error", "message": "VirusTotal rate limit exceeded"}
         response.raise_for_status()
@@ -215,6 +226,7 @@ def enrich(report: dict, vt_key: str, abuse_key: str) -> dict:
         str(link.get("url") or "").strip()
         for link in report.get("links") or []
         if str(link.get("scheme") or "").lower() in {"http", "https"}
+        and link.get("actionable") is not False
     )
     report["link_reputation"] = {url: check_url(vt_key, url) for url in urls if url}
     ips = dict.fromkeys(ip for hop in report.get("received_hops") or [] for ip in (hop.get("all_ips") or ([hop.get("sender_ip")] if hop.get("sender_ip") else [])))
@@ -224,7 +236,17 @@ def enrich(report: dict, vt_key: str, abuse_key: str) -> dict:
     def domain(value: str) -> str:
         match = re.search(r"@([\w.-]+)", value or ""); return match.group(1).lower() if match else ""
     domains = dict.fromkeys(filter(None, (domain(report.get(key) or "") for key in ("from_", "return_path", "reply_to"))))
-    report["domain_reputation"] = {item: {"infrastructure": check_domain(abuse_key, item), "virustotal": check_vt_domain(vt_key, item), "rdap": check_rdap_domain(item)} for item in domains}
+    # Sender-domain reputation is evaluated as a domain indicator on
+    # VirusTotal. Do not infer domain risk from an AbuseIPDB score belonging to
+    # a shared hosting/CDN IP, which can create false positives for services
+    # such as Google, Microsoft or Spotify.
+    report["domain_reputation"] = {
+        item: {
+            "virustotal": check_vt_domain(vt_key, item),
+            "rdap": check_rdap_domain(item),
+        }
+        for item in domains
+    }
     for attachment in report.get("attachments") or []:
         if attachment.get("hash_sha256"):
             attachment["file_reputation"] = check_file(vt_key, attachment["hash_sha256"])

@@ -53,6 +53,11 @@ _REDIRECT_PARAM_NAMES = {
     "redirect_uri", "return", "returnurl", "next", "continue", "goto", "link",
 }
 _NESTED_WEB_URL_RE = re.compile(r"https?://[^\s<>()\[\]{}\"']+", re.IGNORECASE)
+_BUTTON_CLASS_RE = re.compile(r"(?:^|[-_\s])(?:btn|button|cta|call[-_ ]?to[-_ ]?action)(?:$|[-_\s])", re.IGNORECASE)
+_BUTTON_URL_RE = re.compile(
+    r"(?:window\s*\.\s*)?(?:location(?:\s*\.\s*href)?|open)\s*\(?(?:\s*=\s*)?[\"'](?P<url>https?://[^\"'\s<>]+)",
+    re.IGNORECASE,
+)
 
 
 def _normalize_malformed_userinfo(value: str) -> str:
@@ -244,6 +249,33 @@ def _html_link_role(anchor) -> str:
     return "body_action"
 
 
+def _html_anchor_is_call_to_action(anchor) -> bool:
+    """Recognize button-like HTML anchors structurally, not by their wording."""
+    if anchor.find(["button", "input"]) is not None:
+        return True
+    if str(anchor.get("role") or "").strip().lower() == "button":
+        return True
+    markers = " ".join([
+        str(anchor.get("id") or ""),
+        " ".join(str(value) for value in (anchor.get("class") or [])),
+        str(anchor.get("name") or ""),
+    ])
+    if _BUTTON_CLASS_RE.search(markers):
+        return True
+    for node in [anchor, *list(anchor.descendants)]:
+        attrs = getattr(node, "attrs", None)
+        if attrs is None:
+            continue
+        style = str(node.get("style") or "").lower().replace(" ", "")
+        if "padding:" in style and (
+            "background:" in style
+            or "background-color:" in style
+            or "border:" in style
+        ):
+            return True
+    return False
+
+
 def extract_links(
     body_plain: str,
     body_html: str,
@@ -258,6 +290,7 @@ def extract_links(
     and are flagged when the text shows a different domain than the href destination.
     """
     seen: set[str] = set()
+    seen_signature_destinations: set[str] = set()
     links: list[dict] = []
 
     def _add(
@@ -266,13 +299,23 @@ def extract_links(
         source: str,
         *,
         role: str = "body_action",
+        html_call_to_action: bool = False,
     ) -> None:
         raw_url = (url or "").strip().rstrip(".,;)")
         if not _is_web_url_candidate(raw_url):
             return
         url = _normalize_malformed_userinfo(_with_scheme(raw_url))
         dedupe_key = _url_dedupe_key(url)
-        if not url or dedupe_key in seen:
+        if not url:
+            return
+        if dedupe_key in seen:
+            if html_call_to_action:
+                for existing in links:
+                    if _url_dedupe_key(existing.get("url") or "") == dedupe_key:
+                        existing["html_call_to_action"] = True
+                        if source == "html_button":
+                            existing["source"] = source
+                        break
             return
         if len(links) >= max_links:
             raise EmailAnalysisLimitError(
@@ -305,6 +348,28 @@ def extract_links(
             "port": None, "nested_redirect_count": 0, "redirect_targets": [], "redirect_hosts": [],
             "unicode_path_or_query": False, "unicode_host": False, "raw_at_sign": False,
         }
+        redirect_hosts = intelligence.get("redirect_hosts") or []
+        # Signature services can wrap a legitimate destination in a signed
+        # redirect. When the visible domain agrees with the final embedded
+        # destination, the wrapper is not a masked-link indicator.
+        resolved_display_destination = bool(
+            display_host
+            and redirect_hosts
+            and _same_registered_domain(display_host, redirect_hosts[-1])
+        )
+        signature_tracking_redirect = bool(
+            role == "signature"
+            and intelligence.get("nested_redirect_count")
+            and (not display_host or resolved_display_destination)
+        )
+        if signature_tracking_redirect:
+            # Corporate signatures are commonly repeated in quoted replies.
+            # Keep one transparent record for each final destination instead
+            # of filling the report with identical tracking wrappers.
+            signature_key = _registered_domain(redirect_hosts[-1])
+            if signature_key in seen_signature_destinations:
+                return
+            seen_signature_destinations.add(signature_key)
 
         links.append({
             "url": url,
@@ -316,12 +381,16 @@ def extract_links(
                 and display_host
                 and host
                 and not _same_registered_domain(display_host, host)
+                and not resolved_display_destination
             ),
             "host": host,
             "scheme": scheme,
             "source": source,
             "role": role,
             "actionable": role == "body_action",
+            "html_call_to_action": html_call_to_action,
+            "resolved_display_destination": resolved_display_destination,
+            "signature_tracking_redirect": signature_tracking_redirect,
             "is_ip": is_ip_url(host),
             "is_possible_shortener": is_shortener,
             "shortener_reason": shortener_reason,
@@ -349,6 +418,19 @@ def extract_links(
                         anchor.get_text(" ", strip=True),
                         "html_href",
                         role=_html_link_role(anchor),
+                        html_call_to_action=_html_anchor_is_call_to_action(anchor),
+                    )
+            for control in soup.find_all(["button", "input"], limit=max_links + 1):
+                onclick = str(control.get("onclick") or "")
+                data_target = str(control.get("data-href") or control.get("data-url") or "")
+                match = _BUTTON_URL_RE.search(onclick)
+                target = data_target or (match.group("url") if match else "")
+                if target:
+                    _add(
+                        target,
+                        control.get_text(" ", strip=True) or str(control.get("value") or ""),
+                        "html_button",
+                        html_call_to_action=True,
                     )
             for tag in list(soup.find_all(True)):
                 if tag.parent is not None and _html_node_has_non_action_marker(tag):

@@ -116,6 +116,25 @@ def analyze_phi4(report_path: str) -> dict[str, Any]:
     })
 
 
+def analyze_summary(report_path: str) -> dict[str, Any]:
+    """Generate the plain-language final explanation from completed analysis."""
+    from fishstop_engine.analyzer.llm_context_analyzer import generate_analysis_summary
+
+    report = json.loads(Path(report_path).read_text(encoding="utf-8"))
+    semantic = ((report.get("phi4_analysis") or {}).get("analysis") or report.get("semantic_analysis") or {})
+    if not semantic:
+        raise RuntimeError("Semantic intent analysis is required before generating the summary.")
+    return _json_safe(generate_analysis_summary(report, semantic))
+
+
+def analyze_content_summary(report_path: str) -> dict[str, Any]:
+    """Generate the content-only prose for the Content panel."""
+    from fishstop_engine.analyzer.llm_context_analyzer import generate_content_summary
+
+    report = json.loads(Path(report_path).read_text(encoding="utf-8"))
+    return _json_safe(generate_content_summary(report))
+
+
 def identity_worker() -> None:
     """Keep the NER weights in memory and handle JSON-line requests."""
     for raw_line in sys.stdin:
@@ -142,12 +161,14 @@ def main() -> None:
     elif len(sys.argv) == 3:
         command, value = sys.argv[1], sys.argv[2]
     else:
-        raise SystemExit("Usage: main.py [static|identity|phi4] <file>")
+        raise SystemExit("Usage: main.py [static|identity|phi4|content-summary|summary] <file>")
     try:
         result = {
             "static": analyze,
             "identity": analyze_identity,
             "phi4": analyze_phi4,
+            "content-summary": analyze_content_summary,
+            "summary": analyze_summary,
         }.get(command)
         if result is None:
             raise ValueError(f"Comando sconosciuto: {command}")

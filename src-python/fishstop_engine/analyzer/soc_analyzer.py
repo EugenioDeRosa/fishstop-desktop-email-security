@@ -647,6 +647,7 @@ class EmlSOCAnalyzer:
         report["lookalike_alerts"] = check_lookalike_domains([
             link for link in report["links"]
             if str(link.get("scheme") or "").lower() in {"http", "https"}
+            and link.get("actionable") is not False
         ])
 
         # ── 11. Flag SOC ──────────────────────────────────────────────────
@@ -689,8 +690,10 @@ class EmlSOCAnalyzer:
         Priority:
           1. client-ip= in the LAST Received-SPF (closest to the sender)
           2. smtp.remote-ip= in Authentication-Results
-          3. Primo IP pubblico nell'ultimo hop Received
-          4. Fallback: sender_ip dall'hop [1]
+          3. First public IP in the oldest Received hop
+
+        If the oldest hop is an internal MAPI/Exchange hand-off, no SMTP
+        boundary IP is available and independent SPF must remain unavailable.
         """
         all_rcvd_spf = msg.get_all("Received-SPF") or []
         for rcvd_spf in reversed(all_rcvd_spf):
@@ -709,7 +712,7 @@ class EmlSOCAnalyzer:
                 if _is_public_ip(ip):
                     return ip
 
-        return (hops[1].get("sender_ip") if len(hops) > 1 else None)
+        return None
 
     @staticmethod
     def _build_flags(report: dict) -> list[dict]:
@@ -735,14 +738,18 @@ class EmlSOCAnalyzer:
         # DKIM: missing/none is an absence of evidence, not a strong malicious signal.
         dkim = effective.get("DKIM") or report["auth_results"].get("DKIM") or report["arc_auth_results"].get("DKIM")
         dkim_status = (dkim.get("status") or "") .lower() if dkim else ""
-        if dkim_status and dkim_status != "pass":
+        if dkim_status == "none":
+            flag("INFO", "DKIM", "No DKIM signature result is available in this EML export")
+        elif dkim_status and dkim_status != "pass":
             flag("MEDIUM", "DKIM", f"DKIM {dkim_status.upper()} - signature validation should be reviewed")
         elif not report["dkim_signature_present"]:
             flag("INFO", "DKIM", "No DKIM signature is available in this EML export")
 
         # DMARC
         dmarc = effective.get("DMARC") or report["auth_results"].get("DMARC") or report["arc_auth_results"].get("DMARC")
-        if dmarc and dmarc["status"] not in ("pass", "bestguesspass"):
+        if dmarc and dmarc["status"] == "none":
+            flag("INFO", "DMARC", "No DMARC authentication result is available in this EML export")
+        elif dmarc and dmarc["status"] not in ("pass", "bestguesspass"):
             flag("MEDIUM", "DMARC", f"DMARC {dmarc['status'].upper()}")
         elif not dmarc:
             flag("INFO", "DMARC", "No DMARC result is available in this EML export")
@@ -880,7 +887,25 @@ class EmlSOCAnalyzer:
                      f"-> detected format: {att['magic_detected_format'] or 'unknown'}")
 
         # Link anomalie: IP-direct e lookalike
+        html_ctas = [
+            link for link in report.get("links", [])
+            if link.get("html_call_to_action")
+            and link.get("actionable") is not False
+        ]
+        if html_ctas:
+            destinations = ", ".join(
+                str(link.get("host") or "URL") for link in html_ctas[:3]
+            )
+            flag(
+                "INFO",
+                "HTML Call-to-Action",
+                f"{len(html_ctas)} clickable HTML button/link destination(s) detected: {destinations}",
+            )
         for lnk in report.get("links", []):
+            # Signature redirects are retained for transparency, but a
+            # resolved, non-actionable signature link is not a risk signal.
+            if lnk.get("signature_tracking_redirect"):
+                continue
             if lnk.get("is_ip"):
                 flag(
                     "HIGH", "Link",

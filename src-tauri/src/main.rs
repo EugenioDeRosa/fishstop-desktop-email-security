@@ -308,7 +308,7 @@ async fn analyze_eml(file_name: String, contents: Vec<u8>, virustotal_api_key: S
 }
 
 fn analyze_ai_with_engine(command: &str, report: serde_json::Value, ollama_model: &str) -> Result<serde_json::Value, String> {
-    if !matches!(command, "identity" | "phi4") {
+    if !matches!(command, "identity" | "phi4" | "content-summary" | "summary") {
         return Err("Unsupported AI engine.".to_string());
     }
     let engine = python_engine_path();
@@ -349,18 +349,38 @@ async fn analyze_identity(report: serde_json::Value, worker: tauri::State<'_, Ar
 #[tauri::command]
 async fn analyze_phi4(report: serde_json::Value, model: Option<String>) -> Result<serde_json::Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let selected_model = model.unwrap_or_else(|| "phi4-mini:3.8b-q4_K_M".to_string());
+        let selected_model = model.unwrap_or_else(|| "qwen3:4b-q4_K_M".to_string());
         analyze_ai_with_engine("phi4", report, &selected_model)
     })
         .await
         .map_err(|error| format!("Phi-4 analysis interrupted: {error}"))?
 }
 
+#[tauri::command]
+async fn analyze_content_summary(report: serde_json::Value, model: Option<String>) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let selected_model = model.unwrap_or_else(|| "qwen3:4b-q4_K_M".to_string());
+        analyze_ai_with_engine("content-summary", report, &selected_model)
+    })
+        .await
+        .map_err(|error| format!("Content summary interrupted: {error}"))?
+}
+
+#[tauri::command]
+async fn analyze_summary(report: serde_json::Value, model: Option<String>) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let selected_model = model.unwrap_or_else(|| "qwen3:4b-q4_K_M".to_string());
+        analyze_ai_with_engine("summary", report, &selected_model)
+    })
+        .await
+        .map_err(|error| format!("AI summary interrupted: {error}"))?
+}
+
 fn warm_phi4_with_ollama(model: Option<String>) -> Result<(), String> {
     let endpoint = std::env::var("OLLAMA_GENERATE_ENDPOINT")
         .unwrap_or_else(|_| "http://localhost:11434/api/generate".to_string());
     let model = model.filter(|value| !value.trim().is_empty()).unwrap_or_else(|| std::env::var("OLLAMA_MODEL")
-        .unwrap_or_else(|_| "phi4-mini:3.8b-q4_K_M".to_string()));
+        .unwrap_or_else(|_| "qwen3:4b-q4_K_M".to_string()));
     reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(90))
         .build()
@@ -492,7 +512,7 @@ fn open_external_url(url: String) -> Result<(), String> {
 fn main() {
     tauri::Builder::default()
         .manage(Arc::new(Mutex::new(IdentityWorker::default())))
-        .invoke_handler(tauri::generate_handler![sign_in_with_google, analyze_eml, analyze_identity, analyze_phi4, warm_phi4, list_ollama_models, huggingface_identity_model_info, local_engine_status, open_external_url])
+        .invoke_handler(tauri::generate_handler![sign_in_with_google, analyze_eml, analyze_identity, analyze_phi4, analyze_content_summary, analyze_summary, warm_phi4, list_ollama_models, huggingface_identity_model_info, local_engine_status, open_external_url])
         .run(tauri::generate_context!())
         .expect("FishStop failed to start");
 }

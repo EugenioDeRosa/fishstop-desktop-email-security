@@ -24,7 +24,7 @@ use ollama_runtime::OllamaRuntime;
 
 // Un Client ID di un'app desktop è pubblico per definizione. Non inserire mai qui
 // un client secret o credenziali personali.
-const GOOGLE_CLIENT_ID: &str = "676285460838-a927po5i3k4eo5cq7pls04ltjg63p8mf.apps.googleusercontent.com";
+const GOOGLE_CLIENT_ID: &str = "676285460838-ddntr70n2um8s68r56aludqt4qkgc6hs.apps.googleusercontent.com";
 const AUTHORIZATION_ENDPOINT: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_ENDPOINT: &str = "https://oauth2.googleapis.com/token";
 const USERINFO_ENDPOINT: &str = "https://openidconnect.googleapis.com/v1/userinfo";

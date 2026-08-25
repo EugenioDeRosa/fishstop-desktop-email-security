@@ -1,0 +1,1 @@
+# The release workflow downloads the platform runtime here before Tauri bundles it.

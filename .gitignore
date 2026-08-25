@@ -6,6 +6,7 @@ src-tauri/target/
 src-tauri/binaries/
 src-tauri/resources/ollama/*
 !src-tauri/resources/ollama/.gitkeep
+src-tauri/resources/google-oauth-client-secret
 build/
 .venv/
 __pycache__/

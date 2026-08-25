@@ -25,9 +25,7 @@ use ollama_runtime::OllamaRuntime;
 // Un Client ID di un'app desktop è pubblico per definizione. Non inserire mai qui
 // un client secret o credenziali personali.
 const GOOGLE_CLIENT_ID: &str = "676285460838-ddntr70n2um8s68r56aludqt4qkgc6hs.apps.googleusercontent.com";
-// This value is injected only while producing the distributable application.
-// It is intentionally not stored in the repository.
-const GOOGLE_CLIENT_SECRET: Option<&str> = option_env!("FISHSTOP_GOOGLE_CLIENT_SECRET");
+const GOOGLE_CLIENT_SECRET_RESOURCE: &str = "google-oauth-client-secret";
 const AUTHORIZATION_ENDPOINT: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_ENDPOINT: &str = "https://oauth2.googleapis.com/token";
 const USERINFO_ENDPOINT: &str = "https://openidconnect.googleapis.com/v1/userinfo";
@@ -123,6 +121,38 @@ fn encode(value: &str) -> String {
     url::form_urlencoded::byte_serialize(value.as_bytes()).collect()
 }
 
+fn google_client_secret() -> Result<String, String> {
+    if let Ok(secret) = std::env::var("FISHSTOP_GOOGLE_CLIENT_SECRET") {
+        if !secret.trim().is_empty() {
+            return Ok(secret);
+        }
+    }
+
+    let executable = std::env::current_exe()
+        .map_err(|error| format!("Could not locate the FishStop application: {error}"))?;
+    #[cfg(target_os = "macos")]
+    let resource = executable
+        .parent()
+        .and_then(|directory| directory.parent())
+        .map(|directory| directory.join("Resources").join("resources").join(GOOGLE_CLIENT_SECRET_RESOURCE));
+    #[cfg(not(target_os = "macos"))]
+    let resource = executable
+        .parent()
+        .map(|directory| directory.join("resources").join(GOOGLE_CLIENT_SECRET_RESOURCE));
+
+    resource
+        .ok_or_else(|| "The Google sign-in credential is missing from this build. Download the latest FishStop installer.".to_string())
+        .and_then(|path| fs::read_to_string(path).map_err(|_| "The Google sign-in credential is missing from this build. Download the latest FishStop installer.".to_string()))
+        .and_then(|secret| {
+            let secret = secret.trim().to_string();
+            if secret.is_empty() {
+                Err("The Google sign-in credential is missing from this build. Download the latest FishStop installer.".to_string())
+            } else {
+                Ok(secret)
+            }
+        })
+}
+
 fn launch_browser(url: &str) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     let result = Command::new("open").arg(url).spawn();
@@ -203,9 +233,7 @@ fn wait_for_callback(listener: TcpListener, expected_state: &str) -> Result<Stri
 }
 
 fn google_sign_in() -> Result<GoogleUser, String> {
-    let client_secret = GOOGLE_CLIENT_SECRET.ok_or(
-        "The Google sign-in credential is missing from this build. Download the latest FishStop installer.",
-    )?;
+    let client_secret = google_client_secret()?;
     let listener = TcpListener::bind("127.0.0.1:0")
         .map_err(|error| format!("Could not start the local callback: {error}"))?;
     let port = listener

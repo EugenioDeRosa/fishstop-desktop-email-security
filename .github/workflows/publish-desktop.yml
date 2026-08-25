@@ -52,10 +52,13 @@ jobs:
         env:
           FISHSTOP_TARGET_TRIPLE: ${{ matrix.target }}
         run: python scripts/download_ollama_runtime.py
+      - name: Prepare Google OAuth credential
+        env:
+          FISHSTOP_GOOGLE_CLIENT_SECRET: ${{ secrets.FISHSTOP_GOOGLE_CLIENT_SECRET }}
+        run: python -c "from pathlib import Path; import os; Path('src-tauri/resources/google-oauth-client-secret').write_text(os.environ['FISHSTOP_GOOGLE_CLIENT_SECRET'], encoding='utf-8')"
       - uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          FISHSTOP_GOOGLE_CLIENT_SECRET: ${{ secrets.FISHSTOP_GOOGLE_CLIENT_SECRET }}
         with:
           tagName: v__VERSION__
           releaseName: FishSTOP v__VERSION__

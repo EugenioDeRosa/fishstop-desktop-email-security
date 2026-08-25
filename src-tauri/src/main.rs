@@ -1,5 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod ollama_runtime;
+
 use std::{
     collections::HashMap,
     fs,
@@ -18,6 +20,7 @@ use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use url::Url;
+use ollama_runtime::OllamaRuntime;
 
 // Un Client ID di un'app desktop è pubblico per definizione. Non inserire mai qui
 // un client secret o credenziali personali.
@@ -529,12 +532,6 @@ async fn warm_phi4(model: Option<String>) -> Result<(), String> {
 }
 
 #[derive(Deserialize)]
-struct OllamaTags { models: Option<Vec<OllamaTag>> }
-
-#[derive(Deserialize)]
-struct OllamaTag { name: String }
-
-#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct HuggingFaceModelResponse {
     sha: Option<String>,
@@ -550,17 +547,32 @@ struct HuggingFaceModelInfo {
 }
 
 #[tauri::command]
-async fn list_ollama_models() -> Result<Vec<String>, String> {
-    tauri::async_runtime::spawn_blocking(|| {
-        let endpoint = std::env::var("OLLAMA_TAGS_ENDPOINT")
-            .unwrap_or_else(|_| "http://localhost:11434/api/tags".to_string());
-        let response = reqwest::blocking::Client::builder().timeout(Duration::from_secs(4)).build()
-            .map_err(|error| format!("Could not contact Ollama: {error}"))?
-            .get(endpoint).send().and_then(|response| response.error_for_status())
-            .map_err(|error| format!("Ollama is unavailable: {error}"))?;
-        let tags: OllamaTags = response.json().map_err(|error| format!("Invalid Ollama response: {error}"))?;
-        Ok(tags.models.unwrap_or_default().into_iter().map(|item| item.name).collect())
-    }).await.map_err(|error| format!("Ollama model lookup interrupted: {error}"))?
+async fn list_ollama_models(app: tauri::AppHandle, runtime: tauri::State<'_, Arc<Mutex<OllamaRuntime>>>) -> Result<Vec<String>, String> {
+    let runtime = Arc::clone(&runtime);
+    tauri::async_runtime::spawn_blocking(move || ollama_runtime::list_models(&app, &runtime))
+        .await.map_err(|error| format!("Ollama model lookup interrupted: {error}"))?
+}
+
+#[tauri::command]
+async fn ollama_runtime_status(app: tauri::AppHandle, runtime: tauri::State<'_, Arc<Mutex<OllamaRuntime>>>) -> Result<ollama_runtime::OllamaRuntimeStatus, String> {
+    let runtime = Arc::clone(&runtime);
+    Ok(tauri::async_runtime::spawn_blocking(move || ollama_runtime::status(&app, &runtime)).await.unwrap_or_else(|_| ollama_runtime::OllamaRuntimeStatus {
+        runtime_ready: false, model_ready: false, managed: false, model: ollama_runtime::DEFAULT_MODEL.to_string(),
+    }))
+}
+
+#[tauri::command]
+async fn install_default_ollama_model(app: tauri::AppHandle, runtime: tauri::State<'_, Arc<Mutex<OllamaRuntime>>>) -> Result<(), String> {
+    let runtime = Arc::clone(&runtime);
+    tauri::async_runtime::spawn_blocking(move || ollama_runtime::install_default_model(&app, &runtime))
+        .await.map_err(|error| format!("Qwen installation interrupted: {error}"))?
+}
+
+#[tauri::command]
+async fn remove_default_ollama_model(app: tauri::AppHandle, runtime: tauri::State<'_, Arc<Mutex<OllamaRuntime>>>) -> Result<(), String> {
+    let runtime = Arc::clone(&runtime);
+    tauri::async_runtime::spawn_blocking(move || ollama_runtime::remove_default_model(&app, &runtime))
+        .await.map_err(|error| format!("Qwen removal interrupted: {error}"))?
 }
 
 #[tauri::command]
@@ -638,8 +650,9 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(Arc::new(Mutex::new(IdentityWorker::default())))
+        .manage(Arc::new(Mutex::new(OllamaRuntime::default())))
         .manage(Arc::new(Mutex::new(ReputationCredentialCache::default())))
-        .invoke_handler(tauri::generate_handler![sign_in_with_google, reputation_key_status, save_reputation_keys, analyze_eml, analyze_eml_contents, analyze_identity, analyze_phi4, analyze_content_summary, analyze_summary, warm_phi4, list_ollama_models, huggingface_identity_model_info, local_engine_status, open_external_url])
+        .invoke_handler(tauri::generate_handler![sign_in_with_google, reputation_key_status, save_reputation_keys, analyze_eml, analyze_eml_contents, analyze_identity, analyze_phi4, analyze_content_summary, analyze_summary, warm_phi4, list_ollama_models, ollama_runtime_status, install_default_ollama_model, remove_default_ollama_model, huggingface_identity_model_info, local_engine_status, open_external_url])
         .run(tauri::generate_context!())
         .expect("FishStop failed to start");
 }

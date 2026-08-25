@@ -4,6 +4,7 @@ node_modules/
 dist/
 src-tauri/target/
 src-tauri/binaries/
+src-tauri/resources/ollama/
 build/
 .venv/
 __pycache__/

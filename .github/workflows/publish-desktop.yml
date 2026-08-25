@@ -48,6 +48,10 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r src-python/requirements.txt pyinstaller
           python scripts/build_sidecar.py
+      - name: Bundle the Ollama runtime
+        env:
+          FISHSTOP_TARGET_TRIPLE: ${{ matrix.target }}
+        run: python scripts/download_ollama_runtime.py
       - uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

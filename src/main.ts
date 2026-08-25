@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { listen } from "@tauri-apps/api/event";
 import { geoDistance, geoGraticule, geoInterpolate, geoOrthographic, geoPath } from "d3-geo";
 import { feature, mesh } from "topojson-client";
 import worldAtlas from "world-atlas/countries-110m.json";
@@ -63,6 +64,8 @@ type ProtectionTone = "checking" | "ok" | "warning" | "error";
 type LocalEngineStatus = { static_engine: boolean; python_runtime: boolean; identity_dependencies: boolean };
 type ReputationKeyStatus = { virustotal: boolean; abuseipdb: boolean };
 type HuggingFaceModelInfo = { repository: string; runtime_revision: string; latest_commit?: string; updated_at?: string };
+type OllamaRuntimeStatus = { runtime_ready: boolean; model_ready: boolean; managed: boolean; model: string };
+type OllamaModelProgress = { status: string; total?: number; completed?: number };
 
 function escapeHtml(value: string): string {
   return value.replace(/[&<>'"]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[character] || character));
@@ -1320,6 +1323,32 @@ function renderDashboard(user: GoogleUser, section: Section = "dashboard"): void
   });
   const ollamaSelect = document.querySelector<HTMLSelectElement>("#ollama-model");
   const ollamaStatus = document.querySelector<HTMLElement>("#ollama-status");
+  const ollamaLab = document.querySelector<HTMLElement>(".ollama-lab");
+  if (ollamaLab) ollamaLab.insertAdjacentHTML("beforeend", `<section class="managed-model" aria-live="polite"><p class="page-kicker">FISHSTOP AI</p><h3>Qwen locale</h3><p id="managed-model-status">Checking the bundled AI runtime…</p><div class="ollama-actions"><button class="primary-action" id="install-managed-qwen" type="button">Install Qwen</button><button class="soft-action" id="remove-managed-qwen" type="button" hidden>Remove model</button></div></section>`);
+  const managedModelStatus = document.querySelector<HTMLElement>("#managed-model-status");
+  const installManagedQwen = document.querySelector<HTMLButtonElement>("#install-managed-qwen");
+  const removeManagedQwen = document.querySelector<HTMLButtonElement>("#remove-managed-qwen");
+  const refreshManagedModel = async () => {
+    try {
+      const runtime = await invoke<OllamaRuntimeStatus>("ollama_runtime_status");
+      if (!managedModelStatus || !installManagedQwen || !removeManagedQwen) return;
+      if (runtime.model_ready) { managedModelStatus.textContent = `${runtime.model} is installed and ready.`; installManagedQwen.hidden = true; removeManagedQwen.hidden = false; }
+      else { managedModelStatus.textContent = runtime.runtime_ready ? `Install ${runtime.model} to enable local semantic analysis.` : "Bundled AI runtime is unavailable."; installManagedQwen.hidden = false; removeManagedQwen.hidden = true; }
+    } catch (error) { if (managedModelStatus) managedModelStatus.textContent = `AI runtime unavailable: ${String(error)}`; }
+  };
+  installManagedQwen?.addEventListener("click", async () => {
+    if (!managedModelStatus || !installManagedQwen) return;
+    installManagedQwen.disabled = true;
+    const unlisten = await listen<OllamaModelProgress>("ollama-model-progress", (event) => { const { status, completed, total } = event.payload; const progress = total && completed !== undefined ? ` ${Math.floor(completed / total * 100)}%` : ""; managedModelStatus.textContent = `${status}${progress}`; });
+    try { await invoke("install_default_ollama_model"); await loadOllamaModels(); await refreshManagedModel(); void refreshProtectionStatus(user, true); }
+    catch (error) { managedModelStatus.textContent = `Qwen installation failed: ${String(error)}`; }
+    finally { unlisten(); installManagedQwen.disabled = false; }
+  });
+  removeManagedQwen?.addEventListener("click", async () => {
+    if (!managedModelStatus) return;
+    try { await invoke("remove_default_ollama_model"); await loadOllamaModels(); await refreshManagedModel(); void refreshProtectionStatus(user, true); }
+    catch (error) { managedModelStatus.textContent = `Could not remove Qwen: ${String(error)}`; }
+  });
   const loadOllamaModels = async () => {
     if (!ollamaSelect) return;
     ollamaSelect.disabled = true; if (ollamaStatus) ollamaStatus.textContent = "Looking for installed Ollama models…";
@@ -1343,6 +1372,7 @@ function renderDashboard(user: GoogleUser, section: Section = "dashboard"): void
     void refreshProtectionStatus(user, true);
   });
   if (ollamaSelect) void loadOllamaModels();
+  void refreshManagedModel();
   const bertProvenance = document.querySelector<HTMLElement>("#bert-model-provenance");
   if (bertProvenance) {
     const card = bertProvenance.closest<HTMLElement>(".model-provenance-card");

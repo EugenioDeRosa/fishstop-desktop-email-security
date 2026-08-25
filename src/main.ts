@@ -19,7 +19,7 @@ type AnalysisReport = {
   body_source?: string; body_clean?: string; body_ai?: string; body_context?: string; body_html?: string; body_html_safe?: string; injection_sender_ip?: string;
   eml_sha256?: string;
   return_path_domain_mismatch?: boolean; reply_to_mismatch?: boolean; display_name_spoofing?: string;
-  links?: Array<{ url?: string; host?: string; is_ip?: boolean; scheme?: string; source?: string; display_text?: string; display_host?: string; display_mismatch?: boolean; resolved_display_destination?: boolean; signature_tracking_redirect?: boolean; html_call_to_action?: boolean; is_possible_shortener?: boolean; shortener_reason?: string; has_userinfo?: boolean; has_credentials?: boolean; nonstandard_port?: boolean; port?: number; nested_redirect_count?: number; redirect_hosts?: string[]; unicode_path_or_query?: boolean; role?: string; actionable?: boolean; sources?: string[] }>;
+  links?: Array<{ url?: string; host?: string; is_ip?: boolean; scheme?: string; source?: string; display_text?: string; display_host?: string; display_mismatch?: boolean; resolved_display_destination?: boolean; signature_tracking_redirect?: boolean; html_call_to_action?: boolean; is_possible_shortener?: boolean; shortener_reason?: string; has_userinfo?: boolean; has_credentials?: boolean; nonstandard_port?: boolean; port?: number; nested_redirect_count?: number; redirect_hosts?: string[]; unicode_path_or_query?: boolean; role?: string; actionable?: boolean; sources?: string[]; download_filename?: string; download_extension?: string; dangerous_download?: boolean; financial_attachment_mismatch?: boolean; context_risk_level?: string; context_risk_message?: string }>;
   link_reputation?: Record<string, ReputationResult>;
   hop_reputation?: Record<string, ReputationResult>;
   domain_reputation?: Record<string, { infrastructure?: ReputationResult; virustotal?: ReputationResult & { registrar?: string; creation_date?: string | number }; rdap?: ReputationResult & { registration_date?: string; registrar?: string } }>;
@@ -728,14 +728,15 @@ function reportMarkup(report: AnalysisReport): string {
     const structuralWarning = Boolean(link.nonstandard_port || link.nested_redirect_count || link.unicode_path_or_query);
     const reputationResult = report.link_reputation?.[link.url || ""];
     const reputation = reputationCheckTone(reputationResult);
-    const tone = signatureTracking ? "pass" : dangerous || structuralDanger || link.display_mismatch ? "fail" : reputation || (structuralWarning || link.is_possible_shortener ? "warn" : "pass");
-    const status = signatureTracking ? "Signature tracking redirect" : dangerous ? (link.is_ip ? "Direct IP" : "Lookalike domain") : structuralDanger ? "Hidden destination userinfo" : link.display_mismatch ? "Destination differs from visible text" : reputation === "fail" ? "Detected by VirusTotal" : reputation === "warn" ? "Review required" : reputation === "pass" ? "VirusTotal clean" : link.nested_redirect_count ? "Nested redirect destination" : link.nonstandard_port ? "Non-standard port" : link.unicode_path_or_query ? "Unicode path or query" : link.is_possible_shortener ? "Possible URL shortener" : "Valid URL structure";
+    const invoiceDeliveryMismatch = Boolean(link.financial_attachment_mismatch);
+    const tone = signatureTracking ? "pass" : dangerous || structuralDanger || link.display_mismatch || invoiceDeliveryMismatch ? "fail" : reputation || (structuralWarning || link.is_possible_shortener ? "warn" : "pass");
+    const status = signatureTracking ? "Signature tracking redirect" : invoiceDeliveryMismatch ? (link.dangerous_download ? "Invoice link points to a script/executable" : "Invoice delivery is unrelated to sender domain") : dangerous ? (link.is_ip ? "Direct IP" : "Lookalike domain") : structuralDanger ? "Hidden destination userinfo" : link.display_mismatch ? "Destination differs from visible text" : reputation === "fail" ? "Detected by VirusTotal" : reputation === "warn" ? "Review required" : reputation === "pass" ? "VirusTotal clean" : link.nested_redirect_count ? "Nested redirect destination" : link.nonstandard_port ? "Non-standard port" : link.unicode_path_or_query ? "Unicode path or query" : link.is_possible_shortener ? "Possible URL shortener" : "Valid URL structure";
     const host = link.host || "URL without host";
     const vtUrl = reputationResult?.permalink || `https://www.virustotal.com/gui/domain/${encodeURIComponent(host)}`;
     const whoisUrl = `https://www.whois.com/whois/${encodeURIComponent(host)}`;
     const isWebLink = ["http", "https"].includes((link.scheme || "").toLowerCase());
     const metadata = [sourceLabel[link.source || ""] || link.source, link.scheme ? link.scheme.toUpperCase() : ""].filter(Boolean).join(" · ");
-    const notes = [htmlCallToAction && "Clickable HTML call-to-action", signatureTracking && `Final destination: ${(link.redirect_hosts || []).join(", ") || "embedded target"}`, link.display_mismatch && `Visible text: ${link.display_host || link.display_text || "different domain"}`, link.has_credentials && "Username or password is embedded before the destination host", link.has_userinfo && "Userinfo is present before the destination host", link.nonstandard_port && `Port ${link.port}`, !signatureTracking && link.nested_redirect_count && `Redirects to: ${(link.redirect_hosts || []).join(", ") || "embedded target"}`, link.unicode_path_or_query && "Unicode characters in path or query", link.is_possible_shortener && link.shortener_reason, reputationResult?.detection_ratio && `VirusTotal: ${reputationResult.detection_ratio}`, reputationResult?.last_analysis && `Last analysis: ${reputationResult.last_analysis}`].filter(Boolean).join(" · ");
+    const notes = [htmlCallToAction && "Clickable HTML call-to-action", invoiceDeliveryMismatch && link.context_risk_message, link.dangerous_download && `Download filename: ${link.download_filename || `.${link.download_extension || "unknown"}`}`, signatureTracking && `Final destination: ${(link.redirect_hosts || []).join(", ") || "embedded target"}`, link.display_mismatch && `Visible text: ${link.display_host || link.display_text || "different domain"}`, link.has_credentials && "Username or password is embedded before the destination host", link.has_userinfo && "Userinfo is present before the destination host", link.nonstandard_port && `Port ${link.port}`, !signatureTracking && link.nested_redirect_count && `Redirects to: ${(link.redirect_hosts || []).join(", ") || "embedded target"}`, link.unicode_path_or_query && "Unicode characters in path or query", link.is_possible_shortener && link.shortener_reason, reputationResult?.detection_ratio && `VirusTotal: ${reputationResult.detection_ratio}`, reputationResult?.last_analysis && `Last analysis: ${reputationResult.last_analysis}`].filter(Boolean).join(" · ");
     const virusTotalAction = !isWebLink ? ""
       : reputationResult?.status === "not_found"
       ? `<a class="manual-vt-action" href="https://www.virustotal.com/gui/home/url" target="_blank" rel="noopener noreferrer" data-vt-manual-url="${escapeHtml(link.url || "")}">Copy URL &amp; open VirusTotal ↗</a>`
@@ -1363,6 +1364,13 @@ function renderDashboard(user: GoogleUser, section: Section = "dashboard"): void
   const emlInput = document.querySelector<HTMLInputElement>("#eml-input");
   const intake = document.querySelector<HTMLElement>("#eml-intake"); const changeEmail = document.querySelector<HTMLButtonElement>("#change-eml");
   let analysisRun = 0;
+  let lastDropAt = 0;
+  const acceptsDrop = () => {
+    const now = Date.now();
+    if (now - lastDropAt < 750) return false;
+    lastDropAt = now;
+    return true;
+  };
   const displayAnalysis = async (fileName: string, request: () => Promise<AnalysisReport>) => {
     if (!uploadStatus) return;
     const run = ++analysisRun;
@@ -1439,13 +1447,13 @@ function renderDashboard(user: GoogleUser, section: Section = "dashboard"): void
         return;
       }
       dropZone.classList.remove("dragging");
-      if (payload.type === "drop" && payload.paths[0]) displayFile(payload.paths[0]);
+      if (payload.type === "drop" && payload.paths[0] && acceptsDrop()) displayFile(payload.paths[0]);
     }).then((unlisten) => { unlistenNativeEmlDrop = unlisten; }).catch(() => { /* Native file dropping is unavailable outside Tauri. */ });
     dropZone.addEventListener("dragover", (event) => { event.preventDefault(); dropZone.classList.add("dragging"); });
     dropZone.addEventListener("dragleave", () => dropZone.classList.remove("dragging"));
     dropZone.addEventListener("drop", (event) => {
       event.preventDefault(); dropZone.classList.remove("dragging");
-      void displayBrowserFile(event.dataTransfer?.files[0]);
+      if (acceptsDrop()) void displayBrowserFile(event.dataTransfer?.files[0]);
     });
   }
 }

@@ -1806,22 +1806,31 @@ def _identity_risk(
         return "spoofing_evidence", ["display-name spoofing was detected"]
     if soc.get("reply_to_mismatch") and not soc.get("reply_to_mismatch_legitimate"):
         return "spoofing_evidence", ["Reply-To differs unexpectedly from the sender identity"]
-    for coherence in ((soc.get("identity_analysis") or {}).get("coherence") or []):
-        if coherence.get("status") != "mismatch" or not coherence.get("official_domain"):
-            continue
-        mismatch_sources = {
-            str(item.get("source") or "").strip().lower()
-            for item in (coherence.get("mismatches") or [])
+    risky_brand_action = bool(
+        semantic
+        and semantic.get("action_channel") in {"supplied_link", "external_form", "supplied_attachment"}
+        and semantic.get("requested_action") in {
+            "provide_credentials", "provide_information", "pay_or_transfer",
+            "verify_account", "change_account_settings", "open_attachment",
         }
-        sender_mismatch = bool(mismatch_sources & {"from", "sender", "return-path"})
-        action_mismatch = bool(mismatch_sources & {"link action", "email action"})
-        # Third-party marketing and support domains are common. Strong
-        # impersonation evidence requires both the visible sender and the
-        # requested-action destination to be unrelated to the official brand.
-        if sender_mismatch and action_mismatch:
-            return "spoofing_evidence", [
-                f"the message claims {coherence.get('brand') or 'an organisation'}, but both the sender and action destination are unrelated to its official domain {coherence.get('official_domain')}"
-            ]
+    )
+    if risky_brand_action:
+        for coherence in ((soc.get("identity_analysis") or {}).get("coherence") or []):
+            if coherence.get("status") != "mismatch" or not coherence.get("official_domain"):
+                continue
+            mismatch_sources = {
+                str(item.get("source") or "").strip().lower()
+                for item in (coherence.get("mismatches") or [])
+            }
+            sender_mismatch = bool(mismatch_sources & {"from", "sender", "return-path"})
+            action_mismatch = bool(mismatch_sources & {"link action", "email action"})
+            # Third-party marketing and support domains are common. Strong
+            # impersonation evidence requires both the visible sender and the
+            # requested-action destination to be unrelated to the official brand.
+            if sender_mismatch and action_mismatch:
+                return "spoofing_evidence", [
+                    f"the message claims {coherence.get('brand') or 'an organisation'}, but both the sender and action destination are unrelated to its official domain {coherence.get('official_domain')}"
+                ]
     if semantic and _claimed_brand_domain_mismatch(soc, semantic):
         brand = semantic.get("claimed_brand") or _sender_display_name(soc)
         return "spoofing_evidence", [
@@ -1995,16 +2004,27 @@ def _technical_risk(soc: dict, semantic: dict | None = None) -> tuple[str, list[
         elif status == "suspicious" or _safe_int(rep.get("suspicious")) > 0:
             suspicious.append("a sender domain has suspicious VirusTotal reputation")
 
-    malicious = list(dict.fromkeys(malicious))
-    suspicious = list(dict.fromkeys(suspicious))
-    if malicious:
-        return "malicious", malicious
     if any(link.get("is_ip") for link in (soc.get("links") or [])):
         suspicious.append("the message contains a direct-IP URL")
     if soc.get("lookalike_alerts"):
         suspicious.append("a lookalike or deceptive domain was detected")
+    for link in (soc.get("links") or []):
+        if link.get("actionable") is False or not link.get("financial_attachment_mismatch"):
+            continue
+        if link.get("dangerous_download"):
+            # This is not a reputation verdict about the host: it is a strong
+            # structural finding. A financial email that promises an attached
+            # document but instead delivers a script from an unrelated host is
+            # unsafe to open even when the sender is authenticated.
+            malicious.append("a claimed invoice download points to an unrelated host and a potentially executable file")
+        else:
+            suspicious.append("a claimed invoice attachment is instead hosted on an unrelated external domain")
     if semantic and _sensitive_link_domain_mismatch(soc, semantic):
         suspicious.append("a requested-action link uses a domain unrelated to the sender")
+    malicious = list(dict.fromkeys(malicious))
+    suspicious = list(dict.fromkeys(suspicious))
+    if malicious:
+        return "malicious", malicious
     # A missing VirusTotal report or API key is not negative evidence. It is
     # surfaced in the UI as unavailable, but must not turn an ordinary link
     # into a suspicious technical signal.

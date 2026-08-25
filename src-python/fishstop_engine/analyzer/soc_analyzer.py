@@ -105,6 +105,16 @@ BULK_SENDER_SIGNAL_THRESHOLD = 4
 _ENCODED_NOISE_LINE_RE = re.compile(r"[A-Za-z0-9+/=_-]{64,}")
 _ENCODED_NOISE_MIN_LINES = 8
 _ENCODED_NOISE_MIN_CHARS = 4096
+_FINANCIAL_REQUEST_RE = re.compile(
+    r"\b(?:invoice|invoices|facture|fattura|fatture|faktura|faktury|payment|pagamento|"
+    r"pagamenti|płatno(?:ść|ści)|przelew|transfer|bonifico)\b",
+    re.IGNORECASE,
+)
+_ATTACHMENT_CLAIM_RE = re.compile(
+    r"\b(?:attached|attachment|enclosed|in attachment|in allegato|allegata|załącz(?:niku|niku|am)|"
+    r"w załączeniu|zalaczniku)\b",
+    re.IGNORECASE,
+)
 
 
 def _extract_domain(email_or_addr: str) -> str:
@@ -122,6 +132,12 @@ def _registered_domain(domain: str) -> str:
 
 def _same_registered_domain(left: str, right: str) -> bool:
     return bool(left and right and _registered_domain(left) == _registered_domain(right))
+
+
+def _claims_financial_attachment(text: str) -> bool:
+    """Detect a financial message that says its actionable document is attached."""
+    value = text or ""
+    return bool(_FINANCIAL_REQUEST_RE.search(value) and _ATTACHMENT_CLAIM_RE.search(value))
 
 
 def _local_part(address: str | None) -> str:
@@ -649,6 +665,7 @@ class EmlSOCAnalyzer:
             if str(link.get("scheme") or "").lower() in {"http", "https"}
             and link.get("actionable") is not False
         ])
+        report["link_context_alerts"] = self._assess_link_context(report)
 
         # ── 11. Flag SOC ──────────────────────────────────────────────────
         report["flags"] = self._build_flags(report)
@@ -656,6 +673,47 @@ class EmlSOCAnalyzer:
         return report
 
     # ── Helpers ────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _assess_link_context(report: dict) -> list[dict]:
+        """Correlate invoice claims with the actual downloadable resource.
+
+        A third-party CDN is not inherently malicious. It becomes relevant only
+        when a financial email claims a document is attached, no usable MIME
+        attachment exists, and the recipient is instead directed to a foreign
+        host. A script/executable filename upgrades that finding to high risk.
+        """
+        body = str(report.get("body_for_ai") or report.get("body_clean") or "")
+        if not _claims_financial_attachment(body):
+            return []
+        if any(item.get("actionable") is not False for item in report.get("attachments", [])):
+            return []
+
+        sender_domain = _registered_domain(_extract_domain(str(report.get("from_") or "")))
+        if not sender_domain:
+            return []
+
+        alerts: list[dict] = []
+        for link in report.get("links", []):
+            if link.get("actionable") is False:
+                continue
+            host = _registered_domain(str(link.get("host") or ""))
+            if not host or host == sender_domain:
+                continue
+            dangerous_download = bool(link.get("dangerous_download"))
+            filename = str(link.get("download_filename") or "download")
+            level = "HIGH" if dangerous_download else "MEDIUM"
+            message = (
+                "The message claims a financial document is attached, but no usable MIME attachment is present; "
+                f"the actionable resource is hosted on unrelated domain `{host}`."
+            )
+            if dangerous_download:
+                message += f" Its URL filename `{filename}` has a potentially executable/script extension."
+            link["financial_attachment_mismatch"] = True
+            link["context_risk_level"] = level.lower()
+            link["context_risk_message"] = message
+            alerts.append({"level": level, "host": host, "url": link.get("url") or "", "message": message})
+        return alerts
 
     @staticmethod
     def _header(msg, name: str) -> Optional[str]:
@@ -900,6 +958,12 @@ class EmlSOCAnalyzer:
                 "INFO",
                 "HTML Call-to-Action",
                 f"{len(html_ctas)} clickable HTML button/link destination(s) detected: {destinations}",
+            )
+        for alert in report.get("link_context_alerts", []):
+            flag(
+                str(alert.get("level") or "MEDIUM"),
+                "Invoice delivery",
+                str(alert.get("message") or "Financial document delivery requires review."),
             )
         for lnk in report.get("links", []):
             # Signature redirects are retained for transparency, but a

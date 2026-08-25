@@ -1,0 +1,31 @@
+From: Fornitore Demo <accounts@northwind-example.invalid>
+To: finance@example.invalid
+Reply-To: Fornitore Demo <accounts@northwind-example.invalid>
+Subject: Fattura INV-2026-0817 - aggiornamento coordinate di pagamento
+Date: Tue, 25 Aug 2026 09:18:00 +0200
+Message-ID: <fishstop-invoice-fixture-20260825@example.invalid>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+X-FishStop-Test-Fixture: safe-invoice-ambiguity-v1
+X-Test-Only: All domains, identities, invoice data and payment details in this message are fictional and non-deliverable.
+
+Buongiorno,
+
+in allegato alla pratica INV-2026-0817 trovi il riepilogo del rinnovo
+annuale del servizio Demo Hosting. Per l'archivio contabile, la fattura
+è disponibile anche nel portale fornitori:
+
+https://northwind-billing.invalid/invoice/INV-2026-0817
+
+Per i pagamenti di questa fattura utilizzare le coordinate riportate nel
+portale. Questa comunicazione è solo un promemoria amministrativo.
+
+Importo: EUR 1.248,00
+Riferimento cliente: DEMO-1042
+
+Cordiali saluti,
+Ufficio amministrazione - Fornitore Demo
+
+---
+FIXTURE DI TEST FISHSTOP: non inoltrare, non inviare e non usare come modello
+di comunicazione. I domini .invalid sono riservati e non sono instradabili.

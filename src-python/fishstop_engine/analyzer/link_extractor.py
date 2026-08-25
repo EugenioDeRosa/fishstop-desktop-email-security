@@ -58,6 +58,10 @@ _BUTTON_URL_RE = re.compile(
     r"(?:window\s*\.\s*)?(?:location(?:\s*\.\s*href)?|open)\s*\(?(?:\s*=\s*)?[\"'](?P<url>https?://[^\"'\s<>]+)",
     re.IGNORECASE,
 )
+_DANGEROUS_DOWNLOAD_EXTENSIONS = {
+    "exe", "dll", "scr", "com", "msi", "lnk", "js", "jse", "vbs", "vbe",
+    "ps1", "bat", "cmd", "hta", "jar", "iso", "img",
+}
 
 
 def _normalize_malformed_userinfo(value: str) -> str:
@@ -251,7 +255,7 @@ def _html_link_role(anchor) -> str:
 
 def _html_anchor_is_call_to_action(anchor) -> bool:
     """Recognize button-like HTML anchors structurally, not by their wording."""
-    if anchor.find(["button", "input"]) is not None:
+    if anchor.find(["button", "input", "img"]) is not None:
         return True
     if str(anchor.get("role") or "").strip().lower() == "button":
         return True
@@ -274,6 +278,15 @@ def _html_anchor_is_call_to_action(anchor) -> bool:
         ):
             return True
     return False
+
+
+def _download_filename(path: str) -> tuple[str, str]:
+    """Return a decoded URL filename and extension without fetching the URL."""
+    filename = unquote((path or "").rsplit("/", 1)[-1]).strip()
+    if not filename or "." not in filename:
+        return filename[:160], ""
+    extension = filename.rsplit(".", 1)[-1].lower()
+    return filename[:160], extension[:24]
 
 
 def extract_links(
@@ -326,6 +339,7 @@ def extract_links(
             return
         host = (parsed.hostname or "").lower()
         scheme = parsed.scheme.lower()
+        download_filename, download_extension = _download_filename(parsed.path)
         if scheme == "mailto":
             address = parsed.path.split("?", 1)[0].strip()
             if not _EMAIL_RE.fullmatch(address):
@@ -394,6 +408,9 @@ def extract_links(
             "is_ip": is_ip_url(host),
             "is_possible_shortener": is_shortener,
             "shortener_reason": shortener_reason,
+            "download_filename": download_filename,
+            "download_extension": download_extension,
+            "dangerous_download": download_extension in _DANGEROUS_DOWNLOAD_EXTENSIONS,
             **intelligence,
         })
 

@@ -260,7 +260,7 @@ async fn sign_in_with_google() -> Result<GoogleUser, String> {
         .map_err(|error| format!("Google sign-in interrupted: {error}"))?
 }
 
-fn python_engine_path() -> PathBuf {
+fn development_engine_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("src-python")
@@ -280,6 +280,32 @@ fn python_interpreter() -> PathBuf {
     }
 }
 
+fn packaged_engine_path() -> Option<PathBuf> {
+    let executable = std::env::current_exe().ok()?;
+    let executable_directory = executable.parent()?;
+    #[cfg(target_os = "windows")]
+    let engine_name = "fishstop-engine.exe";
+    #[cfg(not(target_os = "windows"))]
+    let engine_name = "fishstop-engine";
+    let engine = executable_directory.join(engine_name);
+    engine.is_file().then_some(engine)
+}
+
+fn engine_command() -> Result<Command, String> {
+    if let Some(engine) = packaged_engine_path() {
+        return Ok(Command::new(engine));
+    }
+
+    let engine = development_engine_path();
+    if engine.is_file() {
+        let mut command = Command::new(python_interpreter());
+        command.arg(engine);
+        return Ok(command);
+    }
+
+    Err("FishStop analysis engine is unavailable in the application.".to_string())
+}
+
 #[derive(Default)]
 struct IdentityWorker {
     child: Option<Child>,
@@ -292,8 +318,8 @@ impl IdentityWorker {
         if self.child.is_some() {
             return Ok(());
         }
-        let mut child = Command::new(python_interpreter())
-            .arg(python_engine_path())
+        let mut command = engine_command()?;
+        let mut child = command
             .arg("identity-worker")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -335,19 +361,16 @@ impl IdentityWorker {
 }
 
 fn run_eml_engine(temporary_eml: PathBuf, credentials: ReputationCredentials) -> Result<serde_json::Value, String> {
-    let engine = python_engine_path();
-    if !engine.is_file() {
-        let _ = fs::remove_file(&temporary_eml);
-        return Err("FishStop analysis engine is unavailable in the application.".to_string());
-    }
-    let output = Command::new(python_interpreter())
-        .arg(&engine)
-        .arg(&temporary_eml)
-        .env("VIRUSTOTAL_API_KEY", credentials.virustotal)
-        .env("ABUSEIPDB_API_KEY", credentials.abuseipdb)
-        .output()
-        .map_err(|error| format!("Could not start the FishStop engine: {error}"))?;
+    let output = engine_command().and_then(|mut command| {
+        command
+            .arg(&temporary_eml)
+            .env("VIRUSTOTAL_API_KEY", credentials.virustotal)
+            .env("ABUSEIPDB_API_KEY", credentials.abuseipdb)
+            .output()
+            .map_err(|error| format!("Could not start the FishStop engine: {error}"))
+    });
     let _ = fs::remove_file(&temporary_eml);
+    let output = output?;
     let response: serde_json::Value = serde_json::from_slice(&output.stdout)
         .map_err(|_| format!(
             "The analysis engine returned an invalid response: {}",
@@ -412,23 +435,21 @@ fn analyze_ai_with_engine(command: &str, report: serde_json::Value, ollama_model
     if !matches!(command, "identity" | "phi4" | "content-summary" | "summary") {
         return Err("Unsupported AI engine.".to_string());
     }
-    let engine = python_engine_path();
-    if !engine.is_file() {
-        return Err("FishStop analysis engine is unavailable in the application.".to_string());
-    }
     let temporary_report = std::env::temp_dir().join(format!("fishstop-{}.json", random_url_safe(16)));
     let contents = serde_json::to_vec(&report)
         .map_err(|error| format!("Could not prepare the report for AI: {error}"))?;
     fs::write(&temporary_report, contents)
         .map_err(|error| format!("Could not prepare the report for AI: {error}"))?;
-    let output = Command::new(python_interpreter())
-        .arg(&engine)
-        .arg(command)
-        .arg(&temporary_report)
-        .env("OLLAMA_MODEL", ollama_model)
-        .output()
-        .map_err(|error| format!("Could not start the AI engine: {error}"))?;
+    let output = engine_command().and_then(|mut engine| {
+        engine
+            .arg(command)
+            .arg(&temporary_report)
+            .env("OLLAMA_MODEL", ollama_model)
+            .output()
+            .map_err(|error| format!("Could not start the AI engine: {error}"))
+    });
     let _ = fs::remove_file(&temporary_report);
+    let output = output?;
     let response: serde_json::Value = serde_json::from_slice(&output.stdout)
         .map_err(|_| format!("The AI engine returned an invalid response: {}", String::from_utf8_lossy(&output.stderr).trim()))?;
     if !output.status.success() || response.get("ok").and_then(|value| value.as_bool()) != Some(true) {
@@ -574,23 +595,26 @@ struct LocalEngineStatus {
 #[tauri::command]
 async fn local_engine_status() -> LocalEngineStatus {
     tauri::async_runtime::spawn_blocking(|| {
-        let engine = python_engine_path().is_file();
-        let python = python_interpreter();
-        let python_runtime = Command::new(&python)
-            .arg("--version")
+        let static_engine = engine_command().is_ok();
+        let python_runtime = engine_command()
+            .and_then(|mut command| command
+                .arg("--health")
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()
+            .map_err(|error| format!("Could not start the FishStop engine: {error}")))
             .map(|status| status.success())
             .unwrap_or(false);
-        let identity_dependencies = engine && python_runtime && Command::new(&python)
-            .args(["-c", "import torch, transformers, huggingface_hub"])
+        let identity_dependencies = static_engine && python_runtime && engine_command()
+            .and_then(|mut command| command
+                .args(["--health", "identity"])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()
+            .map_err(|error| format!("Could not start the FishStop engine: {error}")))
             .map(|status| status.success())
             .unwrap_or(false);
-        LocalEngineStatus { static_engine: engine, python_runtime, identity_dependencies }
+        LocalEngineStatus { static_engine, python_runtime, identity_dependencies }
     }).await.unwrap_or(LocalEngineStatus {
         static_engine: false,
         python_runtime: false,

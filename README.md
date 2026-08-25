@@ -6,13 +6,38 @@ App desktop per l'analisi di email `.eml` sospette. Include parsing statico loca
 
 1. Installa Node.js LTS e Rust.
 2. Esegui `npm install`.
-3. Installa il motore Python: `python3 -m pip install -r src-python/requirements.txt`.
-4. Per l'analisi Phi-4 locale, avvia Ollama con il modello configurato in `OLLAMA_MODEL` (di default `phi4-mini:3.8b-q4_K_M`).
-5. Esegui `npm run tauri dev`.
+3. Installa il motore Python e PyInstaller: `python3 -m pip install -r src-python/requirements.txt pyinstaller`.
+4. Crea il sidecar per la tua architettura: `FISHSTOP_TARGET_TRIPLE=$(rustc --print host-tuple) python3 scripts/build_sidecar.py`.
+5. Per l'analisi Phi-4 locale, avvia Ollama con il modello configurato in `OLLAMA_MODEL` (di default `phi4-mini:3.8b-q4_K_M`).
+6. Esegui `npm run tauri dev`.
 
 ## Build installabile
 
-Esegui `npm run tauri build` su macOS per produrre il pacchetto macOS, e su Windows per produrre MSI/installer Windows. Prima della distribuzione, il motore Python e i modelli AI devono essere inclusi nel bundle sidecar.
+La pipeline GitHub Actions crea il motore Python come sidecar e lo include
+nell'installer. Per pubblicare una release, aggiorna la versione in
+`package.json` e `src-tauri/tauri.conf.json`, poi crea e invia un tag:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+La workflow `.github/workflows/publish-desktop.yml` genera gli installer per
+Mac Intel, Apple Silicon e Windows e crea una GitHub Release in bozza. Dopo la
+verifica, pubblica la bozza: la pagina Streamlit di FishSTOP rileverà i file
+`.dmg` e `.msi` automaticamente.
+
+Per un test locale, prima crea il sidecar per la tua architettura e poi avvia
+il build Tauri:
+
+```bash
+python3 -m pip install -r src-python/requirements.txt pyinstaller
+FISHSTOP_TARGET_TRIPLE=$(rustc --print host-tuple) python3 scripts/build_sidecar.py
+npm run tauri build
+```
+
+Il sidecar elimina il requisito di installare Python sul computer dell'utente.
+Ollama resta necessario per le funzionalità Phi-4 locali.
 
 ## Motori AI
 

@@ -152,7 +152,21 @@ def identity_worker() -> None:
                 report_path.unlink(missing_ok=True)
 
 
+def health_check(component: str | None = None) -> None:
+    """Report that the packaged engine can start, optionally checking AI imports."""
+    if component not in (None, "identity"):
+        raise ValueError(f"Unsupported health-check component: {component}")
+    if component == "identity":
+        import huggingface_hub  # noqa: F401
+        import torch  # noqa: F401
+        import transformers  # noqa: F401
+    print(json.dumps({"ok": True, "component": component or "engine"}))
+
+
 def main() -> None:
+    if len(sys.argv) in (2, 3) and sys.argv[1] == "--health":
+        health_check(sys.argv[2] if len(sys.argv) == 3 else None)
+        return
     if len(sys.argv) == 2 and sys.argv[1] == "identity-worker":
         identity_worker()
         return

@@ -1,0 +1,60 @@
+name: Publish desktop installers
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-13
+            target: x86_64-apple-darwin
+            tauri_args: --target x86_64-apple-darwin
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            tauri_args: --target aarch64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            tauri_args: --target x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ./src-tauri -> target
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Package the Python analysis engine
+        env:
+          FISHSTOP_TARGET_TRIPLE: ${{ matrix.target }}
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r src-python/requirements.txt pyinstaller
+          python scripts/build_sidecar.py
+      - uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: v__VERSION__
+          releaseName: FishSTOP v__VERSION__
+          releaseBody: Scarica l'installer adatto al tuo sistema operativo.
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.tauri_args }}

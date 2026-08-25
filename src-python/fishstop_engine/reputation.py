@@ -1,6 +1,7 @@
 """External indicator reputation lookups used by the desktop engine."""
 
 import base64
+from concurrent.futures import ThreadPoolExecutor
 import ipaddress
 import socket
 import re
@@ -228,11 +229,10 @@ def enrich(report: dict, vt_key: str, abuse_key: str) -> dict:
         if str(link.get("scheme") or "").lower() in {"http", "https"}
         and link.get("actionable") is not False
     )
-    report["link_reputation"] = {url: check_url(vt_key, url) for url in urls if url}
+    urls = [url for url in urls if url]
     ips = dict.fromkeys(ip for hop in report.get("received_hops") or [] for ip in (hop.get("all_ips") or ([hop.get("sender_ip")] if hop.get("sender_ip") else [])))
     if report.get("injection_sender_ip"): ips[report["injection_sender_ip"]] = None
-    report["hop_reputation"] = {ip: check_ip(abuse_key, ip) for ip in ips}
-    report["geolocation_results"] = {ip: geolocate(ip) for ip in ips}
+    ips = list(ips)
     def domain(value: str) -> str:
         match = re.search(r"@([\w.-]+)", value or ""); return match.group(1).lower() if match else ""
     domains = dict.fromkeys(filter(None, (domain(report.get(key) or "") for key in ("from_", "return_path", "reply_to"))))
@@ -240,14 +240,29 @@ def enrich(report: dict, vt_key: str, abuse_key: str) -> dict:
     # VirusTotal. Do not infer domain risk from an AbuseIPDB score belonging to
     # a shared hosting/CDN IP, which can create false positives for services
     # such as Google, Microsoft or Spotify.
-    report["domain_reputation"] = {
-        item: {
-            "virustotal": check_vt_domain(vt_key, item),
-            "rdap": check_rdap_domain(item),
+    domains = list(domains)
+    attachments = [attachment for attachment in report.get("attachments") or [] if attachment.get("hash_sha256")]
+
+    # These providers are all independent network calls. Keep concurrency small
+    # to lower analysis latency without exhausting API quotas or the user's link.
+    with ThreadPoolExecutor(max_workers=4, thread_name_prefix="fishstop-reputation") as executor:
+        url_jobs = {url: executor.submit(check_url, vt_key, url) for url in urls}
+        hop_jobs = {ip: executor.submit(check_ip, abuse_key, ip) for ip in ips}
+        geo_jobs = {ip: executor.submit(geolocate, ip) for ip in ips}
+        domain_jobs = {
+            domain: executor.submit(
+                lambda value=domain: {"virustotal": check_vt_domain(vt_key, value), "rdap": check_rdap_domain(value)}
+            )
+            for domain in domains
         }
-        for item in domains
-    }
-    for attachment in report.get("attachments") or []:
-        if attachment.get("hash_sha256"):
-            attachment["file_reputation"] = check_file(vt_key, attachment["hash_sha256"])
+        attachment_jobs = {
+            id(attachment): executor.submit(check_file, vt_key, attachment["hash_sha256"])
+            for attachment in attachments
+        }
+        report["link_reputation"] = {url: job.result() for url, job in url_jobs.items()}
+        report["hop_reputation"] = {ip: job.result() for ip, job in hop_jobs.items()}
+        report["geolocation_results"] = {ip: job.result() for ip, job in geo_jobs.items()}
+        report["domain_reputation"] = {domain: job.result() for domain, job in domain_jobs.items()}
+        for attachment in attachments:
+            attachment["file_reputation"] = attachment_jobs[id(attachment)].result()
     return report

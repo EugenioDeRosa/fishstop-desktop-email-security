@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::{
+    collections::HashMap,
     fs,
     io::{BufRead, BufReader, BufWriter, Read, Write},
     path::PathBuf,
@@ -12,6 +13,7 @@ use std::{
 };
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use keyring::v1::Entry;
 use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -25,6 +27,72 @@ const TOKEN_ENDPOINT: &str = "https://oauth2.googleapis.com/token";
 const USERINFO_ENDPOINT: &str = "https://openidconnect.googleapis.com/v1/userinfo";
 const IDENTITY_MODEL_ID: &str = "Davlan/distilbert-base-multilingual-cased-ner-hrl";
 const IDENTITY_MODEL_REVISION: &str = "d421f57d5b1d36b375408588669e9340f9b11a89";
+const KEYRING_SERVICE: &str = "it.fishstop.desktop";
+
+#[derive(Clone, Default, Deserialize, Serialize)]
+struct ReputationCredentials {
+    virustotal: String,
+    abuseipdb: String,
+}
+
+#[derive(Default)]
+struct ReputationCredentialCache {
+    by_user: HashMap<String, ReputationCredentials>,
+}
+
+#[derive(Serialize)]
+struct ReputationKeyStatus {
+    virustotal: bool,
+    abuseipdb: bool,
+}
+
+fn reputation_key_entry(user_sub: &str) -> Result<Entry, String> {
+    if user_sub.trim().is_empty() {
+        return Err("A signed-in user is required to access secure credentials.".to_string());
+    }
+    Entry::new(KEYRING_SERVICE, &format!("{user_sub}:reputation-api-keys"))
+        .map_err(|error| format!("Could not access the system credential store: {error}"))
+}
+
+fn load_reputation_credentials(user_sub: &str, cache: &Arc<Mutex<ReputationCredentialCache>>) -> Result<ReputationCredentials, String> {
+    let mut cache = cache.lock().map_err(|_| "Secure credential cache is unavailable.".to_string())?;
+    if let Some(credentials) = cache.by_user.get(user_sub) {
+        return Ok(credentials.clone());
+    }
+    let entry = reputation_key_entry(user_sub)?;
+    let credentials = match entry.get_password() {
+        Ok(serialized) => serde_json::from_str(&serialized)
+            .map_err(|error| format!("Could not decode secure credentials: {error}"))?,
+        Err(keyring::v1::Error::NoEntry) => ReputationCredentials::default(),
+        Err(error) => return Err(format!("Could not read secure credentials: {error}")),
+    };
+    cache.by_user.insert(user_sub.to_string(), credentials.clone());
+    Ok(credentials)
+}
+
+#[tauri::command]
+fn reputation_key_status(user_sub: String, cache: tauri::State<'_, Arc<Mutex<ReputationCredentialCache>>>) -> Result<ReputationKeyStatus, String> {
+    let credentials = load_reputation_credentials(&user_sub, &cache)?;
+    Ok(ReputationKeyStatus {
+        virustotal: !credentials.virustotal.trim().is_empty(),
+        abuseipdb: !credentials.abuseipdb.trim().is_empty(),
+    })
+}
+
+#[tauri::command]
+fn save_reputation_keys(user_sub: String, virustotal: String, abuseipdb: String, cache: tauri::State<'_, Arc<Mutex<ReputationCredentialCache>>>) -> Result<(), String> {
+    let mut credentials = load_reputation_credentials(&user_sub, &cache)?;
+    if !virustotal.trim().is_empty() { credentials.virustotal = virustotal.trim().to_string(); }
+    if !abuseipdb.trim().is_empty() { credentials.abuseipdb = abuseipdb.trim().to_string(); }
+    let serialized = serde_json::to_string(&credentials)
+        .map_err(|error| format!("Could not encode secure credentials: {error}"))?;
+    reputation_key_entry(&user_sub)?
+        .set_password(&serialized)
+        .map_err(|error| format!("Could not save secure credentials: {error}"))?;
+    cache.lock().map_err(|_| "Secure credential cache is unavailable.".to_string())?
+        .by_user.insert(user_sub, credentials);
+    Ok(())
+}
 
 #[derive(Debug, Deserialize)]
 struct TokenResponse {
@@ -266,25 +334,17 @@ impl IdentityWorker {
     }
 }
 
-fn analyze_eml_with_engine(file_name: String, contents: Vec<u8>, virustotal_api_key: String, abuseipdb_api_key: String) -> Result<serde_json::Value, String> {
-    if !file_name.to_lowercase().ends_with(".eml") {
-        return Err("FishStop supports .eml files only.".to_string());
-    }
-    if contents.len() > 10 * 1024 * 1024 {
-        return Err("The EML file exceeds the supported 10 MB limit.".to_string());
-    }
+fn run_eml_engine(temporary_eml: PathBuf, credentials: ReputationCredentials) -> Result<serde_json::Value, String> {
     let engine = python_engine_path();
     if !engine.is_file() {
+        let _ = fs::remove_file(&temporary_eml);
         return Err("FishStop analysis engine is unavailable in the application.".to_string());
     }
-    let temporary_eml = std::env::temp_dir().join(format!("fishstop-{}.eml", random_url_safe(16)));
-    fs::write(&temporary_eml, contents)
-        .map_err(|error| format!("Could not prepare the file for analysis: {error}"))?;
     let output = Command::new(python_interpreter())
         .arg(&engine)
         .arg(&temporary_eml)
-        .env("VIRUSTOTAL_API_KEY", virustotal_api_key)
-        .env("ABUSEIPDB_API_KEY", abuseipdb_api_key)
+        .env("VIRUSTOTAL_API_KEY", credentials.virustotal)
+        .env("ABUSEIPDB_API_KEY", credentials.abuseipdb)
         .output()
         .map_err(|error| format!("Could not start the FishStop engine: {error}"))?;
     let _ = fs::remove_file(&temporary_eml);
@@ -300,9 +360,50 @@ fn analyze_eml_with_engine(file_name: String, contents: Vec<u8>, virustotal_api_
     response.get("report").cloned().ok_or_else(|| "Analysis report is missing.".to_string())
 }
 
+fn analyze_eml_with_engine(path: String, user_sub: String, cache: Arc<Mutex<ReputationCredentialCache>>) -> Result<serde_json::Value, String> {
+    let source = PathBuf::from(path);
+    if !source.is_file() || source.extension().and_then(|extension| extension.to_str()).map(|extension| extension.eq_ignore_ascii_case("eml")) != Some(true) {
+        return Err("FishStop supports .eml files only.".to_string());
+    }
+    let size = source.metadata()
+        .map_err(|error| format!("Could not read the selected EML file: {error}"))?
+        .len();
+    if size > 10 * 1024 * 1024 {
+        return Err("The EML file exceeds the supported 10 MB limit.".to_string());
+    }
+    let credentials = load_reputation_credentials(&user_sub, &cache)?;
+    let temporary_eml = std::env::temp_dir().join(format!("fishstop-{}.eml", random_url_safe(16)));
+    fs::copy(&source, &temporary_eml)
+        .map_err(|error| format!("Could not prepare the file for analysis: {error}"))?;
+    run_eml_engine(temporary_eml, credentials)
+}
+
+fn analyze_eml_contents_with_engine(file_name: String, contents: Vec<u8>, user_sub: String, cache: Arc<Mutex<ReputationCredentialCache>>) -> Result<serde_json::Value, String> {
+    if !file_name.to_lowercase().ends_with(".eml") {
+        return Err("FishStop supports .eml files only.".to_string());
+    }
+    if contents.len() > 10 * 1024 * 1024 {
+        return Err("The EML file exceeds the supported 10 MB limit.".to_string());
+    }
+    let credentials = load_reputation_credentials(&user_sub, &cache)?;
+    let temporary_eml = std::env::temp_dir().join(format!("fishstop-{}.eml", random_url_safe(16)));
+    fs::write(&temporary_eml, contents)
+        .map_err(|error| format!("Could not prepare the file for analysis: {error}"))?;
+    run_eml_engine(temporary_eml, credentials)
+}
+
 #[tauri::command]
-async fn analyze_eml(file_name: String, contents: Vec<u8>, virustotal_api_key: String, abuseipdb_api_key: String) -> Result<serde_json::Value, String> {
-    tauri::async_runtime::spawn_blocking(move || analyze_eml_with_engine(file_name, contents, virustotal_api_key, abuseipdb_api_key))
+async fn analyze_eml(path: String, user_sub: String, cache: tauri::State<'_, Arc<Mutex<ReputationCredentialCache>>>) -> Result<serde_json::Value, String> {
+    let cache = Arc::clone(&cache);
+    tauri::async_runtime::spawn_blocking(move || analyze_eml_with_engine(path, user_sub, cache))
+        .await
+        .map_err(|error| format!("Analysis interrupted: {error}"))?
+}
+
+#[tauri::command]
+async fn analyze_eml_contents(file_name: String, contents: Vec<u8>, user_sub: String, cache: tauri::State<'_, Arc<Mutex<ReputationCredentialCache>>>) -> Result<serde_json::Value, String> {
+    let cache = Arc::clone(&cache);
+    tauri::async_runtime::spawn_blocking(move || analyze_eml_contents_with_engine(file_name, contents, user_sub, cache))
         .await
         .map_err(|error| format!("Analysis interrupted: {error}"))?
 }
@@ -511,8 +612,10 @@ fn open_external_url(url: String) -> Result<(), String> {
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(Arc::new(Mutex::new(IdentityWorker::default())))
-        .invoke_handler(tauri::generate_handler![sign_in_with_google, analyze_eml, analyze_identity, analyze_phi4, analyze_content_summary, analyze_summary, warm_phi4, list_ollama_models, huggingface_identity_model_info, local_engine_status, open_external_url])
+        .manage(Arc::new(Mutex::new(ReputationCredentialCache::default())))
+        .invoke_handler(tauri::generate_handler![sign_in_with_google, reputation_key_status, save_reputation_keys, analyze_eml, analyze_eml_contents, analyze_identity, analyze_phi4, analyze_content_summary, analyze_summary, warm_phi4, list_ollama_models, huggingface_identity_model_info, local_engine_status, open_external_url])
         .run(tauri::generate_context!())
         .expect("FishStop failed to start");
 }

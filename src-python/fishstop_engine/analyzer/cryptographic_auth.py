@@ -250,7 +250,11 @@ def verify_cryptographic_authentication(
     # DMARC alignment is the combined authentication result. Individual
     # mechanisms can legitimately be unavailable (for example an expired
     # archived DKIM signature) while a verified SPF identity aligns.
-    overall = "fail" if "fail" in statuses else "pass" if dmarc.get("status") == "pass" else "unavailable"
+    # DMARC is the final identity-alignment outcome: it passes when either an
+    # aligned, independently verified SPF or DKIM identity succeeds.  Keep an
+    # isolated mechanism failure in its own result (and flag), but do not let
+    # it override an aligned DMARC pass in the section-level status.
+    overall = "pass" if dmarc.get("status") == "pass" else "fail" if "fail" in statuses else "unavailable"
     return {
         "status": overall,
         "provider": "local DNS-backed verification",

@@ -1,4 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { geoDistance, geoGraticule, geoInterpolate, geoOrthographic, geoPath } from "d3-geo";
 import { feature, mesh } from "topojson-client";
 import worldAtlas from "world-atlas/countries-110m.json";
@@ -49,12 +51,17 @@ const INDICATOR_COPY_STORAGE_PREFIX = "fishstop.indicator-copies.";
 const STATISTICS_PERIOD_PREFIX = "fishstop.statistics-period.";
 const DEFAULT_OLLAMA_MODEL = "qwen3:4b-q4_K_M";
 let phi4WarmupRequested = false;
+type ProtectionStatusSnapshot = { userSub: string; tone: ProtectionTone; message: string };
+let protectionStatusSnapshot: ProtectionStatusSnapshot | null = null;
+let protectionStatusRequest: Promise<ProtectionStatusSnapshot> | null = null;
+let unlistenNativeEmlDrop: (() => void) | null = null;
 const app = document.querySelector<HTMLDivElement>("#app");
 if (!app) throw new Error("FishStop could not start.");
 const root: HTMLDivElement = app;
 
 type ProtectionTone = "checking" | "ok" | "warning" | "error";
 type LocalEngineStatus = { static_engine: boolean; python_runtime: boolean; identity_dependencies: boolean };
+type ReputationKeyStatus = { virustotal: boolean; abuseipdb: boolean };
 type HuggingFaceModelInfo = { repository: string; runtime_revision: string; latest_commit?: string; updated_at?: string };
 
 function escapeHtml(value: string): string {
@@ -64,59 +71,94 @@ function escapeHtml(value: string): string {
 function historyStorageKey(user: GoogleUser): string { return `${HISTORY_STORAGE_PREFIX}${user.sub}`; }
 function indicatorCopyStorageKey(user: GoogleUser): string { return `${INDICATOR_COPY_STORAGE_PREFIX}${user.sub}`; }
 function statisticsPeriodStorageKey(user: GoogleUser): string { return `${STATISTICS_PERIOD_PREFIX}${user.sub}`; }
-function reputationKeys(user: GoogleUser): { virustotal: string; abuseipdb: string } {
+function legacyReputationKeys(user: GoogleUser): { virustotal: string; abuseipdb: string } {
   try { return { virustotal: "", abuseipdb: "", ...JSON.parse(localStorage.getItem(`${REPUTATION_KEYS_PREFIX}${user.sub}`) || "{}") }; }
   catch { return { virustotal: "", abuseipdb: "" }; }
 }
+// The settings shell is rendered before the asynchronous native-keychain lookup.
+// `refreshReputationSettings` fills in availability without exposing secret values.
+function reputationKeys(_user: GoogleUser): { virustotal: string; abuseipdb: string } { return { virustotal: "", abuseipdb: "" }; }
 function ollamaModel(user: GoogleUser): string {
   const selected = localStorage.getItem(`${OLLAMA_MODEL_PREFIX}${user.sub}`)?.trim();
   // Migrate the old application default without overriding a deliberate model choice.
   return !selected || selected === "phi4-mini:3.8b-q4_K_M" ? DEFAULT_OLLAMA_MODEL : selected;
 }
 function maskedSecret(value: string): string {
-  if (!value) return "Not configured";
   return value.length <= 8 ? "••••••••" : `${value.slice(0, 4)}••••••${value.slice(-4)}`;
 }
 
+async function migrateLegacyReputationKeys(user: GoogleUser): Promise<void> {
+  const legacy = legacyReputationKeys(user);
+  if (!legacy.virustotal && !legacy.abuseipdb) return;
+  await invoke("save_reputation_keys", { userSub: user.sub, ...legacy });
+  localStorage.removeItem(`${REPUTATION_KEYS_PREFIX}${user.sub}`);
+}
+
+async function refreshReputationSettings(user: GoogleUser): Promise<void> {
+  const card = document.querySelector<HTMLElement>(".settings-reputation");
+  if (!card) return;
+  try {
+    const keys = await invoke<ReputationKeyStatus>("reputation_key_status", { userSub: user.sub });
+    if (!card.isConnected) return;
+    const configured = Number(keys.virustotal) + Number(keys.abuseipdb);
+    (["virustotal", "abuseipdb"] as const).forEach((provider) => {
+      const ready = keys[provider];
+      const row = card.querySelector<HTMLElement>(`li:nth-child(${provider === "virustotal" ? 1 : 2})`);
+      if (!row) return;
+      row.className = `credential-${ready ? "ready" : "missing"}`;
+      const icon = row.querySelector("i"); if (icon) icon.textContent = ready ? "✓" : "—";
+      const detail = row.querySelector("small"); if (detail) detail.textContent = ready ? "Stored in the system keychain" : "Key not configured";
+      const status = row.querySelector("b"); if (status) status.textContent = ready ? "Ready" : "Required";
+    });
+    const edit = card.querySelector<HTMLButtonElement>("#edit-reputation-keys");
+    if (edit) edit.textContent = configured ? "Edit keys" : "Configure keys";
+    const form = card.querySelector<HTMLFormElement>("#reputation-settings");
+    if (form && configured) form.setAttribute("hidden", "");
+  } catch (error) {
+    const status = card.querySelector<HTMLElement>("#settings-status");
+    if (status) status.textContent = `Secure storage unavailable: ${String(error)}`;
+  }
+}
 function setProtectionStatus(element: HTMLElement, tone: ProtectionTone, message: string): void {
   element.className = `top-status top-status-${tone}`;
   element.querySelector("span")!.textContent = message;
 }
 
-async function refreshProtectionStatus(user: GoogleUser): Promise<void> {
-  const element = document.querySelector<HTMLElement>("[data-protection-status]");
-  if (!element) return;
-  setProtectionStatus(element, "checking", "Checking protection…");
-  const keys = reputationKeys(user);
-  const configuredKeys = [keys.virustotal, keys.abuseipdb].filter(Boolean).length;
+async function resolveProtectionStatus(user: GoogleUser): Promise<ProtectionStatusSnapshot> {
   const selectedModel = ollamaModel(user);
   try {
-    const [engine, models] = await Promise.all([
+    const [engine, models, keys] = await Promise.all([
       invoke<LocalEngineStatus>("local_engine_status"),
       invoke<string[]>("list_ollama_models"),
+      invoke<ReputationKeyStatus>("reputation_key_status", { userSub: user.sub }),
     ]);
-    if (!element.isConnected) return;
-    if (!engine.static_engine || !engine.python_runtime) {
-      setProtectionStatus(element, "error", "Analysis engine unavailable");
-      return;
-    }
-    if (!engine.identity_dependencies) {
-      setProtectionStatus(element, "error", "Identity intelligence unavailable");
-      return;
-    }
-    if (!models.includes(selectedModel)) {
-      setProtectionStatus(element, "error", models.length ? "AI model unavailable" : "AI unavailable");
-      return;
-    }
+    if (!engine.static_engine || !engine.python_runtime) return { userSub: user.sub, tone: "error", message: "Analysis engine unavailable" };
+    if (!engine.identity_dependencies) return { userSub: user.sub, tone: "error", message: "Identity intelligence unavailable" };
+    if (!models.includes(selectedModel)) return { userSub: user.sub, tone: "error", message: models.length ? "AI model unavailable" : "AI unavailable" };
+    const configuredKeys = Number(keys.virustotal) + Number(keys.abuseipdb);
     if (configuredKeys < 2) {
       const missing = 2 - configuredKeys;
-      setProtectionStatus(element, "warning", `${missing} API key${missing === 1 ? "" : "s"} to configure`);
-      return;
+      return { userSub: user.sub, tone: "warning", message: `${missing} API key${missing === 1 ? "" : "s"} to configure` };
     }
-    setProtectionStatus(element, "ok", "Protection active");
+    return { userSub: user.sub, tone: "ok", message: "Protection active" };
   } catch {
-    if (element.isConnected) setProtectionStatus(element, "error", "Local AI unavailable");
+    return { userSub: user.sub, tone: "error", message: "Local AI unavailable" };
   }
+}
+
+async function refreshProtectionStatus(user: GoogleUser, force = false): Promise<void> {
+  const element = document.querySelector<HTMLElement>("[data-protection-status]");
+  if (!element) return;
+  if (!force && protectionStatusSnapshot?.userSub === user.sub) {
+    setProtectionStatus(element, protectionStatusSnapshot.tone, protectionStatusSnapshot.message);
+    return;
+  }
+  setProtectionStatus(element, "checking", "Checking protection…");
+  if (!protectionStatusRequest) protectionStatusRequest = resolveProtectionStatus(user);
+  const snapshot = await protectionStatusRequest;
+  protectionStatusRequest = null;
+  protectionStatusSnapshot = snapshot;
+  if (element.isConnected) setProtectionStatus(element, snapshot.tone, snapshot.message);
 }
 
 function analysisFingerprint(report: AnalysisReport): string {
@@ -1044,6 +1086,12 @@ function setPhiSemanticPanel(container: HTMLElement, analysis: NonNullable<NonNu
 async function runAiAnalysis(user: GoogleUser, report: AnalysisReport, recordId: string | null, container: HTMLElement, startedAt: number, onSettled?: (engine: "identity" | "phi4" | "content-summary" | "summary") => void): Promise<void> {
   const model = ollamaModel(user);
   renderAiPanels(container, model);
+  // This summary only depends on the email body, so it can run while the
+  // separate local NER worker starts. The verdict summary remains sequential
+  // because it relies on the semantic result and deterministic verdict.
+  const contentSummaryPromise = invoke<NonNullable<AnalysisReport["ai_content_summary"]>>("analyze_content_summary", { report, model })
+    .then((value) => ({ value }))
+    .catch((error) => ({ error }));
   await invoke<NonNullable<AnalysisReport["identity_analysis"]>>("analyze_identity", { report }).then((value) => {
     report.identity_analysis = value;
     setIdentityPanel(container, value);
@@ -1065,14 +1113,14 @@ async function runAiAnalysis(user: GoogleUser, report: AnalysisReport, recordId:
     onSettled?.("phi4");
   });
   if (report.phi4_analysis?.status === "ok" && report.phi4_analysis.analysis) {
-    await invoke<NonNullable<AnalysisReport["ai_content_summary"]>>("analyze_content_summary", { report, model }).then((value) => {
-      report.ai_content_summary = value;
-      setPhiSemanticPanel(container, report.phi4_analysis!.analysis!, report.phi4_analysis!.model || model, report.phi4_analysis!.duration_ms, value.summary);
-      onSettled?.("content-summary");
-    }).catch((error) => {
-      report.ai_content_summary = { status: "error", message: String(error), model };
-      onSettled?.("content-summary");
-    });
+    const contentSummary = await contentSummaryPromise;
+    if ("value" in contentSummary) {
+      report.ai_content_summary = contentSummary.value;
+      setPhiSemanticPanel(container, report.phi4_analysis.analysis, report.phi4_analysis.model || model, report.phi4_analysis.duration_ms, contentSummary.value.summary);
+    } else {
+      report.ai_content_summary = { status: "error", message: String(contentSummary.error), model };
+    }
+    onSettled?.("content-summary");
     const summaryReport = { ...report, summary_verdict: assessment(report).label };
     await invoke<NonNullable<AnalysisReport["ai_summary"]>>("analyze_summary", { report: summaryReport, model }).then((value) => {
       report.ai_summary = value;
@@ -1082,6 +1130,10 @@ async function runAiAnalysis(user: GoogleUser, report: AnalysisReport, recordId:
       onSettled?.("summary");
     });
   } else {
+    const contentSummary = await contentSummaryPromise;
+    report.ai_content_summary = "value" in contentSummary
+      ? contentSummary.value
+      : { status: "error", message: String(contentSummary.error), model };
     onSettled?.("content-summary");
     onSettled?.("summary");
   }
@@ -1203,7 +1255,12 @@ function renderDashboard(user: GoogleUser, section: Section = "dashboard"): void
       leftStack.append(reputation, provenance);
     }
   }
-  void refreshProtectionStatus(user);
+  void migrateLegacyReputationKeys(user)
+    .catch(() => { /* Legacy values remain available for a later migration attempt. */ })
+    .finally(() => {
+      void refreshProtectionStatus(user);
+      void refreshReputationSettings(user);
+    });
   if (section === "history") document.querySelectorAll<HTMLElement>(".history-item").forEach((item) => {
     const record = readAnalysisHistory(user).find((entry) => entry.id === item.dataset.openHistory);
     const badge = item.querySelector<HTMLElement>(".history-risk");
@@ -1248,11 +1305,17 @@ function renderDashboard(user: GoogleUser, section: Section = "dashboard"): void
     document.querySelector<HTMLFormElement>("#reputation-settings")?.setAttribute("hidden", "");
   });
   document.querySelector<HTMLFormElement>("#reputation-settings")?.addEventListener("submit", (event) => {
-    event.preventDefault(); const form = new FormData(event.currentTarget as HTMLFormElement); const current = reputationKeys(user);
-    const virustotal = String(form.get("virustotal") || "").trim() || current.virustotal;
-    const abuseipdb = String(form.get("abuseipdb") || "").trim() || current.abuseipdb;
-    localStorage.setItem(`${REPUTATION_KEYS_PREFIX}${user.sub}`, JSON.stringify({ virustotal, abuseipdb }));
-    renderDashboard(user, "settings");
+    event.preventDefault(); const form = new FormData(event.currentTarget as HTMLFormElement);
+    const virustotal = String(form.get("virustotal") || "").trim();
+    const abuseipdb = String(form.get("abuseipdb") || "").trim();
+    const status = document.querySelector<HTMLElement>("#settings-status");
+    if (status) status.textContent = "Saving in the system keychain…";
+    void invoke("save_reputation_keys", { userSub: user.sub, virustotal, abuseipdb }).then(async () => {
+      if (status) status.textContent = "Credentials saved securely.";
+      (event.currentTarget as HTMLFormElement).reset();
+      await refreshReputationSettings(user);
+      void refreshProtectionStatus(user, true);
+    }).catch((error) => { if (status) status.textContent = `Could not save credentials: ${String(error)}`; });
   });
   const ollamaSelect = document.querySelector<HTMLSelectElement>("#ollama-model");
   const ollamaStatus = document.querySelector<HTMLElement>("#ollama-status");
@@ -1276,7 +1339,7 @@ function renderDashboard(user: GoogleUser, section: Section = "dashboard"): void
     localStorage.setItem(`${OLLAMA_MODEL_PREFIX}${user.sub}`, model);
     if (ollamaStatus) ollamaStatus.textContent = `${model} will be used for the next analysis.`;
     void invoke("warm_phi4", { model }).catch(() => { /* The selected model will report a clear error on analysis if unavailable. */ });
-    void refreshProtectionStatus(user);
+    void refreshProtectionStatus(user, true);
   });
   if (ollamaSelect) void loadOllamaModels();
   const bertProvenance = document.querySelector<HTMLElement>("#bert-model-provenance");
@@ -1295,26 +1358,24 @@ function renderDashboard(user: GoogleUser, section: Section = "dashboard"): void
       bertProvenance.textContent = `Model provenance unavailable: ${String(error)}`;
     });
   }
-  const dropZone = document.querySelector<HTMLButtonElement>("#eml-drop"); const input = document.querySelector<HTMLInputElement>("#eml-input"); const uploadStatus = document.querySelector<HTMLParagraphElement>("#upload-status");
+  unlistenNativeEmlDrop?.(); unlistenNativeEmlDrop = null;
+  const dropZone = document.querySelector<HTMLButtonElement>("#eml-drop"); const uploadStatus = document.querySelector<HTMLParagraphElement>("#upload-status");
+  const emlInput = document.querySelector<HTMLInputElement>("#eml-input");
   const intake = document.querySelector<HTMLElement>("#eml-intake"); const changeEmail = document.querySelector<HTMLButtonElement>("#change-eml");
   let analysisRun = 0;
-  const displayFile = async (file?: File) => {
-    if (!file || !uploadStatus) return;
-    if (!file.name.toLowerCase().endsWith(".eml")) { uploadStatus.textContent = "Select a file with the .eml extension."; return; }
-    if (file.size > 10 * 1024 * 1024) { uploadStatus.textContent = "The file exceeds the 10 MB limit."; return; }
+  const displayAnalysis = async (fileName: string, request: () => Promise<AnalysisReport>) => {
+    if (!uploadStatus) return;
     const run = ++analysisRun;
     const startedAt = performance.now();
     const title = document.querySelector<HTMLHeadingElement>("#analysis-title");
-    if (title) title.textContent = file.name;
+    if (title) title.textContent = fileName;
     if (intake) intake.hidden = true; if (changeEmail) changeEmail.hidden = false;
     const result = document.querySelector<HTMLDivElement>("#analysis-result");
-    if (result) result.innerHTML = analysisLoadingMarkup(file.name);
-    uploadStatus.textContent = `Local analysis of ${file.name} in progress…`;
+    if (result) result.innerHTML = analysisLoadingMarkup(fileName);
+    uploadStatus.textContent = `Local analysis of ${fileName} in progress…`;
     dropZone?.setAttribute("disabled", "true");
     try {
-      const contents = Array.from(new Uint8Array(await file.arrayBuffer()));
-      const keys = reputationKeys(user);
-      const report = await invoke<AnalysisReport>("analyze_eml", { fileName: file.name, contents, virustotalApiKey: keys.virustotal, abuseipdbApiKey: keys.abuseipdb });
+      const report = await request();
       if (run !== analysisRun) return;
       if (result) markLoadingCheck(result, 0);
       const recordId = saveAnalysis(user, report);
@@ -1340,13 +1401,53 @@ function renderDashboard(user: GoogleUser, section: Section = "dashboard"): void
         bindReportInteractions(user, report);
         restoreAiAnalysis(report, completedResult);
       }
-      uploadStatus.textContent = recordId ? `Analysis complete: ${file.name}.` : `Analysis complete: ${file.name}. Local history could not be updated.`;
+      uploadStatus.textContent = recordId ? `Analysis complete: ${fileName}.` : `Analysis complete: ${fileName}. Local history could not be updated.`;
     } catch (error) { if (run === analysisRun) { if (intake) intake.hidden = false; if (changeEmail) changeEmail.hidden = true; uploadStatus.textContent = `Analysis did not complete: ${String(error)}`; if (result) result.innerHTML = ""; } }
     finally { if (run === analysisRun) dropZone?.removeAttribute("disabled"); }
   };
-  dropZone?.addEventListener("click", () => input?.click()); input?.addEventListener("change", () => displayFile(input.files?.[0]));
-  document.querySelector<HTMLButtonElement>("#change-eml")?.addEventListener("click", () => input?.click());
-  dropZone?.addEventListener("dragover", (event) => { event.preventDefault(); dropZone.classList.add("dragging"); }); dropZone?.addEventListener("dragleave", () => dropZone.classList.remove("dragging")); dropZone?.addEventListener("drop", (event) => { event.preventDefault(); dropZone.classList.remove("dragging"); displayFile(event.dataTransfer?.files[0]); });
+  const displayFile = (path?: string) => {
+    if (!path || !uploadStatus) return;
+    const fileName = path.split(/[\\/]/).pop() || "email.eml";
+    if (!fileName.toLowerCase().endsWith(".eml")) { uploadStatus.textContent = "Select a file with the .eml extension."; return; }
+    void displayAnalysis(fileName, () => invoke<AnalysisReport>("analyze_eml", { path, userSub: user.sub }));
+  };
+  const displayBrowserFile = async (file?: File) => {
+    if (!file || !uploadStatus) return;
+    if (!file.name.toLowerCase().endsWith(".eml")) { uploadStatus.textContent = "Select a file with the .eml extension."; return; }
+    const contents = Array.from(new Uint8Array(await file.arrayBuffer()));
+    void displayAnalysis(file.name, () => invoke<AnalysisReport>("analyze_eml_contents", { fileName: file.name, contents, userSub: user.sub }));
+  };
+  const chooseEml = async () => {
+    try {
+      const selected = await open({ multiple: false, directory: false, filters: [{ name: "Email message", extensions: ["eml"] }] });
+      if (typeof selected === "string") displayFile(selected);
+    } catch (error) {
+      if (emlInput) emlInput.click();
+      else if (uploadStatus) uploadStatus.textContent = `Could not open the file selector: ${String(error)}`;
+    }
+  };
+  dropZone?.addEventListener("click", () => { void chooseEml(); });
+  document.querySelector<HTMLButtonElement>("#change-eml")?.addEventListener("click", () => { void chooseEml(); });
+  emlInput?.addEventListener("change", () => {
+    void displayBrowserFile(emlInput.files?.[0]);
+    emlInput.value = "";
+  });
+  if (dropZone) {
+    void getCurrentWindow().onDragDropEvent(({ payload }) => {
+      if (payload.type === "enter" || payload.type === "over") {
+        dropZone.classList.add("dragging");
+        return;
+      }
+      dropZone.classList.remove("dragging");
+      if (payload.type === "drop" && payload.paths[0]) displayFile(payload.paths[0]);
+    }).then((unlisten) => { unlistenNativeEmlDrop = unlisten; }).catch(() => { /* Native file dropping is unavailable outside Tauri. */ });
+    dropZone.addEventListener("dragover", (event) => { event.preventDefault(); dropZone.classList.add("dragging"); });
+    dropZone.addEventListener("dragleave", () => dropZone.classList.remove("dragging"));
+    dropZone.addEventListener("drop", (event) => {
+      event.preventDefault(); dropZone.classList.remove("dragging");
+      void displayBrowserFile(event.dataTransfer?.files[0]);
+    });
+  }
 }
 
 const user = storedUser();

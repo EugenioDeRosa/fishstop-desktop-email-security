@@ -5,6 +5,7 @@ import { listen } from "@tauri-apps/api/event";
 import { geoDistance, geoGraticule, geoInterpolate, geoOrthographic, geoPath } from "d3-geo";
 import { feature, mesh } from "topojson-client";
 import worldAtlas from "world-atlas/countries-110m.json";
+import { animate } from "motion/mini";
 import "./styles.css";
 
 type GoogleUser = { sub: string; name?: string; email: string; picture?: string };
@@ -329,6 +330,97 @@ async function copyIndicator(value: string): Promise<boolean> {
   }
 }
 
+function motionAllowed(): boolean {
+  return !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
+function animateEntrance(elements: Iterable<Element>, options: { distance?: number; delay?: number; step?: number; duration?: number } = {}): void {
+  if (!motionAllowed()) return;
+  const { distance = 7, delay = 0, step = 0.035, duration = 0.24 } = options;
+  Array.from(elements).forEach((element, index) => {
+    void animate(element, {
+      opacity: [0, 1],
+      transform: [`translateY(${distance}px)`, "translateY(0)"],
+    }, {
+      duration,
+      delay: delay + index * step,
+      ease: [0.22, 1, 0.36, 1],
+    });
+  });
+}
+
+function animateSectionEntry(section: Section): void {
+  const content = document.querySelector<HTMLElement>(".content");
+  if (!content) return;
+  const hasCompletedReport = section === "analyse" && Boolean(content.querySelector(".analysis-report"));
+  const primaryElements = Array.from(content.children).filter((element) => !(hasCompletedReport && element.id === "analysis-result"));
+  animateEntrance(primaryElements, { distance: 6, step: 0.045, duration: 0.25 });
+  const detailSelector = section === "history"
+    ? ".history-item"
+    : section === "statistics"
+      ? ".metrics article, .stats-layout > article"
+      : section === "settings"
+        ? ".settings-card"
+        : "";
+  if (detailSelector) animateEntrance(content.querySelectorAll(detailSelector), { distance: 5, delay: 0.07, step: 0.03, duration: 0.22 });
+  if (hasCompletedReport) {
+    const report = content.querySelector<HTMLElement>(".analysis-report");
+    if (report) animateVerdictReveal(report);
+  }
+}
+
+function animateDialogEntrance(dialog: HTMLDialogElement): void {
+  if (!motionAllowed()) return;
+  void animate(dialog, {
+    opacity: [0, 1],
+    transform: ["translateY(8px) scale(.985)", "translateY(0) scale(1)"],
+  }, { duration: 0.2, ease: [0.22, 1, 0.36, 1] });
+}
+
+function animateReportPanel(panel?: HTMLElement | null, direction = 0): void {
+  if (!panel) return;
+  if (!motionAllowed() || direction === 0) {
+    animateEntrance([panel], { distance: 5, duration: 0.2, step: 0 });
+    return;
+  }
+  void animate(panel, {
+    opacity: [0, 1],
+    transform: [`translateX(${direction * 7}px)`, "translateX(0)"],
+  }, { duration: 0.2, ease: [0.22, 1, 0.36, 1] });
+}
+
+function animateVerdictReveal(report: HTMLElement): void {
+  if (!motionAllowed()) return;
+  const summary = report.querySelector<HTMLElement>(".report-summary");
+  const tabs = report.querySelector<HTMLElement>(".report-tabs");
+  const activePanel = report.querySelector<HTMLElement>(".report-panel.active");
+  const sequence = [
+    summary?.querySelector(":scope > .page-kicker"),
+    summary?.querySelector(":scope > h2"),
+    summary?.querySelector(":scope > .verdict-detail"),
+    summary?.querySelector(".verdict-rationale > div:first-child"),
+    summary?.querySelector(".rationale-indicators > span"),
+    ...Array.from(summary?.querySelectorAll(".rationale-indicators li") || []),
+    summary?.querySelector(":scope > p:not(.page-kicker):not(.verdict-detail)"),
+    summary?.querySelector(":scope > .report-stats"),
+    tabs,
+    ...Array.from(activePanel?.children || []),
+  ].filter((element): element is Element => Boolean(element));
+  animateEntrance(sequence, { distance: 6, delay: 0.025, step: 0.028, duration: 0.23 });
+}
+
+function moveReportTabIndicator(tab: HTMLButtonElement, immediate = false): void {
+  const tabs = tab.closest<HTMLElement>(".report-tabs");
+  const indicator = tabs?.querySelector<HTMLElement>(".report-tab-indicator");
+  if (!tabs || !indicator) return;
+  const target = { transform: `translateX(${tab.offsetLeft}px)`, width: `${tab.offsetWidth}px`, opacity: 1 };
+  if (immediate || !motionAllowed()) {
+    Object.assign(indicator.style, target);
+    return;
+  }
+  void animate(indicator, target, { duration: 0.24, ease: [0.22, 1, 0.36, 1] });
+}
+
 function showExternalLinkDialog(url: string, label: string): void {
   let dialog = document.querySelector<HTMLDialogElement>("#external-link-dialog");
   if (!dialog) {
@@ -355,7 +447,10 @@ function showExternalLinkDialog(url: string, label: string): void {
       if (status) status.textContent = String(error || "Could not open the external browser.");
     }
   });
-  if (!dialog.open) dialog.showModal();
+  if (!dialog.open) {
+    dialog.showModal();
+    animateDialogEntrance(dialog);
+  }
 }
 
 document.addEventListener("click", (event) => {
@@ -441,11 +536,22 @@ function analysisLoadingMarkup(fileName: string): string {
 }
 
 function markLoadingCheck(container: HTMLElement, index: number): void {
-  container.querySelector<HTMLElement>(`[data-loading-check="${index}"]`)?.classList.add("done");
+  const item = container.querySelector<HTMLElement>(`[data-loading-check="${index}"]`);
+  if (!item || item.classList.contains("done")) return;
+  item.classList.add("done");
+  if (!motionAllowed()) return;
+  void animate(item, {
+    opacity: [0.72, 1],
+    transform: ["translateX(4px)", "translateX(0)"],
+  }, { duration: 0.22, ease: [0.22, 1, 0.36, 1] });
+  const mark = item.querySelector<HTMLElement>("span");
+  if (mark) void animate(mark, {
+    transform: ["scale(.68)", "scale(1.12)", "scale(1)"],
+  }, { duration: 0.28, ease: [0.22, 1, 0.36, 1] });
 }
 
 function completeAnalysisLoading(container: HTMLElement): void {
-  container.querySelectorAll<HTMLElement>("[data-loading-check]").forEach((item) => item.classList.add("done"));
+  container.querySelectorAll<HTMLElement>("[data-loading-check]").forEach((_, index) => markLoadingCheck(container, index));
   const loading = container.querySelector<HTMLElement>(".analysis-loading");
   if (!loading) return;
   loading.classList.add("is-complete");
@@ -1001,7 +1107,7 @@ function reportMarkup(report: AnalysisReport): string {
     const composedContent = id === "content" ? `${content}${htmlFormDetails}` : content;
     return `<section class="report-panel ${active ? "active" : ""}" data-report-panel="${id}">${composedContent}</section>`;
   };
-  return `<section class="analysis-report verdict-${verdict.tone}"><div class="report-summary"><p class="page-kicker">ANALYSIS RESULT</p><h2>${risk}</h2><p class="verdict-detail">${escapeHtml(verdict.detail)}</p>${rationale}<p><strong>${escapeHtml(report.subject || "No subject")}</strong> · ${escapeHtml(report.from_ || "Sender unavailable")}</p><div class="report-stats"><span>${high} high</span><span>${medium} medium</span><span>${(report.links || []).filter((link) => (link.scheme || "").toLowerCase() !== "mailto").length} web links</span><span>${(report.attachments || []).length} attachments</span></div></div><nav class="report-tabs" aria-label="Report sections">${tabs}</nav>${panel("summary", `<div class="report-grid"><section><h3>Message</h3>${fields([["From", report.from_], ["To", report.to], ["Subject", report.subject], ["Date", report.date]])}</section><section><h3>Trust checks</h3><ul class="auth-grid">${auth}</ul><p class="quiet">${report.lookalike_alerts?.length ? `${report.lookalike_alerts.length} possible lookalike domain(s).` : "No lookalike domains detected."}</p></section></div><div class="report-flags"><h3>All signals</h3><ul>${details}</ul></div>`, true)}${panel("sender", `<div class="report-grid"><section><h3>Sender identity</h3>${fields([["Delivered-To", report.delivered_to], ["Return-Path", report.return_path], ["Reply-To", report.reply_to], ["Errors-To", report.errors_to], ["Importance", report.importance]])}</section><section class="sender-consistency"><h3>Identity consistency</h3><ul class="auth-grid">${senderInconsistencies}</ul></section></div>`)}${panel("auth", `<div class="report-grid"><section><h3>Routing</h3>${fields([["Received hops", String((report.received_hops || []).length)], ["Injection IP", report.injection_sender_ip]])}</section></div><section class="authentication-checks"><h3>Authentication checks</h3><div class="auth-evidence-grid">${authDetails}</div></section>${cryptographicDetails}`)}${panel("links", `<div class="report-grid"><section class="evidence-card"><h3>Web links</h3><ul>${links}</ul></section><section class="evidence-card"><h3>Email actions</h3><ul>${emailActions}</ul></section><section class="evidence-card"><h3>Lookalike / Typosquatting</h3><ul>${lookalikes}</ul></section></div>`)}${panel("files", `<section class="evidence-card"><h3>Attachments</h3><ul>${attachments}</ul></section>`)}${panel("content", `<div class="report-grid"><section><h3>Context</h3>${fields([["Source", report.body_source], ["Selection", report.body_context]])}</section><section><h3>Extracted body</h3><pre>${escapeHtml((report.body_ai || report.body_clean || "No extractable text.").slice(0, 12000))}</pre></section></div>`)}${panel("technical", `<section class="technical-report"><div><h3>Structured report</h3><p>Export technical evidence as JSON, without the original binary content.</p></div><button id="download-report" type="button">Download JSON</button><pre>${escapeHtml(JSON.stringify(report, null, 2))}</pre></section>`)}</section>`;
+  return `<section class="analysis-report verdict-${verdict.tone}"><div class="report-summary"><p class="page-kicker">ANALYSIS RESULT</p><h2>${risk}</h2><p class="verdict-detail">${escapeHtml(verdict.detail)}</p>${rationale}<p><strong>${escapeHtml(report.subject || "No subject")}</strong> · ${escapeHtml(report.from_ || "Sender unavailable")}</p><div class="report-stats"><span>${high} high</span><span>${medium} medium</span><span>${(report.links || []).filter((link) => (link.scheme || "").toLowerCase() !== "mailto").length} web links</span><span>${(report.attachments || []).length} attachments</span></div></div><nav class="report-tabs" aria-label="Report sections"><span class="report-tab-indicator" aria-hidden="true"></span>${tabs}</nav>${panel("summary", `<div class="report-grid"><section><h3>Message</h3>${fields([["From", report.from_], ["To", report.to], ["Subject", report.subject], ["Date", report.date]])}</section><section><h3>Trust checks</h3><ul class="auth-grid">${auth}</ul><p class="quiet">${report.lookalike_alerts?.length ? `${report.lookalike_alerts.length} possible lookalike domain(s).` : "No lookalike domains detected."}</p></section></div><div class="report-flags"><h3>All signals</h3><ul>${details}</ul></div>`, true)}${panel("sender", `<div class="report-grid"><section><h3>Sender identity</h3>${fields([["Delivered-To", report.delivered_to], ["Return-Path", report.return_path], ["Reply-To", report.reply_to], ["Errors-To", report.errors_to], ["Importance", report.importance]])}</section><section class="sender-consistency"><h3>Identity consistency</h3><ul class="auth-grid">${senderInconsistencies}</ul></section></div>`)}${panel("auth", `<div class="report-grid"><section><h3>Routing</h3>${fields([["Received hops", String((report.received_hops || []).length)], ["Injection IP", report.injection_sender_ip]])}</section></div><section class="authentication-checks"><h3>Authentication checks</h3><div class="auth-evidence-grid">${authDetails}</div></section>${cryptographicDetails}`)}${panel("links", `<div class="report-grid"><section class="evidence-card"><h3>Web links</h3><ul>${links}</ul></section><section class="evidence-card"><h3>Email actions</h3><ul>${emailActions}</ul></section><section class="evidence-card"><h3>Lookalike / Typosquatting</h3><ul>${lookalikes}</ul></section></div>`)}${panel("files", `<section class="evidence-card"><h3>Attachments</h3><ul>${attachments}</ul></section>`)}${panel("content", `<div class="report-grid"><section><h3>Context</h3>${fields([["Source", report.body_source], ["Selection", report.body_context]])}</section><section><h3>Extracted body</h3><pre>${escapeHtml((report.body_ai || report.body_clean || "No extractable text.").slice(0, 12000))}</pre></section></div>`)}${panel("technical", `<section class="technical-report"><div><h3>Structured report</h3><p>Export technical evidence as JSON, without the original binary content.</p></div><button id="download-report" type="button">Download JSON</button><pre>${escapeHtml(JSON.stringify(report, null, 2))}</pre></section>`)}</section>`;
 }
 
 function reputationRows(items: Array<{ title: string; detail: string; result?: ReputationResult; copyValue?: string }>): string {
@@ -1237,11 +1343,18 @@ function bindReportInteractions(user: GoogleUser, report: AnalysisReport): void 
       window.setTimeout(() => { link.textContent = previous; }, 1400);
     });
   }));
-  document.querySelectorAll<HTMLButtonElement>("[data-report-tab]").forEach((button) => button.addEventListener("click", () => {
+  const reportTabs = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-report-tab]"));
+  const initialReportTab = reportTabs.find((button) => button.classList.contains("active"));
+  if (initialReportTab) moveReportTabIndicator(initialReportTab, true);
+  reportTabs.forEach((button) => button.addEventListener("click", () => {
     const tab = button.dataset.reportTab;
-    document.querySelectorAll<HTMLButtonElement>("[data-report-tab]").forEach((item) => item.classList.toggle("active", item === button));
+    const previousIndex = reportTabs.findIndex((item) => item.classList.contains("active"));
+    const nextIndex = reportTabs.indexOf(button);
+    reportTabs.forEach((item) => item.classList.toggle("active", item === button));
     document.querySelectorAll<HTMLElement>("[data-report-panel]").forEach((panel) => panel.classList.toggle("active", panel.dataset.reportPanel === tab));
     document.querySelector<HTMLElement>(".report-summary")?.classList.toggle("tab-hidden", tab !== "summary");
+    moveReportTabIndicator(button);
+    if (nextIndex !== previousIndex) animateReportPanel(document.querySelector<HTMLElement>(`[data-report-panel="${tab}"]`), Math.sign(nextIndex - previousIndex));
     if (tab === "auth") requestAnimationFrame(() => renderEmailGlobe(report));
   }));
   const downloadReport = document.querySelector<HTMLButtonElement>("#download-report");
@@ -1551,6 +1664,7 @@ function renderDashboard(user: GoogleUser, section: Section = "dashboard"): void
     badge.textContent = verdict.tone === "danger" ? "RISK" : verdict.tone === "review" ? "REVIEW" : "TRUSTED";
   });
   if (section === "history" && readAnalysisHistory(user).length) root.insertAdjacentHTML("beforeend", `<dialog class="confirm-dialog" id="clear-history-dialog" aria-labelledby="clear-history-title"><div class="dialog-mark">!</div><p class="page-kicker">IRREVERSIBLE ACTION</p><h2 id="clear-history-title">Clear history?</h2><p>This will delete every saved analysis for <strong>${safeEmail}</strong> on this device.</p><div class="dialog-actions"><button id="cancel-clear-history" type="button">Cancel</button><button id="confirm-clear-history" type="button">Clear history</button></div></dialog>`);
+  animateSectionEntry(section);
   document.querySelectorAll<HTMLButtonElement>("[data-section]").forEach((button) => button.addEventListener("click", () => renderDashboard(user, button.dataset.section as Section)));
   document.querySelectorAll<HTMLButtonElement>("[data-go]").forEach((button) => button.addEventListener("click", () => renderDashboard(user, button.dataset.go as Section)));
   document.querySelectorAll<HTMLButtonElement>("[data-statistics-period]").forEach((button) => button.addEventListener("click", () => {
@@ -1572,7 +1686,10 @@ function renderDashboard(user: GoogleUser, section: Section = "dashboard"): void
     renderDashboard(user, "analyse");
   }));
   document.querySelector<HTMLButtonElement>("#clear-history")?.addEventListener("click", () => {
-    document.querySelector<HTMLDialogElement>("#clear-history-dialog")?.showModal();
+    const dialog = document.querySelector<HTMLDialogElement>("#clear-history-dialog");
+    if (!dialog) return;
+    dialog.showModal();
+    animateDialogEntrance(dialog);
   });
   document.querySelector<HTMLButtonElement>("#cancel-clear-history")?.addEventListener("click", () => {
     document.querySelector<HTMLDialogElement>("#clear-history-dialog")?.close();

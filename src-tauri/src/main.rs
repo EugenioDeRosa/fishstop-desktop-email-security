@@ -1076,6 +1076,22 @@ fn open_external_url(url: String) -> Result<(), String> {
     launch_browser(parsed.as_str())
 }
 
+#[tauri::command]
+fn save_analysis_report(path: String, report: serde_json::Value) -> Result<(), String> {
+    let destination = PathBuf::from(path);
+    if destination
+        .extension()
+        .and_then(|extension| extension.to_str())
+        != Some("json")
+    {
+        return Err("Choose a destination with the .json extension.".to_string());
+    }
+    let serialized = serde_json::to_vec_pretty(&report)
+        .map_err(|error| format!("Could not encode the report: {error}"))?;
+    fs::write(&destination, serialized)
+        .map_err(|error| format!("Could not save the report: {error}"))
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -1102,7 +1118,8 @@ fn main() {
             remove_default_ollama_model,
             huggingface_identity_model_info,
             local_engine_status,
-            open_external_url
+            open_external_url,
+            save_analysis_report
         ])
         .run(tauri::generate_context!())
         .expect("FishStop failed to start");

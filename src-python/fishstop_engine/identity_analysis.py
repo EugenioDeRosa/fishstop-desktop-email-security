@@ -21,6 +21,7 @@ _CONFUSABLES = str.maketrans({
 _FOOTER_ENTITY_RE = re.compile(r"\b(?:all\s+rights?|copyright|automated\s+message|team\s*this)\b", re.IGNORECASE)
 _EMAIL_RE = re.compile(r"[A-Z0-9._%+\-]+@([A-Z0-9.\-]+\.[A-Z]{2,})", re.IGNORECASE)
 _NON_BRAND_TOKENS = {"com", "net", "org", "www", "mail", "email", "support", "noreply", "no-reply"}
+_ENTITY_TYPES = {"ORG", "LOC", "PER"}
 
 
 def _clip(value: object, limit: int = MAX_SEGMENT_CHARS) -> str:
@@ -95,7 +96,13 @@ def _is_low_quality_entity(raw_value: object, name: str, text: str, start: int, 
 
 
 def extract_organisations(report: dict[str, Any], pipeline) -> dict[str, Any]:
-    """Extract ORG entities only; this function never assigns a phishing verdict."""
+    """Extract identity candidates without treating each entity as a brand claim.
+
+    The public function name remains stable for the sidecar API, but its result
+    deliberately retains organisations, locations and people.  Brand
+    intelligence can therefore reject locations before doing any public-domain
+    lookup instead of relying on a possibly incorrect ORG prediction alone.
+    """
     segments = _segments(report)
     if not segments:
         return {
@@ -115,7 +122,8 @@ def extract_organisations(report: dict[str, Any], pipeline) -> dict[str, Any]:
     for (source, text), predictions in zip(segments, raw_batches):
         for prediction in predictions:
             label = str(prediction.get("entity_group") or prediction.get("entity") or "").upper()
-            if label not in {"ORG", "B-ORG", "I-ORG"}:
+            entity_type = label.removeprefix("B-").removeprefix("I-")
+            if entity_type not in _ENTITY_TYPES:
                 continue
             raw_name = prediction.get("word")
             name = _normalise_entity(raw_name)
@@ -127,9 +135,13 @@ def extract_organisations(report: dict[str, Any], pipeline) -> dict[str, Any]:
             item = entities.setdefault(key, {
                 "name": name,
                 "confidence": 0.0,
+                "entity_type": entity_type,
+                "entity_types": [],
                 "occurrences": [],
             })
             item["confidence"] = max(item["confidence"], float(prediction.get("score") or 0.0))
+            if entity_type not in item["entity_types"]:
+                item["entity_types"].append(entity_type)
             excerpt = _clip(text[max(0, start - 70):min(len(text), end + 110)], 220)
             occurrence = {"source": source, "evidence": excerpt}
             if occurrence not in item["occurrences"]:
@@ -144,9 +156,17 @@ def extract_organisations(report: dict[str, Any], pipeline) -> dict[str, Any]:
         item = entities.setdefault(key, {
             "name": name,
             "confidence": 0.95,
+            "entity_type": "DOMAIN",
+            "entity_types": [],
             "occurrences": [],
         })
         item["confidence"] = max(item["confidence"], 0.95)
+        # A domain-derived candidate is strong evidence of a sender identity,
+        # but it does not overwrite the NER type when there is one.
+        if "DOMAIN" not in item["entity_types"]:
+            item["entity_types"].append("DOMAIN")
+        if not item.get("entity_type"):
+            item["entity_type"] = "DOMAIN"
         occurrence = {"source": "sender domain", "evidence": _clip(str(report.get("from_") or ""), 220)}
         if occurrence not in item["occurrences"]:
             item["occurrences"].append(occurrence)
@@ -167,7 +187,7 @@ def extract_organisations(report: dict[str, Any], pipeline) -> dict[str, Any]:
         "entities": results,
         "segments_analyzed": len(segments),
         "message": (
-            f"{len(results)} organisation claim(s) extracted locally."
-            if results else "No organisation claim was extracted from visible email text."
+            f"{len(results)} identity entity candidate(s) extracted locally."
+            if results else "No identity entity was extracted from visible email text."
         ),
     }

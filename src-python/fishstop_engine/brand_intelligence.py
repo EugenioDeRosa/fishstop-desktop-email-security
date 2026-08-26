@@ -20,6 +20,10 @@ _POSTAL_ADDRESS_CONTEXT_RE = re.compile(
     r"\b(?:via|viale|piazza|corso|largo|strada|street|road|avenue|boulevard)\b.{0,140}\b\d{5}\b",
     re.IGNORECASE | re.DOTALL,
 )
+_TRAVEL_CONTEXT_RE = re.compile(
+    r"\b(?:train|treno|flight|volo|departure|partenza|arrival|arrivo|itinerary|itinerario)\b",
+    re.IGNORECASE,
+)
 _MAX_ALIAS_REDIRECTS = 3
 
 
@@ -130,6 +134,12 @@ def _is_selected_turn_link(report: dict, link: dict) -> bool:
 
 
 def _contact_domains(report: dict) -> list[dict]:
+    """Return identity-bearing email domains, not every newsletter link.
+
+    Social, app-store and footer links are common in legitimate mail and do not
+    establish the identity of the sender. Link risk is assessed separately by
+    the link-analysis pipeline when the recipient is asked to use one.
+    """
     values: list[dict] = []
     for source, raw in (
         ("From", report.get("from_")),
@@ -138,20 +148,6 @@ def _contact_domains(report: dict) -> list[dict]:
     ):
         for domain in _EMAIL_RE.findall(str(raw or "")):
             item = {"source": source, "domain": _registered_domain(domain)}
-            if item["domain"] and item not in values:
-                values.append(item)
-    for link in report.get("links") or []:
-        scheme = str(link.get("scheme") or "").lower()
-        # Mailto links in signatures and quoted history are not evidence of a
-        # destination requested by the current sender. Reply-To is already
-        # represented above as a first-class identity header.
-        if (
-            scheme in {"http", "https"}
-            and link.get("actionable") is not False
-            and str(link.get("role") or "body_action") not in {"signature", "unsubscribe", "navigation"}
-            and _is_selected_turn_link(report, link)
-        ):
-            item = {"source": "Link action", "domain": _registered_domain(str(link.get("host") or ""))}
             if item["domain"] and item not in values:
                 values.append(item)
     return values
@@ -164,6 +160,46 @@ def _entity_is_only_postal_address_context(entity: dict) -> bool:
         str(item.get("source") or "").lower() == "body"
         and _POSTAL_ADDRESS_CONTEXT_RE.search(str(item.get("evidence") or ""))
         for item in occurrences
+    )
+
+
+def _entity_is_location_context(entity: dict) -> bool:
+    """Recognise geographic candidates without maintaining a place-name list."""
+    entity_types = {
+        str(value or "").upper()
+        for value in (entity.get("entity_types") or [entity.get("entity_type")])
+    }
+    if "LOC" in entity_types:
+        return True
+    name = re.escape(str(entity.get("name") or "").strip())
+    occurrences = entity.get("occurrences") or []
+    if not name or not occurrences:
+        return False
+    # A model can occasionally label a city as ORG. Only reject that fallback
+    # when all evidence is body text and it has the generic structure of a
+    # travel route, never by matching a list of city or brand names.
+    route_pattern = re.compile(
+        rf"\b(?:from|da)\s+{name}\b.{{0,64}}\b(?:to|a|verso)\s+[\wÀ-ÖØ-öø-ÿ]",
+        re.IGNORECASE | re.DOTALL,
+    )
+    return all(
+        str(item.get("source") or "").lower() == "body"
+        and _TRAVEL_CONTEXT_RE.search(str(item.get("evidence") or ""))
+        and route_pattern.search(str(item.get("evidence") or ""))
+        for item in occurrences
+    )
+
+
+def _entity_is_brand_candidate(entity: dict) -> bool:
+    """Allow only sender-anchored candidates to be linked to public domains."""
+    entity_types = {
+        str(value or "").upper()
+        for value in (entity.get("entity_types") or [entity.get("entity_type")])
+    }
+    sources = {str(item.get("source") or "").lower() for item in (entity.get("occurrences") or [])}
+    sender_anchored = "domain" in entity_types or bool(sources & {"sender", "sender domain"})
+    return sender_anchored and bool(entity_types & {"ORG", "DOMAIN"}) and not (
+        _entity_is_only_postal_address_context(entity) or _entity_is_location_context(entity)
     )
 
 
@@ -193,9 +229,9 @@ def assess_brand_coherence(report: dict, entities: list[dict]) -> list[dict]:
     """Return transparent domain comparisons; unknown data never becomes a detection."""
     contacts = _contact_domains(report)
     results: list[dict] = []
-    for entity in entities[:4]:
+    for entity in entities[:8]:
         name = str(entity.get("name") or "").strip()
-        if not name or _entity_is_only_postal_address_context(entity):
+        if not name or not _entity_is_brand_candidate(entity):
             continue
         try:
             website, message = _official_site(name)
@@ -217,6 +253,7 @@ def assess_brand_coherence(report: dict, entities: list[dict]) -> list[dict]:
         mismatches = [item for item in comparisons if official and not item["matches_official"]]
         results.append({
             "brand": name,
+            "entity_types": entity.get("entity_types") or [entity.get("entity_type")],
             "official_website": website,
             "official_domain": official,
             "contacts": comparisons,

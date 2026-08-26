@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { open } from "@tauri-apps/plugin-dialog";
+import { open, save } from "@tauri-apps/plugin-dialog";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 import { geoDistance, geoGraticule, geoInterpolate, geoOrthographic, geoPath } from "d3-geo";
@@ -34,7 +34,7 @@ type AnalysisReport = {
   effective_auth_results?: Record<string, AuthResult>;
   cryptographic_authentication?: CryptographicAuthentication;
   received_hops?: ReceivedHop[];
-  identity_analysis?: { status?: string; model?: string; message?: string; segments_analyzed?: number; entities?: Array<{ name?: string; confidence?: number; occurrences?: Array<{ source?: string; evidence?: string }> }>; coherence?: Array<{ brand?: string; official_website?: string; official_domain?: string; status?: string; message?: string; mismatches?: Array<{ source?: string; domain?: string }> }> };
+  identity_analysis?: { status?: string; model?: string; message?: string; segments_analyzed?: number; entities?: Array<{ name?: string; confidence?: number; entity_type?: string; entity_types?: string[]; occurrences?: Array<{ source?: string; evidence?: string }> }>; coherence?: Array<{ brand?: string; official_website?: string; official_domain?: string; status?: string; message?: string; mismatches?: Array<{ source?: string; domain?: string }> }> };
   phi4_analysis?: { status?: string; model?: string; duration_ms?: number; analysis?: { final_verdict?: string; content_summary?: string; semantic_reason?: string; explanation?: string; confidence?: number; requested_action?: string; action_channel?: string; intent_evidence?: string; intent_signals?: string[]; signal_evidence?: string; content_risk?: string; identity_risk?: string; technical_risk?: string; ambiguity?: string; claimed_brand?: string; payment_destination_change?: boolean; corroboration?: { supports_decision?: boolean; details?: string[]; caveats?: string[] } }; message?: string };
   ai_content_summary?: { status?: string; summary?: string; model?: string; backend?: string; message?: string };
   ai_summary?: { status?: string; summary?: string; model?: string; backend?: string; message?: string };
@@ -1111,16 +1111,36 @@ function bindReportInteractions(user: GoogleUser, report: AnalysisReport): void 
     document.querySelector<HTMLElement>(".report-summary")?.classList.toggle("tab-hidden", tab !== "summary");
     if (tab === "auth") requestAnimationFrame(() => renderEmailGlobe(report));
   }));
-  document.querySelector<HTMLButtonElement>("#download-report")?.addEventListener("click", () => {
-    const blob = new Blob([JSON.stringify(report, null, 2)], { type: "application/json" });
-    const link = document.createElement("a"); link.href = URL.createObjectURL(blob); link.download = "fishstop-report.json"; link.click(); URL.revokeObjectURL(link.href);
+  const downloadReport = document.querySelector<HTMLButtonElement>("#download-report");
+  if (downloadReport && !document.querySelector("#copy-report")) {
+    downloadReport.insertAdjacentHTML("afterend", `<button id="copy-report" type="button">Copy report</button>`);
+  }
+  downloadReport?.addEventListener("click", async () => {
+    const destination = await save({ defaultPath: "fishstop-report.json", filters: [{ name: "JSON report", extensions: ["json"] }] });
+    if (!destination) return;
+    const previous = downloadReport.textContent;
+    downloadReport.disabled = true; downloadReport.textContent = "Saving…";
+    try {
+      await invoke("save_analysis_report", { path: destination, report });
+      downloadReport.textContent = "Saved ✓";
+    } catch (error) {
+      downloadReport.textContent = "Save failed";
+      window.setTimeout(() => { downloadReport.textContent = previous; }, 1600);
+    } finally { downloadReport.disabled = false; }
+  });
+  document.querySelector<HTMLButtonElement>("#copy-report")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget as HTMLButtonElement;
+    const previous = button.textContent;
+    const copied = await copyIndicator(JSON.stringify(report, null, 2));
+    button.textContent = copied ? "Copied ✓" : "Copy failed";
+    window.setTimeout(() => { button.textContent = previous; }, 1600);
   });
 }
 
 function renderAiPanels(container: HTMLElement, model = DEFAULT_OLLAMA_MODEL): void {
   const contentPanel = container.querySelector<HTMLElement>('[data-report-panel="content"]');
   if (!contentPanel) return;
-  contentPanel.insertAdjacentHTML("afterbegin", `<section class="ai-panels"><article data-ai-panel="identity"><p class="page-kicker">LOCAL NER</p><h3>Identity intelligence</h3><p>Extracting claimed organisations…</p></article><article data-ai-panel="phi4"><p class="page-kicker">OLLAMA · ${escapeHtml(model)}</p><h3>Semantic analysis</h3><p>Preparing the model…</p></article></section>`);
+  contentPanel.insertAdjacentHTML("afterbegin", `<section class="ai-panels"><article data-ai-panel="identity"><p class="page-kicker">LOCAL NER</p><h3>Identity intelligence</h3><p>Extracting identity entities…</p></article><article data-ai-panel="phi4"><p class="page-kicker">OLLAMA · ${escapeHtml(model)}</p><h3>Semantic analysis</h3><p>Preparing the model…</p></article></section>`);
 }
 
 function setAiPanel(container: HTMLElement, engine: "identity" | "phi4", title: string, message: string, state: "loading" | "ok" | "error", model?: string): void {
@@ -1133,11 +1153,11 @@ function setIdentityPanel(container: HTMLElement, analysis: NonNullable<Analysis
   if (!panel) return;
   const entities = analysis.entities || [];
   const chain = entities.length
-    ? `<ul class="identity-chain">${entities.slice(0, 4).map((entity) => `<li><strong>${escapeHtml(entity.name || "Organisation")}</strong><span>${escapeHtml((entity.occurrences || []).map((item) => item.source || "email").filter((value, index, all) => all.indexOf(value) === index).join(" · ") || "email text")}</span></li>`).join("")}</ul>`
-    : "<p class=\"identity-empty\">No organisation claim was found in visible sender, subject, or body text.</p>";
+    ? `<ul class="identity-chain">${entities.slice(0, 4).map((entity) => `<li><strong>${escapeHtml(entity.name || "Identity candidate")}</strong><span>${escapeHtml((entity.entity_types || [entity.entity_type]).filter(Boolean).join(" / ") || (entity.occurrences || []).map((item) => item.source || "email").filter((value, index, all) => all.indexOf(value) === index).join(" · ") || "email text")}</span></li>`).join("")}</ul>`
+    : "<p class=\"identity-empty\">No identity entity was found in visible sender, subject, or body text.</p>";
   const coherence = (analysis.coherence || []).filter((item) => item.official_domain);
   const coherenceMarkup = coherence.length ? `<div class="identity-coherence">${coherence.map((item) => `<div class="identity-coherence-item identity-${escapeHtml(item.status || "unverified")}"><div><strong>${escapeHtml(item.brand || "Claimed organisation")}</strong><span>Official: ${escapeHtml(item.official_domain || "unresolved")}</span></div>${item.mismatches?.length ? `<p>Mismatch: ${escapeHtml(item.mismatches.map((mismatch) => `${mismatch.source}: ${mismatch.domain}`).join(" · "))}</p>` : `<p>Available email domains align with the official domain.</p>`}</div>`).join("")}</div>` : "<small class=\"semantic-meta\">Official-domain lookup is unavailable or no brand could be resolved.</small>";
-  panel.innerHTML = `<p class="page-kicker">LOCAL NER</p><h3>Identity intelligence</h3><p class="identity-summary">${escapeHtml(analysis.message || "Organisation extraction complete.")}</p>${chain}${coherenceMarkup}`;
+  panel.innerHTML = `<p class="page-kicker">LOCAL NER</p><h3>Identity intelligence</h3><p class="identity-summary">${escapeHtml(analysis.message || "Identity extraction complete.")}</p>${chain}${coherenceMarkup}`;
 }
 
 function semanticLabel(value: string | undefined): string {
@@ -1304,7 +1324,7 @@ function analysisPageContent(user: GoogleUser): string {
         ? `Analysis complete: ${title}.`
         : "Nothing is sent to external services.";
   const result = hasReport
-    ? reportMarkup(active!.report!)
+    ? (isProcessing ? analysisLoadingMarkup(active!.fileName) : reportMarkup(active!.report!))
     : isProcessing
       ? analysisLoadingMarkup(active!.fileName)
       : "";
@@ -1358,7 +1378,7 @@ function renderDashboard(user: GoogleUser, section: Section = "dashboard"): void
   const safePicture = user.picture ? escapeHtml(user.picture) : "";
   root.innerHTML = `<div class="app-shell"><aside class="sidebar"><div class="sidebar-brand"><span class="brand-mark">⌁</span><span>fish<span>stop</span></span></div><nav aria-label="Primary navigation">${(Object.keys(labels) as Section[]).map((key) => `<button class="nav-item ${section === key ? "selected" : ""}" data-section="${key}" type="button"><span>${icons[key]}</span>${labels[key]}</button>`).join("")}</nav><div class="sidebar-bottom"><div class="account"><span class="avatar">${safePicture ? `<img src="${safePicture}" alt="" />` : initial}</span><div><strong>${safeName}</strong><small>${safeEmail}</small></div></div><button class="logout" id="logout" type="button">Sign out <span>↗</span></button></div></aside><main class="workspace"><header class="topbar"><div class="crumb"><span>FishStop</span><b>/</b><strong>${labels[section]}</strong></div><div class="top-status top-status-checking" data-protection-status role="status" aria-live="polite"><i aria-hidden="true"></i><span>Checking protection…</span></div></header><section class="content">${contentFor(section, user)}</section></main></div>`;
   const active = currentAnalysis(user);
-  if (section === "analyse" && active?.report) {
+  if (section === "analyse" && active?.status === "complete" && active.report) {
     const result = document.querySelector<HTMLDivElement>("#analysis-result");
     if (result) {
       bindReportInteractions(user, active.report);
@@ -1570,7 +1590,8 @@ function renderDashboard(user: GoogleUser, section: Section = "dashboard"): void
         restoreAiAnalysis(report, completedResult);
       }
       session.status = "complete";
-      uploadStatus.textContent = recordId ? `Analysis complete: ${fileName}.` : `Analysis complete: ${fileName}. Local history could not be updated.`;
+      const activeSection = document.querySelector<HTMLButtonElement>("[data-section].selected")?.dataset.section;
+      if (activeAnalysis === session && activeSection === "analyse") renderDashboard(user, "analyse");
     } catch (error) { if (run === analysisRun && activeAnalysis === session) { session.status = "error"; session.error = String(error); if (intake) intake.hidden = false; if (changeEmail) changeEmail.hidden = true; uploadStatus.textContent = `Analysis did not complete: ${String(error)}`; if (result) result.innerHTML = ""; } }
     finally { if (run === analysisRun) dropZone?.removeAttribute("disabled"); }
   };

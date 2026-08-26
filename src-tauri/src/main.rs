@@ -390,7 +390,9 @@ fn launch_browser(url: &str) -> Result<(), String> {
     let result = Command::new("open").arg(url).spawn();
 
     #[cfg(target_os = "windows")]
-    let result = Command::new("cmd").args(["/C", "start", "", url]).spawn();
+    let result = Command::new("rundll32.exe")
+        .args(["url.dll,FileProtocolHandler", url])
+        .spawn();
 
     #[cfg(target_os = "linux")]
     let result = Command::new("xdg-open").arg(url).spawn();
@@ -582,6 +584,15 @@ fn packaged_engine_path() -> Option<PathBuf> {
     engine.is_file().then_some(engine)
 }
 
+fn configure_engine_output(mut command: Command) -> Command {
+    // Python otherwise uses the active Windows code page for redirected
+    // output. serde_json expects UTF-8, so accented text can become invalid.
+    command
+        .env("PYTHONUTF8", "1")
+        .env("PYTHONIOENCODING", "utf-8");
+    command
+}
+
 fn engine_command() -> Result<Command, String> {
     // A packaged engine can sit next to the debug executable after a local
     // build. During development it would shadow src-python changes and make
@@ -592,19 +603,19 @@ fn engine_command() -> Result<Command, String> {
         if engine.is_file() {
             let mut command = Command::new(python_interpreter());
             command.arg(engine);
-            return Ok(command);
+            return Ok(configure_engine_output(command));
         }
     }
 
     if let Some(engine) = packaged_engine_path() {
-        return Ok(Command::new(engine));
+        return Ok(configure_engine_output(Command::new(engine)));
     }
 
     let engine = development_engine_path();
     if engine.is_file() {
         let mut command = Command::new(python_interpreter());
         command.arg(engine);
-        return Ok(command);
+        return Ok(configure_engine_output(command));
     }
 
     Err("FishStop analysis engine is unavailable in the application.".to_string())
@@ -689,11 +700,14 @@ fn run_eml_engine(
     });
     let _ = fs::remove_file(&temporary_eml);
     let output = output?;
-    let response: serde_json::Value = serde_json::from_slice(&output.stdout).map_err(|_| {
-        format!(
-            "The analysis engine returned an invalid response: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        )
+    let response: serde_json::Value = serde_json::from_slice(&output.stdout).map_err(|error| {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let details = stderr.trim();
+        if details.is_empty() {
+            format!("The analysis engine returned an invalid UTF-8/JSON response ({error}).")
+        } else {
+            format!("The analysis engine returned an invalid response: {details}")
+        }
     })?;
     if !output.status.success()
         || response.get("ok").and_then(|value| value.as_bool()) != Some(true)
@@ -790,7 +804,7 @@ fn analyze_ai_with_engine(
     report: serde_json::Value,
     ollama_model: &str,
 ) -> Result<serde_json::Value, String> {
-    if !matches!(command, "identity" | "phi4" | "content-summary" | "summary") {
+    if command != "phi4" {
         return Err("Unsupported AI engine.".to_string());
     }
     let temporary_report =
@@ -803,7 +817,12 @@ fn analyze_ai_with_engine(
         engine
             .arg(command)
             .arg(&temporary_report)
-            .env("OLLAMA_MODEL", ollama_model)
+            .env("OLLAMA_MODEL", ollama_model);
+        #[cfg(target_os = "windows")]
+        engine
+            .env("OLLAMA_REQUEST_TIMEOUT", "240")
+            .env("OLLAMA_SINGLE_PASS", "1");
+        engine
             .output()
             .map_err(|error| format!("Could not start the AI engine: {error}"))
     });
@@ -849,52 +868,24 @@ async fn analyze_identity(
 #[tauri::command]
 async fn analyze_phi4(
     report: serde_json::Value,
-    model: Option<String>,
+    app: tauri::AppHandle,
+    runtime: tauri::State<'_, Arc<Mutex<OllamaRuntime>>>,
 ) -> Result<serde_json::Value, String> {
+    let runtime = Arc::clone(&runtime);
     tauri::async_runtime::spawn_blocking(move || {
-        let selected_model = model.unwrap_or_else(|| "qwen3:4b-q4_K_M".to_string());
-        analyze_ai_with_engine("phi4", report, &selected_model)
+        let selected_model = ollama_runtime::prepare_model(&app, &runtime)?;
+        analyze_ai_with_engine("phi4", report, selected_model)
     })
     .await
     .map_err(|error| format!("Phi-4 analysis interrupted: {error}"))?
 }
 
-#[tauri::command]
-async fn analyze_content_summary(
-    report: serde_json::Value,
-    model: Option<String>,
-) -> Result<serde_json::Value, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let selected_model = model.unwrap_or_else(|| "qwen3:4b-q4_K_M".to_string());
-        analyze_ai_with_engine("content-summary", report, &selected_model)
-    })
-    .await
-    .map_err(|error| format!("Content summary interrupted: {error}"))?
-}
-
-#[tauri::command]
-async fn analyze_summary(
-    report: serde_json::Value,
-    model: Option<String>,
-) -> Result<serde_json::Value, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let selected_model = model.unwrap_or_else(|| "qwen3:4b-q4_K_M".to_string());
-        analyze_ai_with_engine("summary", report, &selected_model)
-    })
-    .await
-    .map_err(|error| format!("AI summary interrupted: {error}"))?
-}
-
-fn warm_phi4_with_ollama(model: Option<String>) -> Result<(), String> {
+fn warm_phi4_with_ollama(model: &str) -> Result<(), String> {
     let endpoint = std::env::var("OLLAMA_GENERATE_ENDPOINT")
         .unwrap_or_else(|_| "http://localhost:11434/api/generate".to_string());
-    let model = model
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| {
-            std::env::var("OLLAMA_MODEL").unwrap_or_else(|_| "qwen3:4b-q4_K_M".to_string())
-        });
+    let timeout = if cfg!(target_os = "windows") { 240 } else { 90 };
     reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(90))
+        .timeout(Duration::from_secs(timeout))
         .build()
         .map_err(|error| format!("Could not prepare Ollama: {error}"))?
         .post(endpoint)
@@ -912,10 +903,17 @@ fn warm_phi4_with_ollama(model: Option<String>) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn warm_phi4(model: Option<String>) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || warm_phi4_with_ollama(model))
-        .await
-        .map_err(|error| format!("Phi-4 warm-up interrupted: {error}"))?
+async fn warm_phi4(
+    app: tauri::AppHandle,
+    runtime: tauri::State<'_, Arc<Mutex<OllamaRuntime>>>,
+) -> Result<(), String> {
+    let runtime = Arc::clone(&runtime);
+    tauri::async_runtime::spawn_blocking(move || {
+        let selected_model = ollama_runtime::prepare_model(&app, &runtime)?;
+        warm_phi4_with_ollama(selected_model)
+    })
+    .await
+    .map_err(|error| format!("Phi-4 warm-up interrupted: {error}"))?
 }
 
 #[derive(Deserialize)]
@@ -934,32 +932,14 @@ struct HuggingFaceModelInfo {
 }
 
 #[tauri::command]
-async fn list_ollama_models(
-    app: tauri::AppHandle,
-    runtime: tauri::State<'_, Arc<Mutex<OllamaRuntime>>>,
-) -> Result<Vec<String>, String> {
-    let runtime = Arc::clone(&runtime);
-    tauri::async_runtime::spawn_blocking(move || ollama_runtime::list_models(&app, &runtime))
-        .await
-        .map_err(|error| format!("Ollama model lookup interrupted: {error}"))?
-}
-
-#[tauri::command]
 async fn ollama_runtime_status(
     app: tauri::AppHandle,
     runtime: tauri::State<'_, Arc<Mutex<OllamaRuntime>>>,
 ) -> Result<ollama_runtime::OllamaRuntimeStatus, String> {
     let runtime = Arc::clone(&runtime);
-    Ok(
-        tauri::async_runtime::spawn_blocking(move || ollama_runtime::status(&app, &runtime))
-            .await
-            .unwrap_or_else(|_| ollama_runtime::OllamaRuntimeStatus {
-                runtime_ready: false,
-                model_ready: false,
-                managed: false,
-                model: ollama_runtime::DEFAULT_MODEL.to_string(),
-            }),
-    )
+    tauri::async_runtime::spawn_blocking(move || ollama_runtime::status(&app, &runtime))
+        .await
+        .map_err(|error| format!("Machine profile lookup interrupted: {error}"))
 }
 
 #[tauri::command]
@@ -1109,10 +1089,7 @@ fn main() {
             analyze_eml_contents,
             analyze_identity,
             analyze_phi4,
-            analyze_content_summary,
-            analyze_summary,
             warm_phi4,
-            list_ollama_models,
             ollama_runtime_status,
             install_default_ollama_model,
             remove_default_ollama_model,

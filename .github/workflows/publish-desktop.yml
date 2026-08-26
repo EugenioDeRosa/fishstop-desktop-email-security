@@ -22,7 +22,9 @@ jobs:
             tauri_args: --target aarch64-apple-darwin
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            tauri_args: --target x86_64-pc-windows-msvc
+            # A single NSIS installer is enough for Windows. Building MSI as
+            # well duplicates a very large embedded Ollama runtime.
+            tauri_args: --target x86_64-pc-windows-msvc --bundles nsis
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5

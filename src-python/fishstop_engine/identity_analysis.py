@@ -156,17 +156,20 @@ def extract_organisations(report: dict[str, Any], pipeline) -> dict[str, Any]:
         item = entities.setdefault(key, {
             "name": name,
             "confidence": 0.95,
-            "entity_type": "DOMAIN",
+            "entity_type": "ORG",
             "entity_types": [],
             "occurrences": [],
         })
         item["confidence"] = max(item["confidence"], 0.95)
         # A domain-derived candidate is strong evidence of a sender identity,
-        # but it does not overwrite the NER type when there is one.
+        # and the visible domain label is therefore also an organisation
+        # candidate. DOMAIN records where that evidence came from.
+        if "ORG" not in item["entity_types"]:
+            item["entity_types"].append("ORG")
         if "DOMAIN" not in item["entity_types"]:
             item["entity_types"].append("DOMAIN")
         if not item.get("entity_type"):
-            item["entity_type"] = "DOMAIN"
+            item["entity_type"] = "ORG"
         occurrence = {"source": "sender domain", "evidence": _clip(str(report.get("from_") or ""), 220)}
         if occurrence not in item["occurrences"]:
             item["occurrences"].append(occurrence)

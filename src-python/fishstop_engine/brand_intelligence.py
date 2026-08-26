@@ -25,6 +25,8 @@ _TRAVEL_CONTEXT_RE = re.compile(
     re.IGNORECASE,
 )
 _MAX_ALIAS_REDIRECTS = 3
+_MAX_DISCOVERY_BYTES = 512_000
+_REDIRECT_STATUSES = {301, 302, 303, 307, 308}
 
 
 def _registered_domain(value: str) -> str:
@@ -98,7 +100,7 @@ def _redirects_to_official_domain(candidate_domain: str, official_domain: str) -
                 headers={"User-Agent": WIKIDATA_HEADERS["User-Agent"]},
             )
             location = response.headers.get("Location")
-            if not location or response.status_code not in {301, 302, 303, 307, 308}:
+            if not location or response.status_code not in _REDIRECT_STATUSES:
                 return False
             current_url = urljoin(current_url, location)
             target = urlparse(current_url)
@@ -203,6 +205,133 @@ def _entity_is_brand_candidate(entity: dict) -> bool:
     )
 
 
+def _normalised_brand_label(value: object) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(value or "").casefold())
+
+
+def _authenticated_sender_domain(report: dict) -> str:
+    """Return From only when FishStop independently verified DMARC alignment."""
+    authentication = report.get("cryptographic_authentication") or {}
+    dmarc = authentication.get("dmarc") or {}
+    if (
+        str(authentication.get("status") or "").lower() != "pass"
+        or str(dmarc.get("status") or "").lower() != "pass"
+        or not (dmarc.get("dkim_aligned") or dmarc.get("spf_aligned"))
+    ):
+        return ""
+    domains = _EMAIL_RE.findall(str(report.get("from_") or ""))
+    return _registered_domain(domains[-1]) if domains else ""
+
+
+def _read_limited_html(response: requests.Response) -> str:
+    content_type = str(response.headers.get("Content-Type") or "").lower()
+    if "text/html" not in content_type and "application/xhtml+xml" not in content_type:
+        return ""
+    chunks: list[bytes] = []
+    consumed = 0
+    for chunk in response.iter_content(chunk_size=16_384):
+        if not chunk:
+            continue
+        remaining = _MAX_DISCOVERY_BYTES - consumed
+        if remaining <= 0:
+            break
+        chunks.append(chunk[:remaining])
+        consumed += min(len(chunk), remaining)
+    encoding = response.encoding or "utf-8"
+    try:
+        return b"".join(chunks).decode(encoding, errors="replace")
+    except LookupError:
+        return b"".join(chunks).decode("utf-8", errors="replace")
+
+
+@lru_cache(maxsize=128)
+def _discover_site_from_authenticated_domain(candidate_domain: str, brand_name: str) -> dict:
+    """Discover a brand site from an authenticated, brand-matching domain.
+
+    This fallback is intentionally unavailable to arbitrary sender display
+    names. The brand must already match the authenticated domain label, which
+    prevents a spoofed display name from bootstrapping trust by redirecting to
+    the impersonated organisation's real website.
+    """
+    candidate = _registered_domain(candidate_domain)
+    brand_label = _normalised_brand_label(brand_name)
+    domain_label = _normalised_brand_label(candidate.split(".", 1)[0] if candidate else "")
+    if len(brand_label) < 4 or brand_label != domain_label:
+        return {}
+
+    session = requests.Session()
+    session.trust_env = False
+    current_url = f"https://{candidate}/"
+    associated_domains = {candidate}
+    redirected = False
+    try:
+        for _ in range(_MAX_ALIAS_REDIRECTS + 1):
+            parsed = urlparse(current_url)
+            host = (parsed.hostname or "").lower().rstrip(".")
+            if parsed.scheme != "https" or not host or not _resolves_only_to_public_addresses(host):
+                return {}
+            with session.get(
+                current_url,
+                allow_redirects=False,
+                stream=True,
+                timeout=(2, 4),
+                headers={"User-Agent": WIKIDATA_HEADERS["User-Agent"]},
+            ) as response:
+                location = response.headers.get("Location")
+                if location and response.status_code in _REDIRECT_STATUSES:
+                    redirected = True
+                    current_url = urljoin(current_url, location)
+                    target = urlparse(current_url)
+                    target_host = (target.hostname or "").lower().rstrip(".")
+                    if target.scheme != "https" or not target_host:
+                        return {}
+                    associated_domains.add(_registered_domain(target_host))
+                    continue
+                if response.status_code < 200 or response.status_code >= 400:
+                    return {}
+                html = _read_limited_html(response)
+            # The final page must identify itself with the extracted brand. A
+            # redirect alone is association evidence, not proof of identity.
+            if brand_label not in _normalised_brand_label(html):
+                return {}
+            final_domain = _official_domain(current_url)
+            if not final_domain:
+                return {}
+            associated_domains.add(final_domain)
+            return {
+                "website": current_url,
+                "official_domain": final_domain,
+                "associated_domains": sorted(associated_domains),
+                "resolution_source": "authenticated_sender_https_redirect" if redirected else "authenticated_sender_website",
+                "message": (
+                    "Official website discovered from the independently authenticated sender domain through a verified HTTPS redirect."
+                    if redirected
+                    else "Official website confirmed on the independently authenticated sender domain."
+                ),
+            }
+    except requests.RequestException:
+        return {}
+    finally:
+        session.close()
+    return {}
+
+
+def _authenticated_domain_site(report: dict, entity: dict) -> dict:
+    entity_types = {
+        str(value or "").upper()
+        for value in (entity.get("entity_types") or [entity.get("entity_type")])
+    }
+    if "DOMAIN" not in entity_types:
+        return {}
+    sender_domain = _authenticated_sender_domain(report)
+    if not sender_domain:
+        return {}
+    return _discover_site_from_authenticated_domain(
+        sender_domain,
+        str(entity.get("name") or "").strip(),
+    )
+
+
 def _official_site(name: str) -> tuple[str, str]:
     """Return a Wikidata P856 URL. Only the extracted organisation name is sent."""
     search = requests.get(
@@ -237,7 +366,17 @@ def assess_brand_coherence(report: dict, entities: list[dict]) -> list[dict]:
             website, message = _official_site(name)
         except (requests.RequestException, ValueError, KeyError, TypeError):
             website, message = "", "Official-domain lookup is currently unavailable."
+        resolution_source = "wikidata" if website else ""
+        associated_domains: set[str] = set()
         official = _official_domain(website)
+        if not official:
+            discovered = _authenticated_domain_site(report, entity)
+            if discovered:
+                website = str(discovered.get("website") or "")
+                official = str(discovered.get("official_domain") or "")
+                associated_domains.update(discovered.get("associated_domains") or [])
+                resolution_source = str(discovered.get("resolution_source") or "")
+                message = str(discovered.get("message") or message)
         comparisons = []
         for contact in contacts:
             domain = contact["domain"]
@@ -247,8 +386,13 @@ def assess_brand_coherence(report: dict, entities: list[dict]) -> list[dict]:
             )
             comparisons.append({
                 **contact,
-                "matches_official": bool(official and (domain == official or redirects_to_official)),
-                "redirects_to_official": redirects_to_official,
+                "matches_official": bool(
+                    official
+                    and (domain == official or domain in associated_domains or redirects_to_official)
+                ),
+                "redirects_to_official": bool(
+                    redirects_to_official or (domain != official and domain in associated_domains)
+                ),
             })
         mismatches = [item for item in comparisons if official and not item["matches_official"]]
         results.append({
@@ -256,6 +400,8 @@ def assess_brand_coherence(report: dict, entities: list[dict]) -> list[dict]:
             "entity_types": entity.get("entity_types") or [entity.get("entity_type")],
             "official_website": website,
             "official_domain": official,
+            "associated_domains": sorted(associated_domains),
+            "resolution_source": resolution_source,
             "contacts": comparisons,
             "mismatches": mismatches,
             "status": "mismatch" if mismatches else "aligned" if official and comparisons else "unverified",

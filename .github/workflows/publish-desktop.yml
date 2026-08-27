@@ -8,18 +8,22 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: desktop-release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   publish:
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: macos-13
+          - os: macos-15-intel
             target: x86_64-apple-darwin
-            tauri_args: --target x86_64-apple-darwin
+            tauri_args: --target x86_64-apple-darwin --bundles app,dmg
           - os: macos-latest
             target: aarch64-apple-darwin
-            tauri_args: --target aarch64-apple-darwin
+            tauri_args: --target aarch64-apple-darwin --bundles app,dmg
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             # A single NSIS installer is enough for Windows. Building MSI as
@@ -57,7 +61,7 @@ jobs:
       - name: Prepare Google OAuth credential
         env:
           FISHSTOP_GOOGLE_CLIENT_SECRET: ${{ secrets.FISHSTOP_GOOGLE_CLIENT_SECRET }}
-        run: python -c "from pathlib import Path; import os; Path('src-tauri/resources/google-oauth-client-secret').write_text(os.environ['FISHSTOP_GOOGLE_CLIENT_SECRET'], encoding='utf-8')"
+        run: python -c "from pathlib import Path; import os; secret=os.environ.get('FISHSTOP_GOOGLE_CLIENT_SECRET', '').strip(); assert secret, 'Missing required FISHSTOP_GOOGLE_CLIENT_SECRET repository secret'; Path('src-tauri/resources/google-oauth-client-secret').write_text(secret, encoding='utf-8')"
       - uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -68,3 +72,16 @@ jobs:
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.tauri_args }}
+
+  publish-release:
+    name: Publish completed release
+    needs: publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Publish the draft after every installer succeeds
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          version="$(node -p 'require("./package.json").version')"
+          gh release edit "v${version}" --target "${GITHUB_SHA}" --draft=false

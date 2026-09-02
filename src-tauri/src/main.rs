@@ -848,10 +848,14 @@ async fn analyze_identity(
 
 #[tauri::command]
 async fn analyze_phi4(
+    app: tauri::AppHandle,
+    runtime: tauri::State<'_, Arc<Mutex<OllamaRuntime>>>,
     report: serde_json::Value,
     model: Option<String>,
 ) -> Result<serde_json::Value, String> {
+    let runtime = Arc::clone(&runtime);
     tauri::async_runtime::spawn_blocking(move || {
+        ollama_runtime::prepare(&app, &runtime)?;
         let selected_model = model.unwrap_or_else(|| "qwen3:4b-q4_K_M".to_string());
         analyze_ai_with_engine("phi4", report, &selected_model)
     })
@@ -861,10 +865,14 @@ async fn analyze_phi4(
 
 #[tauri::command]
 async fn analyze_content_summary(
+    app: tauri::AppHandle,
+    runtime: tauri::State<'_, Arc<Mutex<OllamaRuntime>>>,
     report: serde_json::Value,
     model: Option<String>,
 ) -> Result<serde_json::Value, String> {
+    let runtime = Arc::clone(&runtime);
     tauri::async_runtime::spawn_blocking(move || {
+        ollama_runtime::prepare(&app, &runtime)?;
         let selected_model = model.unwrap_or_else(|| "qwen3:4b-q4_K_M".to_string());
         analyze_ai_with_engine("content-summary", report, &selected_model)
     })
@@ -874,48 +882,19 @@ async fn analyze_content_summary(
 
 #[tauri::command]
 async fn analyze_summary(
+    app: tauri::AppHandle,
+    runtime: tauri::State<'_, Arc<Mutex<OllamaRuntime>>>,
     report: serde_json::Value,
     model: Option<String>,
 ) -> Result<serde_json::Value, String> {
+    let runtime = Arc::clone(&runtime);
     tauri::async_runtime::spawn_blocking(move || {
+        ollama_runtime::prepare(&app, &runtime)?;
         let selected_model = model.unwrap_or_else(|| "qwen3:4b-q4_K_M".to_string());
         analyze_ai_with_engine("summary", report, &selected_model)
     })
     .await
     .map_err(|error| format!("AI summary interrupted: {error}"))?
-}
-
-fn warm_phi4_with_ollama(model: Option<String>) -> Result<(), String> {
-    let endpoint = std::env::var("OLLAMA_GENERATE_ENDPOINT")
-        .unwrap_or_else(|_| "http://localhost:11434/api/generate".to_string());
-    let model = model
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| {
-            std::env::var("OLLAMA_MODEL").unwrap_or_else(|_| "qwen3:4b-q4_K_M".to_string())
-        });
-    reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(90))
-        .build()
-        .map_err(|error| format!("Could not prepare Ollama: {error}"))?
-        .post(endpoint)
-        .json(&serde_json::json!({
-            "model": model,
-            "prompt": "",
-            "stream": false,
-            "keep_alive": "15m",
-            "options": { "num_predict": 1 }
-        }))
-        .send()
-        .and_then(|response| response.error_for_status())
-        .map_err(|error| format!("Phi-4 warm-up failed: {error}"))?;
-    Ok(())
-}
-
-#[tauri::command]
-async fn warm_phi4(model: Option<String>) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || warm_phi4_with_ollama(model))
-        .await
-        .map_err(|error| format!("Phi-4 warm-up interrupted: {error}"))?
 }
 
 #[derive(Deserialize)]
@@ -947,17 +926,19 @@ async fn list_ollama_models(
 #[tauri::command]
 async fn ollama_runtime_status(
     app: tauri::AppHandle,
-    runtime: tauri::State<'_, Arc<Mutex<OllamaRuntime>>>,
+    model: Option<String>,
 ) -> Result<ollama_runtime::OllamaRuntimeStatus, String> {
-    let runtime = Arc::clone(&runtime);
+    let fallback_model = model
+        .clone()
+        .unwrap_or_else(|| ollama_runtime::DEFAULT_MODEL.to_string());
     Ok(
-        tauri::async_runtime::spawn_blocking(move || ollama_runtime::status(&app, &runtime))
+        tauri::async_runtime::spawn_blocking(move || ollama_runtime::status(&app, model))
             .await
             .unwrap_or_else(|_| ollama_runtime::OllamaRuntimeStatus {
                 runtime_ready: false,
                 model_ready: false,
                 managed: false,
-                model: ollama_runtime::DEFAULT_MODEL.to_string(),
+                model: fallback_model,
             }),
     )
 }
@@ -1111,7 +1092,6 @@ fn main() {
             analyze_phi4,
             analyze_content_summary,
             analyze_summary,
-            warm_phi4,
             list_ollama_models,
             ollama_runtime_status,
             install_default_ollama_model,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import importlib.util
 import os
 import sys
 import tempfile
@@ -50,12 +51,7 @@ def analyze(path_value: str) -> dict[str, Any]:
         normalized_path = Path(normalized_file.name)
         normalized_file.write(_sanitize_eml_bytes(raw))
     try:
-        # MIME parsing uses a defensively normalised copy. DKIM verification,
-        # however, must see the exact original bytes because its signature
-        # covers line endings and body canonicalisation.
-        report = EmlSOCAnalyzer().analyze(
-            str(normalized_path), verification_raw_email=raw,
-        )
+        report = EmlSOCAnalyzer().analyze(str(normalized_path))
     finally:
         normalized_path.unlink(missing_ok=True)
     report["eml_sha256"] = hashlib.sha256(raw).hexdigest()
@@ -157,9 +153,10 @@ def health_check(component: str | None = None) -> None:
     if component not in (None, "identity"):
         raise ValueError(f"Unsupported health-check component: {component}")
     if component == "identity":
-        import huggingface_hub  # noqa: F401
-        import torch  # noqa: F401
-        import transformers  # noqa: F401
+        required = ("huggingface_hub", "torch", "transformers")
+        missing = [name for name in required if importlib.util.find_spec(name) is None]
+        if missing:
+            raise RuntimeError(f"Missing identity dependencies: {', '.join(missing)}")
     print(json.dumps({"ok": True, "component": component or "engine"}))
 
 

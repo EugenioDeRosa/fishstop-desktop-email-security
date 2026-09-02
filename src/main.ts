@@ -12,8 +12,6 @@ type GoogleUser = { sub: string; name?: string; email: string; picture?: string 
 type Section = "dashboard" | "analyse" | "history" | "statistics" | "settings";
 type SocFlag = { level: "HIGH" | "MEDIUM" | "LOW" | "INFO"; field: string; message: string };
 type AuthResult = { status?: string; identity?: string; source?: string; raw?: string; all_results?: AuthResult[] };
-type CryptographicAuthCheck = { status?: string; message?: string; identity?: string; spf_result?: string; verified_domains?: string[]; policy?: string; policy_domain?: string; dkim_aligned?: boolean; spf_aligned?: boolean; alignment_mode?: string };
-type CryptographicAuthentication = { status?: string; provider?: string; dkim?: CryptographicAuthCheck; spf?: CryptographicAuthCheck; dmarc?: CryptographicAuthCheck };
 type ReceivedHop = { from_host?: string; by_host?: string; sender_ip?: string; all_ips?: string[]; received_at?: string; raw?: string };
 type AnalysisReport = {
   subject?: string; from_?: string; reply_to?: string; return_path?: string; flags?: SocFlag[];
@@ -33,7 +31,6 @@ type AnalysisReport = {
   html_form_analysis?: { status?: string; form_count?: number; message?: string; forms?: Array<{ risk?: string; method?: string; action?: string; action_host?: string; action_kind?: string; external_action?: boolean; field_count?: number; sensitive_fields?: string[]; message?: string }> };
   auth_results?: Record<string, AuthResult>; arc_auth_results?: Record<string, AuthResult>;
   effective_auth_results?: Record<string, AuthResult>;
-  cryptographic_authentication?: CryptographicAuthentication;
   received_hops?: ReceivedHop[];
   identity_analysis?: { status?: string; model?: string; message?: string; segments_analyzed?: number; entities?: Array<{ name?: string; confidence?: number; entity_type?: string; entity_types?: string[]; occurrences?: Array<{ source?: string; evidence?: string }> }>; coherence?: Array<{ brand?: string; official_website?: string; official_domain?: string; associated_domains?: string[]; resolution_source?: string; status?: string; message?: string; mismatches?: Array<{ source?: string; domain?: string }> }> };
   phi4_analysis?: { status?: string; model?: string; duration_ms?: number; analysis?: { final_verdict?: string; content_summary?: string; semantic_reason?: string; explanation?: string; confidence?: number; requested_action?: string; action_channel?: string; intent_evidence?: string; intent_signals?: string[]; signal_evidence?: string; content_risk?: string; identity_risk?: string; technical_risk?: string; ambiguity?: string; claimed_brand?: string; payment_destination_change?: boolean; semantic_extraction?: { asks_for_credentials?: boolean; asks_for_payment?: boolean; asks_for_sensitive_information?: boolean; asks_to_change_account_settings?: boolean; asks_to_verify_account?: boolean; asks_to_open_attachment?: boolean; requested_external_action?: boolean; security_alert?: boolean; impersonation_or_deception?: boolean; identity_deception?: boolean }; corroboration?: { supports_decision?: boolean; details?: string[]; caveats?: string[] } }; message?: string };
@@ -59,11 +56,11 @@ const analysisHistoryRequests = new Map<string, Promise<void>>();
 const analysisHistoryErrors = new Map<string, string>();
 const reputationMigrationRequests = new Map<string, Promise<void>>();
 let activeAnalysis: ActiveAnalysis | null = null;
-let phi4WarmupRequested = false;
 type ProtectionStatusSnapshot = { userSub: string; tone: ProtectionTone; message: string };
 let protectionStatusSnapshot: ProtectionStatusSnapshot | null = null;
 let protectionStatusRequest: Promise<ProtectionStatusSnapshot> | null = null;
 let unlistenNativeEmlDrop: (() => void) | null = null;
+let removeStatisticsMenuDismissal: (() => void) | null = null;
 const app = document.querySelector<HTMLDivElement>("#app");
 if (!app) throw new Error("FishStop could not start.");
 const root: HTMLDivElement = app;
@@ -144,14 +141,15 @@ function setProtectionStatus(element: HTMLElement, tone: ProtectionTone, message
 async function resolveProtectionStatus(user: GoogleUser): Promise<ProtectionStatusSnapshot> {
   const selectedModel = ollamaModel(user);
   try {
-    const [engine, models, keys] = await Promise.all([
+    const [engine, runtime, keys] = await Promise.all([
       invoke<LocalEngineStatus>("local_engine_status"),
-      invoke<string[]>("list_ollama_models"),
+      invoke<OllamaRuntimeStatus>("ollama_runtime_status", { model: selectedModel }),
       invoke<ReputationKeyStatus>("reputation_key_status", { userSub: user.sub }),
     ]);
     if (!engine.static_engine || !engine.python_runtime) return { userSub: user.sub, tone: "error", message: "Analysis engine unavailable" };
-    if (!engine.identity_dependencies) return { userSub: user.sub, tone: "error", message: "Identity intelligence unavailable" };
-    if (!models.includes(selectedModel)) return { userSub: user.sub, tone: "error", message: models.length ? "AI model unavailable" : "AI unavailable" };
+    if (!engine.identity_dependencies) return { userSub: user.sub, tone: "warning", message: "Identity analysis unavailable" };
+    if (!runtime.runtime_ready) return { userSub: user.sub, tone: "warning", message: "Local AI unavailable" };
+    if (!runtime.model_ready) return { userSub: user.sub, tone: "warning", message: "AI model not installed" };
     const configuredKeys = Number(keys.virustotal) + Number(keys.abuseipdb);
     if (configuredKeys < 2) {
       const missing = 2 - configuredKeys;
@@ -663,15 +661,6 @@ function isAuthenticatedFirstPartyLink(report: AnalysisReport, link: NonNullable
   return trustedDomains.has(linkDomain) && !lookalikeDomains.has(linkDomain);
 }
 
-function hasIndependentAlignedAuthentication(report: AnalysisReport): boolean {
-  const independent = report.cryptographic_authentication;
-  const dmarc = independent?.dmarc;
-  return stronglyAuthenticatedSender(report)
-    && (independent?.status || "").toLowerCase() === "pass"
-    && (dmarc?.status || "").toLowerCase() === "pass"
-    && Boolean(dmarc?.dkim_aligned || dmarc?.spf_aligned);
-}
-
 function normalizedIntentText(value?: string): string {
   return String(value || "").normalize("NFKC").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
 }
@@ -746,7 +735,7 @@ function authenticatedFirstPartySecurityNotice(report: AnalysisReport): boolean 
     && ["visit_link", "verify_account"].includes(action)
     && ["verified", "clean", "aligned"].includes((semantic?.identity_risk || "").toLowerCase())
     && (semantic?.technical_risk || "").toLowerCase() === "clean"
-    && hasIndependentAlignedAuthentication(report)
+    && stronglyAuthenticatedSender(report)
     && !identityMismatch
     && !hasStaticConcern
     && !requestsSensitiveData
@@ -786,7 +775,7 @@ function unverifiedRequestedResourceReason(report: AnalysisReport): string | nul
       && (semantic?.content_risk || "").toLowerCase() === "benign"
       && ["verified", "clean", "aligned"].includes((semantic?.identity_risk || "").toLowerCase())
       && (semantic?.technical_risk || "").toLowerCase() === "clean"
-      && hasIndependentAlignedAuthentication(report)
+      && stronglyAuthenticatedSender(report)
       && !identityMismatch
       && !sensitiveRequestedAction(report);
     if (unverifiedLinks.some((link) =>
@@ -913,18 +902,6 @@ function authCheckLabel(status: string): string {
   return tone === "pass" ? "Passed" : tone === "fail" ? "Failed" : tone === "warn" ? "Review required" : "Unavailable";
 }
 
-function cryptographicCheckTone(status?: string): CheckTone {
-  const value = (status || "unavailable").toLowerCase();
-  if (value === "pass") return "pass";
-  if (value === "fail") return "fail";
-  return "neutral";
-}
-
-function cryptographicCheckLabel(status?: string): string {
-  const value = (status || "unavailable").toLowerCase();
-  return value === "pass" ? "Aligned" : value === "fail" ? "Failed" : "Unavailable";
-}
-
 function staticCheckItem(tone: CheckTone, title: string, detail: string, status?: string): string {
   const summary = status ? `${status} · ${detail}` : detail;
   return `<li class="static-check static-check-${tone}"><strong>${escapeHtml(title)}</strong><small>${escapeHtml(summary)}</small></li>`;
@@ -991,28 +968,6 @@ function reportMarkup(report: AnalysisReport): string {
     return staticCheckItem(tone, protocol, result.identity || result.source, `${authCheckLabel(result.status)} · ${result.status.toUpperCase()}`);
   }).join("");
   const authDetails = authEvidence.map(([protocol, result]) => `<section class="auth-evidence static-surface-${authCheckTone(result.status)}"><div class="check-heading"><h3>${protocol}</h3></div><p>${authCheckLabel(result.status)} · ${escapeHtml(result.status.toUpperCase())} · ${escapeHtml(result.source)}</p>${result.identity ? `<p>Identity: <code>${escapeHtml(result.identity)}</code></p>` : ""}${result.all_results.length > 1 ? `<p>${result.all_results.length} results found: the least favourable is shown.</p>` : ""}<pre>${escapeHtml(result.raw || "No evidence in the EML header.")}</pre></section>`).join("");
-  const cryptographic = report.cryptographic_authentication;
-  const cryptographicChecks = ([
-    ["SPF", cryptographic?.spf],
-    ["DKIM", cryptographic?.dkim],
-    ["DMARC", cryptographic?.dmarc],
-  ] as const);
-  // DMARC is the combined alignment result. An archived DKIM signature can
-  // fail independently while an SPF identity still proves DMARC alignment.
-  const cryptographicTone: CheckTone = cryptographic?.status === "pass" ? "pass"
-    : cryptographic?.status === "fail" ? "fail" : "neutral";
-  const cryptographicRows = cryptographicChecks.map(([protocol, item]) => {
-    const status = cryptographicCheckLabel(item?.status);
-    const details = protocol === "DKIM"
-      ? (item?.verified_domains?.length ? `Verified domain: ${item.verified_domains.join(", ")}` : item?.message)
-      : protocol === "SPF"
-        ? [item?.identity && `Envelope domain: ${item.identity}`, item?.spf_result && `Result ${item.spf_result.toUpperCase()}`, item?.message].filter(Boolean).join(" · ")
-        : (item?.policy ? [`Policy ${item.policy.toUpperCase()}`, `DKIM ${item.dkim_aligned ? "aligned" : "not aligned"}`, `SPF ${item.spf_aligned ? "aligned" : "not aligned"}`, item?.message].filter(Boolean).join(" · ") : item?.message);
-    return `<li class="static-check static-check-${cryptographicCheckTone(item?.status)}"><div><strong>${protocol}</strong><span>${status}</span></div><small>${escapeHtml(details || "No independent verification data is available.")}</small></li>`;
-  }).join("");
-  const cryptographicDetails = cryptographic
-    ? `<section class="cryptographic-authentication static-surface-${cryptographicTone}"><div class="cryptographic-heading"><div><p class="page-kicker">INDEPENDENT CHECK</p><h3>Cryptographic verification</h3><p>DNS-backed verification performed by FishStop, separate from the receiver-provided headers.</p></div><b>${cryptographicTone === "pass" ? "ALIGNED" : cryptographicTone === "fail" ? "FAILED" : "UNAVAILABLE"}</b></div><ul>${cryptographicRows}</ul></section>`
-    : `<section class="cryptographic-authentication static-surface-neutral"><div class="cryptographic-heading"><div><p class="page-kicker">INDEPENDENT CHECK</p><h3>Cryptographic verification</h3><p>The report was created before independent authentication verification was available.</p></div><b>UNAVAILABLE</b></div></section>`;
   const formAnalysis = report.html_form_analysis;
   const formTone: CheckTone = formAnalysis?.status === "suspicious" ? "fail" : formAnalysis?.status === "review" ? "warn" : formAnalysis?.status === "clean" ? "pass" : "neutral";
   const formRows = (formAnalysis?.forms || []).map((form, index) => {
@@ -1107,7 +1062,7 @@ function reportMarkup(report: AnalysisReport): string {
     const composedContent = id === "content" ? `${content}${htmlFormDetails}` : content;
     return `<section class="report-panel ${active ? "active" : ""}" data-report-panel="${id}">${composedContent}</section>`;
   };
-  return `<section class="analysis-report verdict-${verdict.tone}"><div class="report-summary"><p class="page-kicker">ANALYSIS RESULT</p><h2>${risk}</h2><p class="verdict-detail">${escapeHtml(verdict.detail)}</p>${rationale}<p><strong>${escapeHtml(report.subject || "No subject")}</strong> · ${escapeHtml(report.from_ || "Sender unavailable")}</p><div class="report-stats"><span>${high} high</span><span>${medium} medium</span><span>${(report.links || []).filter((link) => (link.scheme || "").toLowerCase() !== "mailto").length} web links</span><span>${(report.attachments || []).length} attachments</span></div></div><nav class="report-tabs" aria-label="Report sections"><span class="report-tab-indicator" aria-hidden="true"></span>${tabs}</nav>${panel("summary", `<div class="report-grid"><section><h3>Message</h3>${fields([["From", report.from_], ["To", report.to], ["Subject", report.subject], ["Date", report.date]])}</section><section><h3>Trust checks</h3><ul class="auth-grid">${auth}</ul><p class="quiet">${report.lookalike_alerts?.length ? `${report.lookalike_alerts.length} possible lookalike domain(s).` : "No lookalike domains detected."}</p></section></div><div class="report-flags"><h3>All signals</h3><ul>${details}</ul></div>`, true)}${panel("sender", `<div class="report-grid"><section><h3>Sender identity</h3>${fields([["Delivered-To", report.delivered_to], ["Return-Path", report.return_path], ["Reply-To", report.reply_to], ["Errors-To", report.errors_to], ["Importance", report.importance]])}</section><section class="sender-consistency"><h3>Identity consistency</h3><ul class="auth-grid">${senderInconsistencies}</ul></section></div>`)}${panel("auth", `<div class="report-grid"><section><h3>Routing</h3>${fields([["Received hops", String((report.received_hops || []).length)], ["Injection IP", report.injection_sender_ip]])}</section></div><section class="authentication-checks"><h3>Authentication checks</h3><div class="auth-evidence-grid">${authDetails}</div></section>${cryptographicDetails}`)}${panel("links", `<div class="report-grid"><section class="evidence-card"><h3>Web links</h3><ul>${links}</ul></section><section class="evidence-card"><h3>Email actions</h3><ul>${emailActions}</ul></section><section class="evidence-card"><h3>Lookalike / Typosquatting</h3><ul>${lookalikes}</ul></section></div>`)}${panel("files", `<section class="evidence-card"><h3>Attachments</h3><ul>${attachments}</ul></section>`)}${panel("content", `<div class="report-grid"><section><h3>Context</h3>${fields([["Source", report.body_source], ["Selection", report.body_context]])}</section><section><h3>Extracted body</h3><pre>${escapeHtml((report.body_ai || report.body_clean || "No extractable text.").slice(0, 12000))}</pre></section></div>`)}${panel("technical", `<section class="technical-report"><div><h3>Structured report</h3><p>Export technical evidence as JSON, without the original binary content.</p></div><button id="download-report" type="button">Download JSON</button><pre>${escapeHtml(JSON.stringify(report, null, 2))}</pre></section>`)}</section>`;
+  return `<section class="analysis-report verdict-${verdict.tone}"><div class="report-summary"><p class="page-kicker">ANALYSIS RESULT</p><h2>${risk}</h2><p class="verdict-detail">${escapeHtml(verdict.detail)}</p>${rationale}<p><strong>${escapeHtml(report.subject || "No subject")}</strong> · ${escapeHtml(report.from_ || "Sender unavailable")}</p><div class="report-stats"><span>${high} high</span><span>${medium} medium</span><span>${(report.links || []).filter((link) => (link.scheme || "").toLowerCase() !== "mailto").length} web links</span><span>${(report.attachments || []).length} attachments</span></div></div><nav class="report-tabs" aria-label="Report sections"><span class="report-tab-indicator" aria-hidden="true"></span>${tabs}</nav>${panel("summary", `<div class="report-grid"><section><h3>Message</h3>${fields([["From", report.from_], ["To", report.to], ["Subject", report.subject], ["Date", report.date]])}</section><section><h3>Trust checks</h3><ul class="auth-grid">${auth}</ul><p class="quiet">${report.lookalike_alerts?.length ? `${report.lookalike_alerts.length} possible lookalike domain(s).` : "No lookalike domains detected."}</p></section></div><div class="report-flags"><h3>All signals</h3><ul>${details}</ul></div>`, true)}${panel("sender", `<div class="report-grid"><section><h3>Sender identity</h3>${fields([["Delivered-To", report.delivered_to], ["Return-Path", report.return_path], ["Reply-To", report.reply_to], ["Errors-To", report.errors_to], ["Importance", report.importance]])}</section><section class="sender-consistency"><h3>Identity consistency</h3><ul class="auth-grid">${senderInconsistencies}</ul></section></div>`)}${panel("auth", `<div class="report-grid"><section><h3>Routing</h3>${fields([["Received hops", String((report.received_hops || []).length)], ["Injection IP", report.injection_sender_ip]])}</section></div><section class="authentication-checks"><h3>Authentication checks</h3><div class="auth-evidence-grid">${authDetails}</div></section>`)}${panel("links", `<div class="report-grid"><section class="evidence-card"><h3>Web links</h3><ul>${links}</ul></section><section class="evidence-card"><h3>Email actions</h3><ul>${emailActions}</ul></section><section class="evidence-card"><h3>Lookalike / Typosquatting</h3><ul>${lookalikes}</ul></section></div>`)}${panel("files", `<section class="evidence-card"><h3>Attachments</h3><ul>${attachments}</ul></section>`)}${panel("content", `<div class="report-grid"><section><h3>Context</h3>${fields([["Source", report.body_source], ["Selection", report.body_context]])}</section><section><h3>Extracted body</h3><pre>${escapeHtml((report.body_ai || report.body_clean || "No extractable text.").slice(0, 12000))}</pre></section></div>`)}${panel("technical", `<section class="technical-report"><div><h3>Structured report</h3><p>Export technical evidence as JSON, without the original binary content.</p></div><button id="download-report" type="button">Download JSON</button><pre>${escapeHtml(JSON.stringify(report, null, 2))}</pre></section>`)}</section>`;
 }
 
 function reputationRows(items: Array<{ title: string; detail: string; result?: ReputationResult; copyValue?: string }>): string {
@@ -1601,27 +1556,26 @@ function contentFor(section: Section, user: GoogleUser): string {
   const maxActivity = Math.max(1, ...activity.map((item) => item.count));
   const ollamaRuns = history.filter((record) => record.report.phi4_analysis?.model);
   const modelStats = Array.from(ollamaRuns.reduce((groups, record) => { const analysis = record.report.phi4_analysis!; const model = analysis.model || DEFAULT_OLLAMA_MODEL; const current = groups.get(model) || { count: 0, duration: 0, timed: 0 }; current.count += 1; if (analysis.duration_ms) { current.duration += analysis.duration_ms; current.timed += 1; } groups.set(model, current); return groups; }, new Map<string, { count: number; duration: number; timed: number }>())).map(([model, stat]) => ({ model, ...stat }));
-  const periodLabels: Record<StatisticsPeriod, string> = { today: "Today", week: "Last 7 days", month: "Last month", "3m": "Last 3 months", "6m": "Last 6 months", "9m": "Last 9 months", "12m": "Last 12 months", all: "Saved history" };
-  const periodChoices = (Object.keys(periodLabels) as StatisticsPeriod[]).map((period) => `<button class="statistics-period ${period === selectedPeriod ? "active" : ""}" data-statistics-period="${period}" type="button">${periodLabels[period]}</button>`).join("");
+  const periodLabels: Record<StatisticsPeriod, string> = { today: "Today", week: "Last 7 days", month: "Last month", "3m": "Last 3 months", "6m": "Last 6 months", "9m": "Last 9 months", "12m": "Last 12 months", all: "All" };
+  const periodOrder: StatisticsPeriod[] = ["today", "week", "month", "3m", "6m", "9m", "12m", "all"];
+  const periodChoices = periodOrder.map((period) => `<button class="statistics-period-option" data-statistics-period="${period}" type="button" role="option" aria-selected="${period === selectedPeriod}">${periodLabels[period]}${period === selectedPeriod ? "<span aria-hidden=\"true\">✓</span>" : ""}</button>`).join("");
   const reasonItems = reasonCounts.length
     ? reasonCounts.slice(0, 6).map(({ label, count }) => `<li><span>${escapeHtml(label)} <b>${count}</b></span><i><em style="width:${(count / reasonCounts[0].count) * 100}%"></em></i></li>`).join("")
     : `<li class="statistics-empty">No risk reasons were recorded in this period.</li>`;
   if (section === "analyse") return analysisPageContent(user);
   if (section === "history") return `<div class="page-heading"><div><p class="page-kicker">PERSONAL WORKSPACE</p><h1>Analysis history</h1><p>Analyses are stored only for this account, on this device.</p></div><div class="history-actions"><span class="period">${history.length} ANALYSES</span>${history.length ? `<button id="clear-history" type="button">Clear history</button>` : ""}</div></div>${history.length ? `<section class="history-list">${history.map((record) => { const high = (record.report.flags || []).filter((flag) => flag.level === "HIGH").length; return `<button class="history-item" data-open-history="${record.id}" type="button"><span class="history-risk ${high ? "high" : "clear"}">${high ? `${high} HIGH` : "OK"}</span><span><strong>${escapeHtml(record.report.subject || "No subject")}</strong><small>${escapeHtml(record.report.from_ || "Sender unavailable")} · ${formatAnalysisDate(record.analyzedAt)}</small></span><b>Open →</b></button>`; }).join("")}</section>` : `<section class="empty-state"><span class="empty-icon">⌁</span><h2>No analyses yet.</h2><p>Your first EML analysis will appear here.</p><button class="soft-action" data-go="analyse" type="button">Analyse an email <span>→</span></button></section>`}`;
-  if (section === "statistics") return `<div class="page-heading statistics-heading"><div><p class="page-kicker">RISK OVERVIEW</p><h1>Statistics</h1><p>Signals, investigation activity and performance for this account.</p></div><div class="statistics-periods" role="group" aria-label="Statistics period">${periodChoices}</div></div><section class="metrics stats-metrics"><article><span>Emails analysed</span><strong>${filteredHistory.length}</strong><small>${periodLabels[selectedPeriod]}</small></article><article><span>Average analysis time</span><strong>${formatDuration(averageDuration)}</strong><small>${timedAnalyses.length ? `Based on ${timedAnalyses.length} completed analyses` : "Available after new analyses"}</small></article><article><span>Indicators copied</span><strong>${filteredCopyEvents.length}</strong><small>Copied individually from the Indicators section</small></article></section><section class="stats-layout"><article class="risk-breakdown"><div><p class="page-kicker">DISTRIBUTION</p><h2>Analysis outcomes</h2></div><div class="risk-bars"><div><span>High risk <b>${highRiskCount}</b></span><i><em class="high" style="width:${filteredHistory.length ? (highRiskCount / filteredHistory.length) * 100 : 0}%"></em></i></div><div><span>To review <b>${mediumRiskCount}</b></span><i><em class="medium" style="width:${filteredHistory.length ? (mediumRiskCount / filteredHistory.length) * 100 : 0}%"></em></i></div><div><span>Likely legitimate <b>${clearCount}</b></span><i><em class="clear" style="width:${filteredHistory.length ? (clearCount / filteredHistory.length) * 100 : 0}%"></em></i></div></div></article><article class="activity-card"><div><p class="page-kicker">ACTIVITY</p><h2>Last 7 days</h2></div><div class="activity-chart">${activity.map((item) => `<div><i style="height:${Math.max(5, (item.count / maxActivity) * 100)}%" title="${item.count} analyses"></i><span>${item.label}</span></div>`).join("")}</div></article></section><section class="risk-reasons"><div><p class="page-kicker">RISK PATTERNS</p><h2>Top risk reasons</h2><p>Signals that appeared most often in the selected period.</p></div><ol>${reasonItems}</ol></section>`;
+  if (section === "statistics") return `<div class="page-heading statistics-heading"><div><p class="page-kicker">RISK OVERVIEW</p><h1>Statistics</h1><p>Signals, investigation activity and performance for this account.</p></div><div class="statistics-filter"><span>Period</span><div class="statistics-period-menu"><button class="statistics-period-trigger" id="statistics-period-trigger" type="button" aria-haspopup="listbox" aria-controls="statistics-period-options" aria-expanded="false">${periodLabels[selectedPeriod]}<i aria-hidden="true"></i></button><div class="statistics-period-options" id="statistics-period-options" role="listbox" aria-label="Statistics period" hidden>${periodChoices}</div></div></div></div><section class="metrics stats-metrics"><article><span>Emails analysed</span><strong>${filteredHistory.length}</strong><small>${periodLabels[selectedPeriod]}</small></article><article><span>Average analysis time</span><strong>${formatDuration(averageDuration)}</strong><small>${timedAnalyses.length ? `Based on ${timedAnalyses.length} completed analyses` : "Available after new analyses"}</small></article><article><span>Indicators copied</span><strong>${filteredCopyEvents.length}</strong><small>Copied individually from the Indicators section</small></article></section><section class="stats-layout"><article class="risk-breakdown"><div><p class="page-kicker">DISTRIBUTION</p><h2>Analysis outcomes</h2></div><div class="risk-bars"><div><span>High risk <b>${highRiskCount}</b></span><i><em class="high" style="width:${filteredHistory.length ? (highRiskCount / filteredHistory.length) * 100 : 0}%"></em></i></div><div><span>To review <b>${mediumRiskCount}</b></span><i><em class="medium" style="width:${filteredHistory.length ? (mediumRiskCount / filteredHistory.length) * 100 : 0}%"></em></i></div><div><span>Likely legitimate <b>${clearCount}</b></span><i><em class="clear" style="width:${filteredHistory.length ? (clearCount / filteredHistory.length) * 100 : 0}%"></em></i></div></div></article><article class="activity-card"><div><p class="page-kicker">ACTIVITY</p><h2>Last 7 days</h2></div><div class="activity-chart">${activity.map((item) => `<div><i style="height:${Math.max(5, (item.count / maxActivity) * 100)}%" title="${item.count} analyses"></i><span>${item.label}</span></div>`).join("")}</div></article></section><section class="risk-reasons"><div><p class="page-kicker">RISK PATTERNS</p><h2>Top risk reasons</h2><p>Signals that appeared most often in the selected period.</p></div><ol>${reasonItems}</ol></section>`;
   if (section === "settings") { const keys = reputationKeys(user); const selectedModel = ollamaModel(user); const reputationReady = Boolean(keys.virustotal || keys.abuseipdb); const keyRow = (name: string, value: string) => `<li class="credential-${value ? "ready" : "missing"}"><i>${value ? "✓" : "—"}</i><div><strong>${name}</strong><small>${value ? `Stored locally · ${escapeHtml(maskedSecret(value))}` : "Key not configured"}</small></div><b>${value ? "Ready" : "Required"}</b></li>`; return `<div class="page-heading"><div><p class="page-kicker">LOCAL CONFIGURATION</p><h1>Settings</h1><p>Intelligence tokens and a lab for local Ollama models.</p></div></div><div class="settings-grid"><section class="settings-card settings-reputation"><p class="page-kicker">EXTERNAL INTELLIGENCE</p><h2>Reputation</h2><p class="settings-note">Only technical indicators are sent to external services — never the EML file or email body.</p><ul class="credential-list">${keyRow("VirusTotal API key", keys.virustotal)}${keyRow("AbuseIPDB API key", keys.abuseipdb)}</ul><button class="soft-action edit-credentials" id="edit-reputation-keys" type="button">${reputationReady ? "Edit keys" : "Configure keys"}</button><form id="reputation-settings" ${reputationReady ? "hidden" : ""}><label>VirusTotal API key<input name="virustotal" type="password" autocomplete="new-password" placeholder="${keys.virustotal ? "Leave empty to keep the current key" : "Enter the VirusTotal token"}" /></label><label>AbuseIPDB API key<input name="abuseipdb" type="password" autocomplete="new-password" placeholder="${keys.abuseipdb ? "Leave empty to keep the current key" : "Enter the AbuseIPDB token"}" /></label><div><button class="primary-action" type="submit">Save changes</button>${reputationReady ? `<button class="cancel-credentials" id="cancel-reputation-edit" type="button">Cancel</button>` : ""}<span id="settings-status" aria-live="polite"></span></div></form></section><section class="settings-card ollama-lab"><p class="page-kicker">OLLAMA LAB</p><h2>Semantic model</h2><p class="settings-note">Only models already installed in Ollama are shown. The selection will be used for the next analysis.</p><form id="ollama-settings"><label for="ollama-model">Installed model<select id="ollama-model" name="model" disabled><option value="${escapeHtml(selectedModel)}">Loading local models…</option></select></label><div class="ollama-actions"><button class="soft-action" id="refresh-ollama-models" type="button">Refresh list</button><button class="primary-action" type="submit">Use this model</button></div><p class="settings-status" id="ollama-status" aria-live="polite"></p></form><div class="model-benchmark"><div><h3>Local comparison</h3><span>${modelStats.length ? `${ollamaRuns.length} analyses` : "No data"}</span></div>${modelStats.length ? `<ul>${modelStats.map((stat) => `<li><strong>${escapeHtml(stat.model)}</strong><small>${stat.count} analyses${stat.timed ? ` · average ${(stat.duration / stat.timed / 1000).toFixed(1)} s` : " · timings available after new analyses"}</small></li>`).join("")}</ul>` : `<p>Analyse the same email with the models you want to compare. Usage and average time will appear here; compare verdict quality on test cases with known outcomes.</p>`}</div></section><section class="settings-card model-provenance model-provenance-card" aria-live="polite"><div><p class="page-kicker">CONTEXTUAL TEXT ANALYSIS</p><h2>Hugging Face model</h2></div><p id="bert-model-provenance">Loading model provenance…</p></section></div>`; }
   return `<div class="page-heading dashboard-heading"><div><p class="page-kicker">YOUR PRIVATE WORKSPACE</p><h1>${dashboardGreeting()}, ${firstName}.</h1><p>Keep track of your inbox security.</p></div></div><section class="welcome-card"><div><p class="page-kicker">READY WHEN YOU ARE</p><h2>Received a suspicious email?</h2><p>Upload the EML file and let FishStop inspect its risk signals.</p><button class="primary-action" data-go="analyse" type="button">Analyse a file <span>→</span></button></div><div class="mail-art" aria-hidden="true"><span></span><i></i></div></section><div class="overview-row"><section class="mini-panel"><div class="panel-top"><h2>Recent activity</h2><button data-go="history" type="button">View history</button></div><div class="no-activity"><span>✓</span><div><strong>All clear</strong><p>You have not run an analysis yet.</p></div></div></section><section class="mini-panel security-panel"><span class="lock">⌾</span><h2>Your data stays yours.</h2><p>History and statistics are separated by account.</p></section></div>`;
 }
 
 function renderDashboard(user: GoogleUser, section: Section = "dashboard"): void {
+  removeStatisticsMenuDismissal?.();
+  removeStatisticsMenuDismissal = null;
   if (!analysisHistoryReady.has(user.sub)) {
     void ensureAnalysisHistory(user).then(() => {
       if (storedUser()?.sub === user.sub) renderDashboard(user, section);
     });
-  }
-  if (!phi4WarmupRequested) {
-    phi4WarmupRequested = true;
-    void invoke("warm_phi4", { model: ollamaModel(user) }).catch(() => { /* Ollama remains optional until it is running. */ });
   }
   const labels: Record<Section, string> = { dashboard: "Dashboard", analyse: "Analyse", history: "History", statistics: "Statistics", settings: "Settings" };
   const icons: Record<Section, string> = { dashboard: "⌂", analyse: searchIconMarkup(), history: "◴", statistics: "◔", settings: "⚙" };
@@ -1667,6 +1621,44 @@ function renderDashboard(user: GoogleUser, section: Section = "dashboard"): void
   animateSectionEntry(section);
   document.querySelectorAll<HTMLButtonElement>("[data-section]").forEach((button) => button.addEventListener("click", () => renderDashboard(user, button.dataset.section as Section)));
   document.querySelectorAll<HTMLButtonElement>("[data-go]").forEach((button) => button.addEventListener("click", () => renderDashboard(user, button.dataset.go as Section)));
+  const statisticsMenu = document.querySelector<HTMLElement>(".statistics-period-menu");
+  const statisticsTrigger = document.querySelector<HTMLButtonElement>("#statistics-period-trigger");
+  const statisticsOptions = document.querySelector<HTMLElement>(".statistics-period-options");
+  const closeStatisticsMenu = () => {
+    if (!statisticsTrigger || !statisticsOptions) return;
+    statisticsTrigger.setAttribute("aria-expanded", "false");
+    statisticsOptions.hidden = true;
+    removeStatisticsMenuDismissal?.();
+    removeStatisticsMenuDismissal = null;
+  };
+  statisticsTrigger?.addEventListener("click", () => {
+    if (!statisticsOptions) return;
+    const opening = statisticsOptions.hidden;
+    statisticsOptions.hidden = !opening;
+    statisticsTrigger.setAttribute("aria-expanded", String(opening));
+    if (!opening) { closeStatisticsMenu(); return; }
+    const dismissOnOutsideClick = (event: PointerEvent) => {
+      if (event.target instanceof Node && !statisticsMenu?.contains(event.target)) closeStatisticsMenu();
+    };
+    document.addEventListener("pointerdown", dismissOnOutsideClick);
+    removeStatisticsMenuDismissal = () => document.removeEventListener("pointerdown", dismissOnOutsideClick);
+  });
+  statisticsMenu?.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") { closeStatisticsMenu(); statisticsTrigger?.focus(); }
+    if (!["ArrowDown", "ArrowUp"].includes(event.key) || !statisticsOptions) return;
+    event.preventDefault();
+    const options = Array.from(statisticsOptions.querySelectorAll<HTMLButtonElement>(".statistics-period-option"));
+    if (statisticsOptions.hidden) {
+      statisticsOptions.hidden = false;
+      statisticsTrigger?.setAttribute("aria-expanded", "true");
+      const selected = options.find((option) => option.getAttribute("aria-selected") === "true") || options[0];
+      selected?.focus();
+      return;
+    }
+    const current = options.indexOf(document.activeElement as HTMLButtonElement);
+    const step = event.key === "ArrowDown" ? 1 : -1;
+    options[((current < 0 ? 0 : current) + step + options.length) % options.length]?.focus();
+  });
   document.querySelectorAll<HTMLButtonElement>("[data-statistics-period]").forEach((button) => button.addEventListener("click", () => {
     const period = button.dataset.statisticsPeriod as StatisticsPeriod | undefined;
     if (!period) return;
@@ -1727,7 +1719,7 @@ function renderDashboard(user: GoogleUser, section: Section = "dashboard"): void
   const ollamaSelect = document.querySelector<HTMLSelectElement>("#ollama-model");
   const ollamaStatus = document.querySelector<HTMLElement>("#ollama-status");
   const ollamaLab = document.querySelector<HTMLElement>(".ollama-lab");
-  if (ollamaLab) ollamaLab.insertAdjacentHTML("beforeend", `<section class="managed-model" aria-live="polite"><p class="page-kicker">FISHSTOP AI</p><h3>Qwen locale</h3><p id="managed-model-status">Checking the bundled AI runtime…</p><div class="ollama-actions"><button class="primary-action" id="install-managed-qwen" type="button">Install Qwen</button><button class="soft-action" id="remove-managed-qwen" type="button" hidden>Remove model</button></div></section>`);
+  if (ollamaLab) ollamaLab.insertAdjacentHTML("beforeend", `<section class="managed-model" aria-live="polite"><p class="page-kicker">FISHSTOP AI</p><h3>Qwen locale</h3><p id="managed-model-status">Checking the bundled AI runtime…</p><div class="ollama-actions"><button class="primary-action" id="install-managed-qwen" type="button" hidden>Install model</button><button class="soft-action" id="remove-managed-qwen" type="button" hidden>Remove model</button></div></section>`);
   const managedModelStatus = document.querySelector<HTMLElement>("#managed-model-status");
   const installManagedQwen = document.querySelector<HTMLButtonElement>("#install-managed-qwen");
   const removeManagedQwen = document.querySelector<HTMLButtonElement>("#remove-managed-qwen");
@@ -1735,9 +1727,18 @@ function renderDashboard(user: GoogleUser, section: Section = "dashboard"): void
     try {
       const runtime = await invoke<OllamaRuntimeStatus>("ollama_runtime_status");
       if (!managedModelStatus || !installManagedQwen || !removeManagedQwen) return;
-      if (runtime.model_ready) { managedModelStatus.textContent = `${runtime.model} is installed and ready.`; installManagedQwen.hidden = true; removeManagedQwen.hidden = false; }
-      else { managedModelStatus.textContent = runtime.runtime_ready ? `Install ${runtime.model} to enable local semantic analysis.` : "Bundled AI runtime is unavailable."; installManagedQwen.hidden = false; removeManagedQwen.hidden = true; }
-    } catch (error) { if (managedModelStatus) managedModelStatus.textContent = `AI runtime unavailable: ${String(error)}`; }
+      managedModelStatus.textContent = runtime.model_ready
+        ? `${runtime.model} is installed and ready.`
+        : runtime.runtime_ready
+          ? `Install ${runtime.model} to enable local semantic analysis.`
+          : "Bundled AI runtime is unavailable.";
+      installManagedQwen.toggleAttribute("hidden", runtime.model_ready);
+      removeManagedQwen.toggleAttribute("hidden", !runtime.model_ready);
+    } catch (error) {
+      if (managedModelStatus) managedModelStatus.textContent = `AI runtime unavailable: ${String(error)}`;
+      installManagedQwen?.setAttribute("hidden", "");
+      removeManagedQwen?.setAttribute("hidden", "");
+    }
   };
   installManagedQwen?.addEventListener("click", async () => {
     if (!managedModelStatus || !installManagedQwen) return;
@@ -1771,7 +1772,6 @@ function renderDashboard(user: GoogleUser, section: Section = "dashboard"): void
     event.preventDefault(); const model = ollamaSelect?.value.trim(); if (!model) return;
     localStorage.setItem(`${OLLAMA_MODEL_PREFIX}${user.sub}`, model);
     if (ollamaStatus) ollamaStatus.textContent = `${model} will be used for the next analysis.`;
-    void invoke("warm_phi4", { model }).catch(() => { /* The selected model will report a clear error on analysis if unavailable. */ });
     void refreshProtectionStatus(user, true);
   });
   if (ollamaSelect) void loadOllamaModels();

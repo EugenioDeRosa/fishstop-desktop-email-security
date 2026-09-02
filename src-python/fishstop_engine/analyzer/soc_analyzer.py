@@ -30,7 +30,6 @@ from fishstop_engine.analysis_limits import (
 )
 from .attachment      import analyze_attachment
 from .body_context    import select_body_for_ai
-from .cryptographic_auth import verify_cryptographic_authentication
 from .html_form_analysis import analyze_html_forms
 from .html_utils      import (
     recover_mislabelled_utf7_html,
@@ -357,11 +356,9 @@ class EmlSOCAnalyzer:
     legato a messaggi specifici.
     """
 
-    def analyze(self, eml_path: str, verification_raw_email: bytes | None = None) -> dict:
+    def analyze(self, eml_path: str) -> dict:
         with open(eml_path, "rb") as f:
             raw_bytes = f.read()
-        raw_bytes_for_verification = verification_raw_email if verification_raw_email is not None else raw_bytes
-
         msg = email.message_from_bytes(raw_bytes, policy=policy.default)
         _validate_mime_structure(msg)
         report: dict = {}
@@ -448,7 +445,7 @@ class EmlSOCAnalyzer:
         report["closest_to_recipient"]  = hops[0]  if hops else {}
         report["injection_server"]      = hops[1]  if len(hops) > 1 else {}
         report["closest_to_sender"]     = hops[-1] if hops else {}
-        report["injection_sender_ip"]   = self._extract_spf_sender_ip(msg, hops)
+        report["injection_sender_ip"]   = self._extract_injection_sender_ip(msg, hops)
 
         # ── 6. Received-SPF raw ───────────────────────────────────────────
         received_spf_headers = self._headers(msg, "Received-SPF")
@@ -471,13 +468,6 @@ class EmlSOCAnalyzer:
         dkim_headers = self._headers(msg, "DKIM-Signature")
         report["dkim_signature_present"] = bool(dkim_headers)
         report["dkim_signature_raw"]     = "\n".join(dkim_headers)
-        report["cryptographic_authentication"] = verify_cryptographic_authentication(
-            raw_bytes_for_verification,
-            injection_ip=report.get("injection_sender_ip"),
-            envelope_from=EmlSOCAnalyzer._extract_address(report.get("return_path") or ""),
-            helo=(report.get("closest_to_sender") or {}).get("from_host"),
-            from_address=from_addr,
-        )
 
         # ── 9. Body e allegati ────────────────────────────────────────────
         body_parts       = []
@@ -741,17 +731,17 @@ class EmlSOCAnalyzer:
         return m2.group(0).strip() if m2 else None
 
     @staticmethod
-    def _extract_spf_sender_ip(msg, hops: list) -> str | None:
+    def _extract_injection_sender_ip(msg, hops: list) -> str | None:
         """
-        Estrae l'IP corretto per la verifica SPF live.
+        Extract the public sender IP exposed by the delivery headers.
 
         Priority:
           1. client-ip= in the LAST Received-SPF (closest to the sender)
           2. smtp.remote-ip= in Authentication-Results
           3. First public IP in the oldest Received hop
 
-        If the oldest hop is an internal MAPI/Exchange hand-off, no SMTP
-        boundary IP is available and independent SPF must remain unavailable.
+        If the oldest hop is an internal MAPI/Exchange hand-off, no public
+        SMTP boundary IP is available.
         """
         all_rcvd_spf = msg.get_all("Received-SPF") or []
         for rcvd_spf in reversed(all_rcvd_spf):
@@ -811,19 +801,6 @@ class EmlSOCAnalyzer:
             flag("MEDIUM", "DMARC", f"DMARC {dmarc['status'].upper()}")
         elif not dmarc:
             flag("INFO", "DMARC", "No DMARC result is available in this EML export")
-
-        # Separate from the receiver-provided Authentication-Results: these
-        # results were reproduced locally against live DNS and therefore take
-        # precedence only when an actual verification fails.
-        crypto_auth = report.get("cryptographic_authentication") or {}
-        for protocol in ("dkim", "spf", "dmarc"):
-            result = crypto_auth.get(protocol) or {}
-            if str(result.get("status") or "").lower() == "fail":
-                flag(
-                    "MEDIUM",
-                    f"Cryptographic {protocol.upper()}",
-                    str(result.get("message") or "Independent DNS-backed verification failed."),
-                )
 
         # Reply-To mismatch
         if report["reply_to_mismatch"]:

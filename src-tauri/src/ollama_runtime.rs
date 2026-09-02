@@ -1,7 +1,7 @@
 use std::{
     fs,
     io::{BufRead, BufReader},
-    path::PathBuf,
+    path::{Component, Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{Arc, Mutex},
     thread,
@@ -20,6 +20,15 @@ const TARGET_TRIPLE: &str = env!("TAURI_ENV_TARGET_TRIPLE");
 #[derive(Default)]
 pub struct OllamaRuntime {
     child: Option<Child>,
+}
+
+impl Drop for OllamaRuntime {
+    fn drop(&mut self) {
+        if let Some(child) = self.child.as_mut() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -62,7 +71,11 @@ fn client() -> Result<Client, String> {
 }
 
 fn ready(endpoint: &str) -> bool {
-    client()
+    Client::builder()
+        .connect_timeout(Duration::from_millis(500))
+        .timeout(Duration::from_secs(1))
+        .build()
+        .map_err(|error| error.to_string())
         .and_then(|client| {
             client
                 .get(format!("{endpoint}/api/version"))
@@ -71,6 +84,47 @@ fn ready(endpoint: &str) -> bool {
                 .map_err(|error| error.to_string())
         })
         .is_ok()
+}
+
+fn models_at(endpoint: &str) -> Result<Vec<String>, String> {
+    let tags: OllamaTags = Client::builder()
+        .connect_timeout(Duration::from_millis(500))
+        .timeout(Duration::from_secs(2))
+        .build()
+        .map_err(|error| format!("Could not prepare the local AI status check: {error}"))?
+        .get(format!("{endpoint}/api/tags"))
+        .send()
+        .and_then(|response| response.error_for_status())
+        .map_err(|error| format!("Local AI runtime is unavailable: {error}"))?
+        .json()
+        .map_err(|error| format!("Invalid local AI response: {error}"))?;
+    Ok(tags
+        .models
+        .unwrap_or_default()
+        .into_iter()
+        .map(|item| item.name)
+        .collect())
+}
+
+fn managed_model_installed(app: &AppHandle, model: &str) -> bool {
+    let (name, tag) = model.rsplit_once(':').unwrap_or((model, "latest"));
+    let safe_name = !name.is_empty()
+        && Path::new(name)
+            .components()
+            .all(|component| matches!(component, Component::Normal(_)));
+    if !safe_name || tag.is_empty() || tag.contains('/') || tag.contains('\\') {
+        return false;
+    }
+    let Ok(models) = managed_models_path(app) else {
+        return false;
+    };
+    let manifests = models.join("manifests").join("registry.ollama.ai");
+    [
+        manifests.join("library").join(name).join(tag),
+        manifests.join(name).join(tag),
+    ]
+    .iter()
+    .any(|path| path.is_file())
 }
 
 fn bundled_binary(app: &AppHandle) -> Option<PathBuf> {
@@ -87,12 +141,17 @@ fn bundled_binary(app: &AppHandle) -> Option<PathBuf> {
         .filter(|path| path.is_file())
 }
 
-fn managed_models_directory(app: &AppHandle) -> Result<PathBuf, String> {
+fn managed_models_path(app: &AppHandle) -> Result<PathBuf, String> {
     let directory = app
         .path()
         .app_data_dir()
         .map_err(|error| format!("Could not locate FishSTOP data: {error}"))?
         .join("ollama-models");
+    Ok(directory)
+}
+
+fn managed_models_directory(app: &AppHandle) -> Result<PathBuf, String> {
+    let directory = managed_models_path(app)?;
     fs::create_dir_all(&directory)
         .map_err(|error| format!("Could not prepare model storage: {error}"))?;
     Ok(directory)
@@ -168,41 +227,37 @@ pub fn list_models(
     runtime: &Arc<Mutex<OllamaRuntime>>,
 ) -> Result<Vec<String>, String> {
     let (endpoint, _) = ensure_server(app, runtime)?;
-    let tags: OllamaTags = client()?
-        .get(format!("{endpoint}/api/tags"))
-        .send()
-        .and_then(|response| response.error_for_status())
-        .map_err(|error| format!("Local AI runtime is unavailable: {error}"))?
-        .json()
-        .map_err(|error| format!("Invalid local AI response: {error}"))?;
-    Ok(tags
-        .models
-        .unwrap_or_default()
-        .into_iter()
-        .map(|item| item.name)
-        .collect())
+    models_at(&endpoint)
 }
 
-pub fn status(app: &AppHandle, runtime: &Arc<Mutex<OllamaRuntime>>) -> OllamaRuntimeStatus {
-    match ensure_server(app, runtime) {
-        Ok((_, managed)) => {
-            let model_ready = list_models(app, runtime)
-                .map(|models| models.iter().any(|model| model == DEFAULT_MODEL))
+pub fn status(app: &AppHandle, model: Option<String>) -> OllamaRuntimeStatus {
+    let model = model
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| DEFAULT_MODEL.to_string());
+    for (endpoint, managed) in [(MANAGED_ENDPOINT, true), ("http://127.0.0.1:11434", false)] {
+        if ready(endpoint) {
+            let model_ready = models_at(endpoint)
+                .map(|models| models.iter().any(|available| available == &model))
                 .unwrap_or(false);
-            OllamaRuntimeStatus {
+            return OllamaRuntimeStatus {
                 runtime_ready: true,
                 model_ready,
                 managed,
-                model: DEFAULT_MODEL.to_string(),
-            }
+                model,
+            };
         }
-        Err(_) => OllamaRuntimeStatus {
-            runtime_ready: false,
-            model_ready: false,
-            managed: bundled_binary(app).is_some(),
-            model: DEFAULT_MODEL.to_string(),
-        },
     }
+    let managed = bundled_binary(app).is_some();
+    OllamaRuntimeStatus {
+        runtime_ready: managed,
+        model_ready: managed && managed_model_installed(app, &model),
+        managed,
+        model,
+    }
+}
+
+pub fn prepare(app: &AppHandle, runtime: &Arc<Mutex<OllamaRuntime>>) -> Result<(), String> {
+    ensure_server(app, runtime).map(|_| ())
 }
 
 pub fn install_default_model(

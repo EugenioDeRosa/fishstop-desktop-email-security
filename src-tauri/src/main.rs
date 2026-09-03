@@ -867,8 +867,6 @@ async fn analyze_identity(
 
 #[tauri::command]
 async fn analyze_phi4(
-    app: tauri::AppHandle,
-    runtime: tauri::State<'_, Arc<Mutex<OllamaRuntime>>>,
     report: serde_json::Value,
     app: tauri::AppHandle,
     runtime: tauri::State<'_, Arc<Mutex<OllamaRuntime>>>,
@@ -880,42 +878,6 @@ async fn analyze_phi4(
     })
     .await
     .map_err(|error| format!("Phi-4 analysis interrupted: {error}"))?
-}
-
-fn warm_phi4_with_ollama(model: &str) -> Result<(), String> {
-    let endpoint = std::env::var("OLLAMA_GENERATE_ENDPOINT")
-        .unwrap_or_else(|_| "http://localhost:11434/api/generate".to_string());
-    let timeout = if cfg!(target_os = "windows") { 240 } else { 90 };
-    reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(timeout))
-        .build()
-        .map_err(|error| format!("Could not prepare Ollama: {error}"))?
-        .post(endpoint)
-        .json(&serde_json::json!({
-            "model": model,
-            "prompt": "",
-            "stream": false,
-            "keep_alive": "15m",
-            "options": { "num_predict": 1 }
-        }))
-        .send()
-        .and_then(|response| response.error_for_status())
-        .map_err(|error| format!("Phi-4 warm-up failed: {error}"))?;
-    Ok(())
-}
-
-#[tauri::command]
-async fn warm_phi4(
-    app: tauri::AppHandle,
-    runtime: tauri::State<'_, Arc<Mutex<OllamaRuntime>>>,
-) -> Result<(), String> {
-    let runtime = Arc::clone(&runtime);
-    tauri::async_runtime::spawn_blocking(move || {
-        let selected_model = ollama_runtime::prepare_model(&app, &runtime)?;
-        warm_phi4_with_ollama(selected_model)
-    })
-    .await
-    .map_err(|error| format!("Phi-4 warm-up interrupted: {error}"))?
 }
 
 #[derive(Deserialize)]
@@ -936,7 +898,7 @@ struct HuggingFaceModelInfo {
 #[tauri::command]
 async fn ollama_runtime_status(
     app: tauri::AppHandle,
-    model: Option<String>,
+    runtime: tauri::State<'_, Arc<Mutex<OllamaRuntime>>>,
 ) -> Result<ollama_runtime::OllamaRuntimeStatus, String> {
     let runtime = Arc::clone(&runtime);
     tauri::async_runtime::spawn_blocking(move || ollama_runtime::status(&app, &runtime))
@@ -1091,7 +1053,6 @@ fn main() {
             analyze_eml_contents,
             analyze_identity,
             analyze_phi4,
-            warm_phi4,
             ollama_runtime_status,
             install_default_ollama_model,
             remove_default_ollama_model,

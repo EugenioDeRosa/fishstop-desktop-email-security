@@ -8,7 +8,7 @@ FishStop è un'app desktop Tauri per analizzare localmente email `.eml` sospette
 - Individua domini lookalike, URL mascherati, redirect, download rischiosi e incongruenze tra richiesta e risorsa proposta.
 - Ispeziona allegati e HTML senza eseguire script, form o contenuti remoti.
 - Usa un modello NER locale per estrarre organizzazioni e confrontarne l'identità con i domini osservati.
-- Usa **Qwen `qwen3:4b-q4_K_M`** in locale per l'analisi semantica. Il corpo dell'email non viene inviato a servizi AI hosted.
+- Usa in locale un modello Qwen approvato, scelto automaticamente in base alla piattaforma. Il corpo dell'email non viene inviato a servizi AI hosted.
 - Può usare VirusTotal e AbuseIPDB, se configurati: vengono inviati solo indicatori tecnici, mai il file `.eml` o il suo contenuto.
 
 ## Qwen locale
@@ -21,7 +21,7 @@ Apri **Settings → Qwen locale**:
 - se il modello è installato, è disponibile **Remove model**;
 - il runtime e i modelli gestiti sono locali all'app.
 
-Per lo sviluppo rimane possibile scegliere, dalla lista **Installed model**, qualsiasi altro modello già presente nel runtime Ollama locale. Questa scelta serve a confrontare modelli installati e viene applicata alle analisi successive; Qwen resta il valore predefinito dell'app.
+La selezione manuale è disabilitata: FishStop usa `qwen3:4b-q4_K_M` sui Mac Apple Silicon e `qwen3:4b-instruct-2507-q4_K_M` sui runtime CPU Windows e Linux.
 
 ## Avvio in sviluppo
 

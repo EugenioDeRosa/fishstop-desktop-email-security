@@ -107,6 +107,47 @@ fn ready(endpoint: &str) -> bool {
         .is_ok()
 }
 
+fn models_at(endpoint: &str) -> Result<Vec<String>, String> {
+    let tags: OllamaTags = Client::builder()
+        .connect_timeout(Duration::from_millis(500))
+        .timeout(Duration::from_secs(2))
+        .build()
+        .map_err(|error| format!("Could not prepare the local AI status check: {error}"))?
+        .get(format!("{endpoint}/api/tags"))
+        .send()
+        .and_then(|response| response.error_for_status())
+        .map_err(|error| format!("Local AI runtime is unavailable: {error}"))?
+        .json()
+        .map_err(|error| format!("Invalid local AI response: {error}"))?;
+    Ok(tags
+        .models
+        .unwrap_or_default()
+        .into_iter()
+        .map(|item| item.name)
+        .collect())
+}
+
+fn managed_model_installed(app: &AppHandle, model: &str) -> bool {
+    let (name, tag) = model.rsplit_once(':').unwrap_or((model, "latest"));
+    let safe_name = !name.is_empty()
+        && Path::new(name)
+            .components()
+            .all(|component| matches!(component, Component::Normal(_)));
+    if !safe_name || tag.is_empty() || tag.contains('/') || tag.contains('\\') {
+        return false;
+    }
+    let Ok(models) = managed_models_path(app) else {
+        return false;
+    };
+    let manifests = models.join("manifests").join("registry.ollama.ai");
+    [
+        manifests.join("library").join(name).join(tag),
+        manifests.join(name).join(tag),
+    ]
+    .iter()
+    .any(|path| path.is_file())
+}
+
 pub fn recommended_model() -> &'static str {
     if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
         PERFORMANCE_MODEL
@@ -338,57 +379,35 @@ pub fn prepare_model(
     Ok(recommended_model())
 }
 
-pub fn list_models(
-    app: &AppHandle,
-    runtime: &Arc<Mutex<OllamaRuntime>>,
-) -> Result<Vec<String>, String> {
-    let (endpoint, _) = ensure_server(app, runtime)?;
-    models_at(&endpoint)
-}
-
-pub fn status(app: &AppHandle, runtime: &Arc<Mutex<OllamaRuntime>>) -> OllamaRuntimeStatus {
+pub fn status(app: &AppHandle, _runtime: &Arc<Mutex<OllamaRuntime>>) -> OllamaRuntimeStatus {
     let (platform, architecture, cpu, memory_bytes, accelerator, selection_reason) =
         machine_profile();
     let model = recommended_model().to_string();
-    match ensure_server(app, runtime) {
-        Ok((endpoint, managed)) => {
-            let model_ready = list_models(app, runtime)
-                .map(|models| models.iter().any(|installed| installed == &model))
+    for (endpoint, managed) in [(MANAGED_ENDPOINT, true), ("http://127.0.0.1:11434", false)] {
+        if ready(endpoint) {
+            let model_ready = models_at(endpoint)
+                .map(|models| models.iter().any(|available| available == &model))
                 .unwrap_or(false);
-            let (loaded_model, loaded_on_gpu) = loaded_model(&endpoint);
-            OllamaRuntimeStatus {
+            let (loaded_model, loaded_on_gpu) = loaded_model(endpoint);
+            return OllamaRuntimeStatus {
                 runtime_ready: true,
                 model_ready,
                 managed,
-                model,
-                platform,
-                architecture,
-                cpu,
+                model: model.clone(),
+                platform: platform.clone(),
+                architecture: architecture.clone(),
+                cpu: cpu.clone(),
                 memory_bytes,
                 accelerator: if loaded_on_gpu {
                     "GPU".to_string()
                 } else {
-                    accelerator
+                    accelerator.clone()
                 },
-                selection_reason,
+                selection_reason: selection_reason.clone(),
                 loaded_model,
                 loaded_on_gpu,
-            }
+            };
         }
-        Err(_) => OllamaRuntimeStatus {
-            runtime_ready: false,
-            model_ready: false,
-            managed: bundled_binary(app).is_some(),
-            model,
-            platform,
-            architecture,
-            cpu,
-            memory_bytes,
-            accelerator,
-            selection_reason,
-            loaded_model: None,
-            loaded_on_gpu: false,
-        },
     }
     let managed = bundled_binary(app).is_some();
     OllamaRuntimeStatus {
@@ -396,13 +415,16 @@ pub fn status(app: &AppHandle, runtime: &Arc<Mutex<OllamaRuntime>>) -> OllamaRun
         model_ready: managed && managed_model_installed(app, &model),
         managed,
         model,
+        platform,
+        architecture,
+        cpu,
+        memory_bytes,
+        accelerator,
+        selection_reason,
+        loaded_model: None,
+        loaded_on_gpu: false,
     }
 }
-
-pub fn prepare(app: &AppHandle, runtime: &Arc<Mutex<OllamaRuntime>>) -> Result<(), String> {
-    ensure_server(app, runtime).map(|_| ())
-}
-
 pub fn install_default_model(
     app: &AppHandle,
     runtime: &Arc<Mutex<OllamaRuntime>>,

@@ -795,10 +795,11 @@ class EmlSOCAnalyzer:
 
         # DMARC
         dmarc = effective.get("DMARC") or report["auth_results"].get("DMARC") or report["arc_auth_results"].get("DMARC")
-        if dmarc and dmarc["status"] == "none":
+        dmarc_status = str((dmarc or {}).get("status") or "").lower()
+        if dmarc and dmarc_status == "none":
             flag("INFO", "DMARC", "No DMARC authentication result is available in this EML export")
-        elif dmarc and dmarc["status"] not in ("pass", "bestguesspass"):
-            flag("MEDIUM", "DMARC", f"DMARC {dmarc['status'].upper()}")
+        elif dmarc and dmarc_status not in ("pass", "bestguesspass"):
+            flag("MEDIUM", "DMARC", f"DMARC {dmarc_status.upper()}")
         elif not dmarc:
             flag("INFO", "DMARC", "No DMARC result is available in this EML export")
 
@@ -821,18 +822,31 @@ class EmlSOCAnalyzer:
             )
             is_bulk_sender = bool(report.get("is_bulk_sender"))
             bulk_count = int(report.get("bulk_sender_signal_count") or 0)
-            level = "LOW" if is_bulk_sender else "MEDIUM"
             bulk_note = (
                 f"Bulk sender detected ({bulk_count} header signals), so this mismatch can be legitimate."
                 if is_bulk_sender
                 else f"Bulk sender not detected ({bulk_count} header signals), so this mismatch is more suspicious."
             )
-            flag(
-                level, "Return-Path",
+            mismatch = (
                 f"The Return-Path domain (`{report['return_path_domain']}`) differs from "
-                f"the From domain (`{_from_domain}`). {bulk_note} Review with authentication "
-                "and link evidence."
+                f"the From domain (`{_from_domain}`)."
             )
+            if dmarc_status in {"pass", "bestguesspass"}:
+                # DMARC already proves identifier alignment. Keep the raw mismatch
+                # in the report, but do not turn normal envelope routing into a verdict signal.
+                pass
+            elif dmarc_status in {"fail", "softfail", "temperror", "permerror", "policy", "reject", "quarantine"}:
+                flag(
+                    "LOW" if is_bulk_sender else "MEDIUM",
+                    "Return-Path",
+                    f"{mismatch} DMARC did not pass ({dmarc_status.upper()}), so the mismatch is relevant technical context. {bulk_note}",
+                )
+            else:
+                flag(
+                    "LOW",
+                    "Return-Path",
+                    f"{mismatch} DMARC is unavailable, so this is weak evidence that must be correlated with other signals. {bulk_note}",
+                )
         elif report.get("return_path") and not report.get("return_path_domain"):
             flag("LOW", "Return-Path", "Return-Path present but domain cannot be extracted")
 

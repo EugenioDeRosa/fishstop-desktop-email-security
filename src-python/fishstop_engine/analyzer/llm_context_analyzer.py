@@ -506,6 +506,30 @@ def _auth_status(soc: dict, name: str) -> str:
     return str(result.get("status") or "unknown").lower()
 
 
+_DMARC_PASS_STATUSES = {"pass", "bestguesspass"}
+_DMARC_FAILURE_STATUSES = {
+    "fail", "softfail", "temperror", "permerror", "policy", "reject", "quarantine",
+}
+
+
+def _return_path_mismatch_context(soc: dict) -> str:
+    """Keep the mismatch as contextual evidence without overruling DMARC alignment."""
+    if not soc.get("return_path_domain_mismatch"):
+        return ""
+    dmarc_status = _auth_status(soc, "DMARC")
+    if dmarc_status in _DMARC_PASS_STATUSES:
+        return ""
+    if dmarc_status in _DMARC_FAILURE_STATUSES:
+        return (
+            "Return-Path differs from the visible sender domain while DMARC did not pass; "
+            "this is relevant technical context"
+        )
+    return (
+        "Return-Path differs from the visible sender domain, but DMARC is unavailable; "
+        "treat this as weak evidence and correlate it with other signals"
+    )
+
+
 def _safe_int(value) -> int:
     try:
         return int(value or 0)
@@ -615,11 +639,12 @@ def _technical_context_lines(soc: dict, body_for_llm: str = "", link_reputation:
 
     if soc.get("reply_to_mismatch"):
         lines.append("Reply-To mismatch detected")
-    if soc.get("return_path_domain_mismatch"):
+    return_path_context = _return_path_mismatch_context(soc)
+    if return_path_context:
         bulk_sender = bool(soc.get("is_bulk_sender"))
         bulk_count = int(soc.get("bulk_sender_signal_count") or 0)
         lines.append(
-            "Return-Path domain differs from From domain; "
+            f"{return_path_context}; "
             f"bulk_sender={str(bulk_sender).lower()} "
             f"bulk_sender_signal_count={bulk_count}"
         )
@@ -1888,6 +1913,9 @@ def _identity_risk(
                 reasons.append("DKIM signature is absent")
             elif status in {"fail", "temperror", "permerror", "policy", "softfail", "neutral"}:
                 reasons.append(f"{name} did not pass ({status})")
+        return_path_context = _return_path_mismatch_context(soc)
+        if return_path_context:
+            reasons.append(return_path_context)
         return "verified", reasons
 
     compauth_failed = bool(re.search(
@@ -1907,8 +1935,9 @@ def _identity_risk(
             continue
         if status in {"fail", "temperror", "permerror", "policy", "softfail", "neutral"}:
             reasons.append(f"{name} did not pass ({status})")
-    if soc.get("return_path_domain_mismatch"):
-        reasons.append("Return-Path differs from the visible sender domain")
+    return_path_context = _return_path_mismatch_context(soc)
+    if return_path_context:
+        reasons.append(return_path_context)
     if not reasons:
         reasons.append("sender authentication is incomplete or unavailable")
     return "uncertain", reasons

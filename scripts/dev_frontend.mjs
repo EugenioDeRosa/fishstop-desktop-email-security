@@ -1,10 +1,9 @@
 import { spawn } from "node:child_process";
-import { dirname, join } from "node:path";
 
-const npmCli = join(dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js");
+const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 
 function run(args) {
-  return spawn(process.execPath, [npmCli, ...args], {
+  return spawn(npmCommand, args, {
     stdio: "inherit",
     shell: false,
   });

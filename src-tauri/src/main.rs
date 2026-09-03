@@ -346,15 +346,14 @@ fn encode(value: &str) -> String {
     url::form_urlencoded::byte_serialize(value.as_bytes()).collect()
 }
 
-fn google_client_secret() -> Result<String, String> {
+fn google_client_secret() -> Option<String> {
     if let Ok(secret) = std::env::var("FISHSTOP_GOOGLE_CLIENT_SECRET") {
         if !secret.trim().is_empty() {
-            return Ok(secret);
+            return Some(secret.trim().to_string());
         }
     }
 
-    let executable = std::env::current_exe()
-        .map_err(|error| format!("Could not locate the FishStop application: {error}"))?;
+    let executable = std::env::current_exe().ok()?;
     #[cfg(target_os = "macos")]
     let resource = executable
         .parent()
@@ -373,16 +372,9 @@ fn google_client_secret() -> Result<String, String> {
     });
 
     resource
-        .ok_or_else(|| "The Google sign-in credential is missing from this build. Download the latest FishStop installer.".to_string())
-        .and_then(|path| fs::read_to_string(path).map_err(|_| "The Google sign-in credential is missing from this build. Download the latest FishStop installer.".to_string()))
-        .and_then(|secret| {
-            let secret = secret.trim().to_string();
-            if secret.is_empty() {
-                Err("The Google sign-in credential is missing from this build. Download the latest FishStop installer.".to_string())
-            } else {
-                Ok(secret)
-            }
-        })
+        .and_then(|path| fs::read_to_string(path).ok())
+        .map(|secret| secret.trim().to_string())
+        .filter(|secret| !secret.is_empty())
 }
 
 fn launch_browser(url: &str) -> Result<(), String> {
@@ -485,7 +477,7 @@ fn wait_for_callback(listener: TcpListener, expected_state: &str) -> Result<Stri
 }
 
 fn google_sign_in() -> Result<GoogleUser, String> {
-    let client_secret = google_client_secret()?;
+    let client_secret = google_client_secret();
     let listener = TcpListener::bind("127.0.0.1:0")
         .map_err(|error| format!("Could not start the local callback: {error}"))?;
     let port = listener
@@ -511,16 +503,19 @@ fn google_sign_in() -> Result<GoogleUser, String> {
         .timeout(Duration::from_secs(30))
         .build()
         .map_err(|error| format!("Could not prepare the secure connection: {error}"))?;
+    let mut token_form = vec![
+        ("client_id", GOOGLE_CLIENT_ID),
+        ("code", code.as_str()),
+        ("code_verifier", code_verifier.as_str()),
+        ("grant_type", "authorization_code"),
+        ("redirect_uri", redirect_uri.as_str()),
+    ];
+    if let Some(secret) = client_secret.as_deref() {
+        token_form.push(("client_secret", secret));
+    }
     let token_response = client
         .post(TOKEN_ENDPOINT)
-        .form(&[
-            ("client_id", GOOGLE_CLIENT_ID),
-            ("client_secret", client_secret.as_str()),
-            ("code", code.as_str()),
-            ("code_verifier", code_verifier.as_str()),
-            ("grant_type", "authorization_code"),
-            ("redirect_uri", redirect_uri.as_str()),
-        ])
+        .form(&token_form)
         .send()
         .map_err(|error| format!("Google did not respond: {error}"))?;
     if !token_response.status().is_success() {

@@ -612,7 +612,7 @@ function highSeverityStaticReason(report: AnalysisReport): string | null {
   const confirmed = confirmedMaliciousIndicators(report);
   if (confirmed.length) return `VirusTotal detected ${confirmed.length === 1 ? confirmed[0] : `${confirmed.length} indicators`} as malicious.`;
 
-  const highFlags = (report.flags || []).filter((flag) => flag.level === "HIGH");
+  const highFlags = verdictFlags(report).filter((flag) => flag.level === "HIGH");
   if (!highFlags.length) return null;
   const decisive = [...highFlags].sort((left, right) => {
     const priority = (flag: SocFlag) => /pdf/i.test(flag.field) ? 2 : /attachment/i.test(flag.field) ? 1 : 0;
@@ -650,6 +650,21 @@ function stronglyAuthenticatedSender(report: AnalysisReport): boolean {
   const passed = (protocol: "SPF" | "DKIM" | "DMARC") =>
     ["pass", "bestguesspass"].includes(authFromEmlHeader(report, protocol).status.toLowerCase());
   return passed("DMARC") || (passed("SPF") && passed("DKIM"));
+}
+
+function returnPathMismatchForVerdict(report: AnalysisReport): boolean {
+  if (!report.return_path_domain_mismatch) return false;
+  const dmarcStatus = authFromEmlHeader(report, "DMARC").status.toLowerCase();
+  return !["pass", "bestguesspass"].includes(dmarcStatus);
+}
+
+function verdictFlags(report: AnalysisReport): SocFlag[] {
+  const dmarcPassed = ["pass", "bestguesspass"].includes(
+    authFromEmlHeader(report, "DMARC").status.toLowerCase(),
+  );
+  return (report.flags || []).filter((flag) => !(
+    dmarcPassed && flag.field.toLowerCase() === "return-path"
+  ));
 }
 
 function isAuthenticatedFirstPartyLink(report: AnalysisReport, link: NonNullable<AnalysisReport["links"]>[number]): boolean {
@@ -723,11 +738,11 @@ function authenticatedFirstPartySecurityNotice(report: AnalysisReport): boolean 
   const action = (semantic?.requested_action || "").toLowerCase();
   const identityMismatch = Boolean(
     report.reply_to_mismatch
-    || report.return_path_domain_mismatch
+    || returnPathMismatchForVerdict(report)
     || report.display_name_spoofing && !["none", "false", "no"].includes(String(report.display_name_spoofing).toLowerCase()),
   );
   const requestedLinks = primaryRequestedLinks(report);
-  const hasStaticConcern = (report.flags || []).some((flag) => ["HIGH", "MEDIUM"].includes(flag.level));
+  const hasStaticConcern = verdictFlags(report).some((flag) => ["HIGH", "MEDIUM"].includes(flag.level));
   const requestsSensitiveData = Boolean(
     extraction?.asks_for_credentials
     || extraction?.asks_for_payment
@@ -772,7 +787,7 @@ function unverifiedRequestedResourceReason(report: AnalysisReport): string | nul
     const unverifiedLinks = requestedLinks.filter((link) => cannotVerify(report.link_reputation?.[link.url || ""]));
     const identityMismatch = Boolean(
       report.reply_to_mismatch
-      || report.return_path_domain_mismatch
+      || returnPathMismatchForVerdict(report)
       || report.display_name_spoofing && !["none", "false", "no"].includes(String(report.display_name_spoofing).toLowerCase()),
     );
     const benignLegitimateContext = (semantic?.final_verdict || "").toLowerCase() === "legitimate"
@@ -820,8 +835,9 @@ function conciseAiVerdict(report: AnalysisReport, fallback: string): string {
 function assessment(report: AnalysisReport): { tone: "safe" | "review" | "danger"; label: string; detail: string } {
   const semantic = report.phi4_analysis?.analysis;
   const phi = (semantic?.final_verdict || "").toLowerCase();
-  const high = (report.flags || []).some((flag) => flag.level === "HIGH");
-  const mediumFlags = (report.flags || []).filter((flag) => flag.level === "MEDIUM");
+  const flags = verdictFlags(report);
+  const high = flags.some((flag) => flag.level === "HIGH");
+  const mediumFlags = flags.filter((flag) => flag.level === "MEDIUM");
   const medium = mediumFlags.length > 0;
   const staticReason = highSeverityStaticReason(report);
   const unverifiedRequestedResource = unverifiedRequestedResourceReason(report);
@@ -833,7 +849,7 @@ function assessment(report: AnalysisReport): { tone: "safe" | "review" | "danger
   const isolatedMissingDkim = mediumFlags.length > 0 && mediumFlags.every((flag) =>
     flag.field.toLowerCase() === "dkim" && /\bnone\b|missing|signature validation/i.test(flag.message),
   );
-  const identityMismatch = Boolean(report.reply_to_mismatch || report.return_path_domain_mismatch || report.display_name_spoofing && !["none", "false", "no"].includes(String(report.display_name_spoofing).toLowerCase()));
+  const identityMismatch = Boolean(report.reply_to_mismatch || returnPathMismatchForVerdict(report) || report.display_name_spoofing && !["none", "false", "no"].includes(String(report.display_name_spoofing).toLowerCase()));
   const aiClearsInformationalMessage = phi === "legitimate" && benignContent && noExternalOrSensitiveAction && isolatedMissingDkim && !identityMismatch;
   const generatedSummary = report.ai_summary?.status === "ok" ? safeGeneratedSummary(report.ai_summary.summary) : "";
   const result = (tone: "safe" | "review" | "danger", label: string, fallback: string) => ({ tone, label, detail: generatedSummary || fallback });
@@ -860,7 +876,7 @@ function assessment(report: AnalysisReport): { tone: "safe" | "review" | "danger
 function verdictRationale(report: AnalysisReport): string {
   const semantic = report.phi4_analysis?.analysis;
   const verdict = assessment(report);
-  const findings = (report.flags || []).filter((flag) => flag.level === "HIGH" || flag.level === "MEDIUM").sort((left, right) => {
+  const findings = verdictFlags(report).filter((flag) => flag.level === "HIGH" || flag.level === "MEDIUM").sort((left, right) => {
     const priority = (flag: SocFlag) => (flag.level === "HIGH" ? 100 : 0) + (/pdf/i.test(flag.field) ? 20 : /attachment/i.test(flag.field) ? 10 : 0);
     return priority(right) - priority(left);
   }).slice(0, 3);
@@ -957,7 +973,7 @@ function hopCheckTone(results: ReputationResult[]): CheckTone {
 }
 
 function reportMarkup(report: AnalysisReport): string {
-  const flags = report.flags || [];
+  const flags = verdictFlags(report);
   const high = flags.filter((flag) => flag.level === "HIGH").length;
   const medium = flags.filter((flag) => flag.level === "MEDIUM").length;
   const verdict = assessment(report);
@@ -985,9 +1001,20 @@ function reportMarkup(report: AnalysisReport): string {
   const displayNameSpoofed = Boolean(displayNameSpoofing && !["none", "false", "no"].includes(displayNameSpoofing.toLowerCase()));
   const replyToAddress = mailboxAddress(String(report.reply_to || "").trim());
   const returnPathAddress = mailboxAddress(String(report.return_path || "").trim());
+  const returnPathDmarcStatus = authFromEmlHeader(report, "DMARC").status.toLowerCase();
+  const returnPathDmarcPassed = ["pass", "bestguesspass"].includes(returnPathDmarcStatus);
+  const returnPathDmarcFailed = ["fail", "softfail", "temperror", "permerror", "policy", "reject", "quarantine"].includes(returnPathDmarcStatus);
+  const returnPathTone: CheckTone = !report.return_path_domain_mismatch || returnPathDmarcPassed ? "pass" : returnPathDmarcFailed ? "fail" : "warn";
+  const returnPathDetail = !report.return_path_domain_mismatch
+    ? "No mismatch detected between the envelope and visible sender."
+    : returnPathDmarcPassed
+      ? "The envelope sender differs from the visible sender domain, but DMARC passed; this mismatch is excluded from the verdict."
+      : returnPathDmarcFailed
+        ? `The envelope sender differs from the visible sender domain and DMARC did not pass (${returnPathDmarcStatus.toUpperCase()}).`
+        : "The envelope sender differs from the visible sender domain. DMARC is unavailable, so this is weak evidence to correlate with other signals.";
   const senderInconsistencies = [
     senderConsistencyItem(report.reply_to_mismatch ? "fail" : "pass", "Reply-To address", report.reply_to_mismatch ? "The reply destination differs from the sender identity." : "No mismatch detected between the sender and reply destination.", report.reply_to_mismatch ? "Mismatch detected" : "Aligned", report.reply_to_mismatch ? replyToAddress : ""),
-    senderConsistencyItem(report.return_path_domain_mismatch ? "fail" : "pass", "Return-Path domain", report.return_path_domain_mismatch ? "The envelope sender differs from the visible sender domain." : "No mismatch detected between the envelope and visible sender.", report.return_path_domain_mismatch ? "Mismatch detected" : "Aligned", report.return_path_domain_mismatch ? returnPathAddress : ""),
+    senderConsistencyItem(returnPathTone, "Return-Path domain", returnPathDetail, report.return_path_domain_mismatch ? returnPathDmarcPassed ? "Mismatch · DMARC passed" : returnPathDmarcFailed ? "Technical mismatch" : "Weak mismatch" : "Aligned", report.return_path_domain_mismatch ? returnPathAddress : ""),
     senderConsistencyItem(displayNameSpoofed ? "fail" : "pass", "Display name", displayNameSpoofed ? displayNameSpoofing : "No display-name impersonation detected.", displayNameSpoofed ? "Impersonation detected" : "Aligned"),
   ].join("");
   const lookalikeHosts = new Set((report.lookalike_alerts || []).map((alert) => (alert.host || "").toLowerCase()));
@@ -1485,13 +1512,13 @@ function renderLogin(): void {
 
 function riskReasons(report: AnalysisReport): string[] {
   const reasons = new Set<string>();
-  const flags = (report.flags || []).map((flag) => `${flag.field} ${flag.message}`.toLowerCase()).join(" ");
+  const flags = verdictFlags(report).map((flag) => `${flag.field} ${flag.message}`.toLowerCase()).join(" ");
   const semantic = report.phi4_analysis?.analysis;
   const intentSignals = (semantic?.intent_signals || []).join(" ").toLowerCase();
   const requestedAction = (semantic?.requested_action || "").toLowerCase();
   const maliciousLink = (result?: ReputationResult) => ["malicious", "suspicious"].includes((result?.status || "").toLowerCase()) || Number(result?.malicious || 0) > 0 || Number(result?.suspicious || 0) > 0;
 
-  if (report.reply_to_mismatch || report.return_path_domain_mismatch || report.display_name_spoofing || /reply-to|return-path|display.?name|sender.*mismatch|spoof/.test(flags)) reasons.add("Sender mismatch");
+  if (report.reply_to_mismatch || returnPathMismatchForVerdict(report) || report.display_name_spoofing || /reply-to|return-path|display.?name|sender.*mismatch|spoof/.test(flags)) reasons.add("Sender mismatch");
   if ((report.links || []).some((link) => link.display_mismatch || link.is_ip || maliciousLink(report.link_reputation?.[link.url || ""])) || /malicious.*url|suspicious.*url|dangerous.*link|lookalike/.test(flags)) reasons.add("Suspicious link");
   if ((report.attachments || []).some((file) => {
     const anomaly = String(file.anomaly || "").trim().toLowerCase();

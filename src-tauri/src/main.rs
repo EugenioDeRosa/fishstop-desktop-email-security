@@ -346,17 +346,43 @@ fn encode(value: &str) -> String {
     url::form_urlencoded::byte_serialize(value.as_bytes()).collect()
 }
 
+fn parse_google_client_secret(contents: &str) -> Option<String> {
+    let contents = contents.trim();
+    if contents.is_empty() {
+        return None;
+    }
+    if let Ok(document) = serde_json::from_str::<serde_json::Value>(contents) {
+        return document
+            .get("installed")
+            .or_else(|| document.get("web"))
+            .and_then(|client| client.get("client_secret"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|secret| !secret.is_empty())
+            .map(str::to_string);
+    }
+    Some(contents.to_string())
+}
+
 fn google_client_secret() -> Option<String> {
     if let Ok(secret) = std::env::var("FISHSTOP_GOOGLE_CLIENT_SECRET") {
-        if !secret.trim().is_empty() {
-            return Some(secret.trim().to_string());
+        if let Some(secret) = parse_google_client_secret(&secret) {
+            return Some(secret);
         }
     }
 
-    let executable = std::env::current_exe().ok()?;
+    let mut resources = Vec::new();
+    #[cfg(debug_assertions)]
+    resources.push(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("resources")
+            .join(GOOGLE_CLIENT_SECRET_RESOURCE),
+    );
+    let executable = std::env::current_exe().ok();
     #[cfg(target_os = "macos")]
-    let resource = executable
-        .parent()
+    let packaged_resource = executable
+        .as_deref()
+        .and_then(|path| path.parent())
         .and_then(|directory| directory.parent())
         .map(|directory| {
             directory
@@ -365,16 +391,23 @@ fn google_client_secret() -> Option<String> {
                 .join(GOOGLE_CLIENT_SECRET_RESOURCE)
         });
     #[cfg(not(target_os = "macos"))]
-    let resource = executable.parent().map(|directory| {
-        directory
-            .join("resources")
-            .join(GOOGLE_CLIENT_SECRET_RESOURCE)
-    });
+    let packaged_resource = executable
+        .as_deref()
+        .and_then(|path| path.parent())
+        .map(|directory| {
+            directory
+                .join("resources")
+                .join(GOOGLE_CLIENT_SECRET_RESOURCE)
+        });
+    if let Some(resource) = packaged_resource {
+        resources.push(resource);
+    }
 
-    resource
-        .and_then(|path| fs::read_to_string(path).ok())
-        .map(|secret| secret.trim().to_string())
-        .filter(|secret| !secret.is_empty())
+    resources.into_iter().find_map(|path| {
+        fs::read_to_string(path)
+            .ok()
+            .and_then(|secret| parse_google_client_secret(&secret))
+    })
 }
 
 fn launch_browser(url: &str) -> Result<(), String> {

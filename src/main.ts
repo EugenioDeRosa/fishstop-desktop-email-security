@@ -46,10 +46,13 @@ type CopyEvent = { copiedAt: string };
 const USER_STORAGE_KEY = "fishstop.current-user";
 const HISTORY_STORAGE_PREFIX = "fishstop.analysis-history.";
 const REPUTATION_KEYS_PREFIX = "fishstop.reputation-keys.";
-const OLLAMA_MODEL_PREFIX = "fishstop.ollama-model.";
 const INDICATOR_COPY_STORAGE_PREFIX = "fishstop.indicator-copies.";
 const STATISTICS_PERIOD_PREFIX = "fishstop.statistics-period.";
-const DEFAULT_OLLAMA_MODEL = "qwen3:4b-q4_K_M";
+const WINDOWS_CPU_OLLAMA_MODEL = "qwen3:4b-instruct-2507-q4_K_M";
+const PERFORMANCE_OLLAMA_MODEL = "qwen3:4b-q4_K_M";
+const DEFAULT_OLLAMA_MODEL = /Windows|Linux/i.test(navigator.userAgent)
+  ? WINDOWS_CPU_OLLAMA_MODEL
+  : PERFORMANCE_OLLAMA_MODEL;
 const analysisHistoryCache = new Map<string, AnalysisRecord[]>();
 const analysisHistoryReady = new Set<string>();
 const analysisHistoryRequests = new Map<string, Promise<void>>();
@@ -69,8 +72,15 @@ type ProtectionTone = "checking" | "ok" | "warning" | "error";
 type LocalEngineStatus = { static_engine: boolean; python_runtime: boolean; identity_dependencies: boolean };
 type ReputationKeyStatus = { virustotal: boolean; abuseipdb: boolean };
 type HuggingFaceModelInfo = { repository: string; runtime_revision: string; latest_commit?: string; updated_at?: string };
-type OllamaRuntimeStatus = { runtime_ready: boolean; model_ready: boolean; managed: boolean; model: string };
+type OllamaRuntimeStatus = {
+  runtime_ready: boolean; model_ready: boolean; managed: boolean; model: string;
+  platform: string; architecture: string; cpu: string; memory_bytes?: number;
+  accelerator: string; selection_reason: string; loaded_model?: string; loaded_on_gpu: boolean;
+};
 type OllamaModelProgress = { status: string; total?: number; completed?: number };
+type ManagedModelOperation = { phase: "installing" | "removing"; status: string; total?: number; completed?: number };
+let managedModelOperation: ManagedModelOperation | null = null;
+let ollamaRuntimeSnapshot: OllamaRuntimeStatus | null = null;
 
 function escapeHtml(value: string): string {
   return value.replace(/[&<>'"]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[character] || character));
@@ -86,11 +96,6 @@ function legacyReputationKeys(user: GoogleUser): { virustotal: string; abuseipdb
 // The settings shell is rendered before the asynchronous native-keychain lookup.
 // `refreshReputationSettings` fills in availability without exposing secret values.
 function reputationKeys(_user: GoogleUser): { virustotal: string; abuseipdb: string } { return { virustotal: "", abuseipdb: "" }; }
-function ollamaModel(user: GoogleUser): string {
-  const selected = localStorage.getItem(`${OLLAMA_MODEL_PREFIX}${user.sub}`)?.trim();
-  // Migrate the old application default without overriding a deliberate model choice.
-  return !selected || selected === "phi4-mini:3.8b-q4_K_M" ? DEFAULT_OLLAMA_MODEL : selected;
-}
 function maskedSecret(value: string): string {
   return value.length <= 8 ? "••••••••" : `${value.slice(0, 4)}••••••${value.slice(-4)}`;
 }
@@ -139,17 +144,16 @@ function setProtectionStatus(element: HTMLElement, tone: ProtectionTone, message
 }
 
 async function resolveProtectionStatus(user: GoogleUser): Promise<ProtectionStatusSnapshot> {
-  const selectedModel = ollamaModel(user);
   try {
     const [engine, runtime, keys] = await Promise.all([
       invoke<LocalEngineStatus>("local_engine_status"),
-      invoke<OllamaRuntimeStatus>("ollama_runtime_status", { model: selectedModel }),
+      invoke<OllamaRuntimeStatus>("ollama_runtime_status"),
       invoke<ReputationKeyStatus>("reputation_key_status", { userSub: user.sub }),
     ]);
+    ollamaRuntimeSnapshot = runtime;
     if (!engine.static_engine || !engine.python_runtime) return { userSub: user.sub, tone: "error", message: "Analysis engine unavailable" };
-    if (!engine.identity_dependencies) return { userSub: user.sub, tone: "warning", message: "Identity analysis unavailable" };
-    if (!runtime.runtime_ready) return { userSub: user.sub, tone: "warning", message: "Local AI unavailable" };
-    if (!runtime.model_ready) return { userSub: user.sub, tone: "warning", message: "AI model not installed" };
+    if (!engine.identity_dependencies) return { userSub: user.sub, tone: "error", message: "Identity intelligence unavailable" };
+    if (!runtime.runtime_ready || !runtime.model_ready) return { userSub: user.sub, tone: "error", message: runtime.runtime_ready ? "AI model unavailable" : "AI unavailable" };
     const configuredKeys = Number(keys.virustotal) + Number(keys.abuseipdb);
     if (configuredKeys < 2) {
       const missing = 2 - configuredKeys;
@@ -1383,22 +1387,23 @@ function semanticLabel(value: string | undefined): string {
 function setPhiSemanticPanel(container: HTMLElement, analysis: NonNullable<NonNullable<AnalysisReport["phi4_analysis"]>["analysis"]>, model: string, durationMs?: number, generatedContentSummary?: string): void {
   const panel = container.querySelector<HTMLElement>('[data-ai-panel="phi4"]');
   if (!panel) return;
-  const signals = (analysis.intent_signals || []).filter(Boolean);
+  const meaningful = (value: unknown): value is string => typeof value === "string" && Boolean(value.trim()) && !/^[-—•]+$/.test(value.trim());
+  const signals = Array.from(new Set((analysis.intent_signals || []).filter(meaningful).map((value) => value.trim())));
   const corroboration = analysis.corroboration || {};
-  const details = [...(corroboration.details || []), ...(corroboration.caveats || []).map((item) => `Nota: ${item}`)].slice(0, 5);
+  const details = Array.from(new Set([
+    ...(corroboration.details || []).filter(meaningful).map((item) => item.trim()),
+    ...(corroboration.caveats || []).filter(meaningful).map((item) => `Note: ${item.trim()}`),
+  ])).slice(0, 5);
+  const signalEvidence = meaningful(analysis.signal_evidence) ? analysis.signal_evidence.trim() : "";
   const contentSummary = generatedContentSummary?.replace(/\s+/g, " ").trim() || analysis.content_summary || analysis.explanation || "Content analysis complete.";
-  panel.innerHTML = `<p class="page-kicker">OLLAMA · ${escapeHtml(model)}</p><h3>Content summary</h3><p class="semantic-summary">${escapeHtml(contentSummary)}</p>${signals.length || details.length ? `<details class="semantic-details"><summary>Reasoning and evidence <span>${signals.length + details.length}</span></summary>${signals.length ? `<p><b>Signals:</b> ${escapeHtml(signals.map(semanticLabel).join(" · "))}</p>` : ""}${analysis.signal_evidence ? `<p><b>Context:</b> ${escapeHtml(analysis.signal_evidence)}</p>` : ""}${details.length ? `<ul>${details.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>` : ""}</details>` : ""}<small class="semantic-meta">${durationMs ? `${(durationMs / 1000).toFixed(1)} s · ` : ""}${corroboration.supports_decision ? "Independent evidence is available" : "Assessment should be confirmed with technical evidence"}</small>`;
+  panel.innerHTML = `<p class="page-kicker">OLLAMA · ${escapeHtml(model)}</p><h3>Content summary</h3><p class="semantic-summary">${escapeHtml(contentSummary)}</p>${signals.length || details.length || signalEvidence ? `<details class="semantic-details"><summary>Reasoning and evidence <span>${signals.length + details.length + Number(Boolean(signalEvidence))}</span></summary>${signals.length ? `<p><b>Signals:</b> ${escapeHtml(signals.map(semanticLabel).join(" · "))}</p>` : ""}${signalEvidence ? `<p><b>Context:</b> ${escapeHtml(signalEvidence)}</p>` : ""}${details.length ? `<ul>${details.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>` : ""}</details>` : ""}<small class="semantic-meta">${durationMs ? `${(durationMs / 1000).toFixed(1)} s · ` : ""}${corroboration.supports_decision ? "Independent evidence is available" : "Assessment should be confirmed with technical evidence"}</small>`;
 }
 
 async function runAiAnalysis(user: GoogleUser, report: AnalysisReport, recordId: string | null, container: HTMLElement, startedAt: number, onSettled?: (engine: "identity" | "phi4" | "content-summary" | "summary") => void): Promise<void> {
-  const model = ollamaModel(user);
+  const runtime = await invoke<OllamaRuntimeStatus>("ollama_runtime_status").catch(() => ollamaRuntimeSnapshot);
+  if (runtime) ollamaRuntimeSnapshot = runtime;
+  const model = runtime?.model || DEFAULT_OLLAMA_MODEL;
   renderAiPanels(container, model);
-  // This summary only depends on the email body, so it can run while the
-  // separate local NER worker starts. The verdict summary remains sequential
-  // because it relies on the semantic result and deterministic verdict.
-  const contentSummaryPromise = invoke<NonNullable<AnalysisReport["ai_content_summary"]>>("analyze_content_summary", { report, model })
-    .then((value) => ({ value }))
-    .catch((error) => ({ error }));
   await invoke<NonNullable<AnalysisReport["identity_analysis"]>>("analyze_identity", { report }).then((value) => {
     report.identity_analysis = value;
     setIdentityPanel(container, value);
@@ -1409,7 +1414,7 @@ async function runAiAnalysis(user: GoogleUser, report: AnalysisReport, recordId:
     onSettled?.("identity");
   });
   const phiStartedAt = performance.now();
-  await invoke<NonNullable<AnalysisReport["phi4_analysis"]>>("analyze_phi4", { report, model }).then((value) => {
+  await invoke<NonNullable<AnalysisReport["phi4_analysis"]>>("analyze_phi4", { report }).then((value) => {
     report.phi4_analysis = { ...value, model: value.model || model, duration_ms: Math.round(performance.now() - phiStartedAt) };
     const analysis = value.analysis || {};
     setPhiSemanticPanel(container, analysis, value.model || model, report.phi4_analysis.duration_ms, report.ai_content_summary?.summary);
@@ -1420,27 +1425,17 @@ async function runAiAnalysis(user: GoogleUser, report: AnalysisReport, recordId:
     onSettled?.("phi4");
   });
   if (report.phi4_analysis?.status === "ok" && report.phi4_analysis.analysis) {
-    const contentSummary = await contentSummaryPromise;
-    if ("value" in contentSummary) {
-      report.ai_content_summary = contentSummary.value;
-      setPhiSemanticPanel(container, report.phi4_analysis.analysis, report.phi4_analysis.model || model, report.phi4_analysis.duration_ms, contentSummary.value.summary);
-    } else {
-      report.ai_content_summary = { status: "error", message: String(contentSummary.error), model };
-    }
+    const structuredSummary = (report.phi4_analysis.analysis.content_summary || report.phi4_analysis.analysis.explanation || "Content analysis complete.").replace(/\s+/g, " ").trim();
+    report.ai_content_summary = { status: "ok", summary: structuredSummary, model, backend: "ollama-structured" };
+    setPhiSemanticPanel(container, report.phi4_analysis.analysis, report.phi4_analysis.model || model, report.phi4_analysis.duration_ms, structuredSummary);
     onSettled?.("content-summary");
-    const summaryReport = { ...report, summary_verdict: assessment(report).label };
-    await invoke<NonNullable<AnalysisReport["ai_summary"]>>("analyze_summary", { report: summaryReport, model }).then((value) => {
-      report.ai_summary = value;
-      onSettled?.("summary");
-    }).catch((error) => {
-      report.ai_summary = { status: "error", message: String(error), model };
-      onSettled?.("summary");
-    });
+    const policySummary = assessment({ ...report, ai_summary: undefined }).detail;
+    report.ai_summary = { status: "ok", summary: policySummary, model, backend: "local-policy" };
+    onSettled?.("summary");
   } else {
-    const contentSummary = await contentSummaryPromise;
-    report.ai_content_summary = "value" in contentSummary
-      ? contentSummary.value
-      : { status: "error", message: String(contentSummary.error), model };
+    const message = report.phi4_analysis?.message || "Semantic analysis unavailable.";
+    report.ai_content_summary = { status: "error", message, model };
+    report.ai_summary = { status: "error", message, model };
     onSettled?.("content-summary");
     onSettled?.("summary");
   }
@@ -1554,18 +1549,20 @@ function contentFor(section: Section, user: GoogleUser): string {
   const dayFormatter = new Intl.DateTimeFormat("en-US", { weekday: "short" });
   const activity = Array.from({ length: 7 }, (_, index) => { const day = new Date(); day.setHours(0, 0, 0, 0); day.setDate(day.getDate() - (6 - index)); const count = filteredHistory.filter((record) => { const date = new Date(record.analyzedAt); date.setHours(0, 0, 0, 0); return date.getTime() === day.getTime(); }).length; return { label: dayFormatter.format(day).replace(".", ""), count }; });
   const maxActivity = Math.max(1, ...activity.map((item) => item.count));
-  const ollamaRuns = history.filter((record) => record.report.phi4_analysis?.model);
-  const modelStats = Array.from(ollamaRuns.reduce((groups, record) => { const analysis = record.report.phi4_analysis!; const model = analysis.model || DEFAULT_OLLAMA_MODEL; const current = groups.get(model) || { count: 0, duration: 0, timed: 0 }; current.count += 1; if (analysis.duration_ms) { current.duration += analysis.duration_ms; current.timed += 1; } groups.set(model, current); return groups; }, new Map<string, { count: number; duration: number; timed: number }>())).map(([model, stat]) => ({ model, ...stat }));
-  const periodLabels: Record<StatisticsPeriod, string> = { today: "Today", week: "Last 7 days", month: "Last month", "3m": "Last 3 months", "6m": "Last 6 months", "9m": "Last 9 months", "12m": "Last 12 months", all: "All" };
-  const periodOrder: StatisticsPeriod[] = ["today", "week", "month", "3m", "6m", "9m", "12m", "all"];
-  const periodChoices = periodOrder.map((period) => `<button class="statistics-period-option" data-statistics-period="${period}" type="button" role="option" aria-selected="${period === selectedPeriod}">${periodLabels[period]}${period === selectedPeriod ? "<span aria-hidden=\"true\">✓</span>" : ""}</button>`).join("");
+  const periodLabels: Record<StatisticsPeriod, string> = { today: "Today", week: "Last 7 days", month: "Last month", "3m": "Last 3 months", "6m": "Last 6 months", "9m": "Last 9 months", "12m": "Last 12 months", all: "Saved history" };
+  const periodChoices = (Object.keys(periodLabels) as StatisticsPeriod[]).map((period) => `<button class="statistics-period ${period === selectedPeriod ? "active" : ""}" data-statistics-period="${period}" type="button">${periodLabels[period]}</button>`).join("");
   const reasonItems = reasonCounts.length
     ? reasonCounts.slice(0, 6).map(({ label, count }) => `<li><span>${escapeHtml(label)} <b>${count}</b></span><i><em style="width:${(count / reasonCounts[0].count) * 100}%"></em></i></li>`).join("")
     : `<li class="statistics-empty">No risk reasons were recorded in this period.</li>`;
   if (section === "analyse") return analysisPageContent(user);
   if (section === "history") return `<div class="page-heading"><div><p class="page-kicker">PERSONAL WORKSPACE</p><h1>Analysis history</h1><p>Analyses are stored only for this account, on this device.</p></div><div class="history-actions"><span class="period">${history.length} ANALYSES</span>${history.length ? `<button id="clear-history" type="button">Clear history</button>` : ""}</div></div>${history.length ? `<section class="history-list">${history.map((record) => { const high = (record.report.flags || []).filter((flag) => flag.level === "HIGH").length; return `<button class="history-item" data-open-history="${record.id}" type="button"><span class="history-risk ${high ? "high" : "clear"}">${high ? `${high} HIGH` : "OK"}</span><span><strong>${escapeHtml(record.report.subject || "No subject")}</strong><small>${escapeHtml(record.report.from_ || "Sender unavailable")} · ${formatAnalysisDate(record.analyzedAt)}</small></span><b>Open →</b></button>`; }).join("")}</section>` : `<section class="empty-state"><span class="empty-icon">⌁</span><h2>No analyses yet.</h2><p>Your first EML analysis will appear here.</p><button class="soft-action" data-go="analyse" type="button">Analyse an email <span>→</span></button></section>`}`;
-  if (section === "statistics") return `<div class="page-heading statistics-heading"><div><p class="page-kicker">RISK OVERVIEW</p><h1>Statistics</h1><p>Signals, investigation activity and performance for this account.</p></div><div class="statistics-filter"><span>Period</span><div class="statistics-period-menu"><button class="statistics-period-trigger" id="statistics-period-trigger" type="button" aria-haspopup="listbox" aria-controls="statistics-period-options" aria-expanded="false">${periodLabels[selectedPeriod]}<i aria-hidden="true"></i></button><div class="statistics-period-options" id="statistics-period-options" role="listbox" aria-label="Statistics period" hidden>${periodChoices}</div></div></div></div><section class="metrics stats-metrics"><article><span>Emails analysed</span><strong>${filteredHistory.length}</strong><small>${periodLabels[selectedPeriod]}</small></article><article><span>Average analysis time</span><strong>${formatDuration(averageDuration)}</strong><small>${timedAnalyses.length ? `Based on ${timedAnalyses.length} completed analyses` : "Available after new analyses"}</small></article><article><span>Indicators copied</span><strong>${filteredCopyEvents.length}</strong><small>Copied individually from the Indicators section</small></article></section><section class="stats-layout"><article class="risk-breakdown"><div><p class="page-kicker">DISTRIBUTION</p><h2>Analysis outcomes</h2></div><div class="risk-bars"><div><span>High risk <b>${highRiskCount}</b></span><i><em class="high" style="width:${filteredHistory.length ? (highRiskCount / filteredHistory.length) * 100 : 0}%"></em></i></div><div><span>To review <b>${mediumRiskCount}</b></span><i><em class="medium" style="width:${filteredHistory.length ? (mediumRiskCount / filteredHistory.length) * 100 : 0}%"></em></i></div><div><span>Likely legitimate <b>${clearCount}</b></span><i><em class="clear" style="width:${filteredHistory.length ? (clearCount / filteredHistory.length) * 100 : 0}%"></em></i></div></div></article><article class="activity-card"><div><p class="page-kicker">ACTIVITY</p><h2>Last 7 days</h2></div><div class="activity-chart">${activity.map((item) => `<div><i style="height:${Math.max(5, (item.count / maxActivity) * 100)}%" title="${item.count} analyses"></i><span>${item.label}</span></div>`).join("")}</div></article></section><section class="risk-reasons"><div><p class="page-kicker">RISK PATTERNS</p><h2>Top risk reasons</h2><p>Signals that appeared most often in the selected period.</p></div><ol>${reasonItems}</ol></section>`;
-  if (section === "settings") { const keys = reputationKeys(user); const selectedModel = ollamaModel(user); const reputationReady = Boolean(keys.virustotal || keys.abuseipdb); const keyRow = (name: string, value: string) => `<li class="credential-${value ? "ready" : "missing"}"><i>${value ? "✓" : "—"}</i><div><strong>${name}</strong><small>${value ? `Stored locally · ${escapeHtml(maskedSecret(value))}` : "Key not configured"}</small></div><b>${value ? "Ready" : "Required"}</b></li>`; return `<div class="page-heading"><div><p class="page-kicker">LOCAL CONFIGURATION</p><h1>Settings</h1><p>Intelligence tokens and a lab for local Ollama models.</p></div></div><div class="settings-grid"><section class="settings-card settings-reputation"><p class="page-kicker">EXTERNAL INTELLIGENCE</p><h2>Reputation</h2><p class="settings-note">Only technical indicators are sent to external services — never the EML file or email body.</p><ul class="credential-list">${keyRow("VirusTotal API key", keys.virustotal)}${keyRow("AbuseIPDB API key", keys.abuseipdb)}</ul><button class="soft-action edit-credentials" id="edit-reputation-keys" type="button">${reputationReady ? "Edit keys" : "Configure keys"}</button><form id="reputation-settings" ${reputationReady ? "hidden" : ""}><label>VirusTotal API key<input name="virustotal" type="password" autocomplete="new-password" placeholder="${keys.virustotal ? "Leave empty to keep the current key" : "Enter the VirusTotal token"}" /></label><label>AbuseIPDB API key<input name="abuseipdb" type="password" autocomplete="new-password" placeholder="${keys.abuseipdb ? "Leave empty to keep the current key" : "Enter the AbuseIPDB token"}" /></label><div><button class="primary-action" type="submit">Save changes</button>${reputationReady ? `<button class="cancel-credentials" id="cancel-reputation-edit" type="button">Cancel</button>` : ""}<span id="settings-status" aria-live="polite"></span></div></form></section><section class="settings-card ollama-lab"><p class="page-kicker">OLLAMA LAB</p><h2>Semantic model</h2><p class="settings-note">Only models already installed in Ollama are shown. The selection will be used for the next analysis.</p><form id="ollama-settings"><label for="ollama-model">Installed model<select id="ollama-model" name="model" disabled><option value="${escapeHtml(selectedModel)}">Loading local models…</option></select></label><div class="ollama-actions"><button class="soft-action" id="refresh-ollama-models" type="button">Refresh list</button><button class="primary-action" type="submit">Use this model</button></div><p class="settings-status" id="ollama-status" aria-live="polite"></p></form><div class="model-benchmark"><div><h3>Local comparison</h3><span>${modelStats.length ? `${ollamaRuns.length} analyses` : "No data"}</span></div>${modelStats.length ? `<ul>${modelStats.map((stat) => `<li><strong>${escapeHtml(stat.model)}</strong><small>${stat.count} analyses${stat.timed ? ` · average ${(stat.duration / stat.timed / 1000).toFixed(1)} s` : " · timings available after new analyses"}</small></li>`).join("")}</ul>` : `<p>Analyse the same email with the models you want to compare. Usage and average time will appear here; compare verdict quality on test cases with known outcomes.</p>`}</div></section><section class="settings-card model-provenance model-provenance-card" aria-live="polite"><div><p class="page-kicker">CONTEXTUAL TEXT ANALYSIS</p><h2>Hugging Face model</h2></div><p id="bert-model-provenance">Loading model provenance…</p></section></div>`; }
+  if (section === "statistics") return `<div class="page-heading statistics-heading"><div><p class="page-kicker">RISK OVERVIEW</p><h1>Statistics</h1><p>Signals, investigation activity and performance for this account.</p></div><div class="statistics-periods" role="group" aria-label="Statistics period">${periodChoices}</div></div><section class="metrics stats-metrics"><article><span>Emails analysed</span><strong>${filteredHistory.length}</strong><small>${periodLabels[selectedPeriod]}</small></article><article><span>Average analysis time</span><strong>${formatDuration(averageDuration)}</strong><small>${timedAnalyses.length ? `Based on ${timedAnalyses.length} completed analyses` : "Available after new analyses"}</small></article><article><span>Indicators copied</span><strong>${filteredCopyEvents.length}</strong><small>Copied individually from the Indicators section</small></article></section><section class="stats-layout"><article class="risk-breakdown"><div><p class="page-kicker">DISTRIBUTION</p><h2>Analysis outcomes</h2></div><div class="risk-bars"><div><span>High risk <b>${highRiskCount}</b></span><i><em class="high" style="width:${filteredHistory.length ? (highRiskCount / filteredHistory.length) * 100 : 0}%"></em></i></div><div><span>To review <b>${mediumRiskCount}</b></span><i><em class="medium" style="width:${filteredHistory.length ? (mediumRiskCount / filteredHistory.length) * 100 : 0}%"></em></i></div><div><span>Likely legitimate <b>${clearCount}</b></span><i><em class="clear" style="width:${filteredHistory.length ? (clearCount / filteredHistory.length) * 100 : 0}%"></em></i></div></div></article><article class="activity-card"><div><p class="page-kicker">ACTIVITY</p><h2>Last 7 days</h2></div><div class="activity-chart">${activity.map((item) => `<div><i style="height:${Math.max(5, (item.count / maxActivity) * 100)}%" title="${item.count} analyses"></i><span>${item.label}</span></div>`).join("")}</div></article></section><section class="risk-reasons"><div><p class="page-kicker">RISK PATTERNS</p><h2>Top risk reasons</h2><p>Signals that appeared most often in the selected period.</p></div><ol>${reasonItems}</ol></section>`;
+  if (section === "settings") {
+    const keys = reputationKeys(user);
+    const reputationReady = Boolean(keys.virustotal || keys.abuseipdb);
+    const keyRow = (name: string, value: string) => `<li class="credential-${value ? "ready" : "missing"}"><i>${value ? "✓" : "—"}</i><div><strong>${name}</strong><small>${value ? `Stored locally · ${escapeHtml(maskedSecret(value))}` : "Key not configured"}</small></div><b>${value ? "Ready" : "Required"}</b></li>`;
+    return `<div class="page-heading"><div><p class="page-kicker">LOCAL CONFIGURATION</p><h1>Settings</h1><p>External intelligence and local analysis runtime.</p></div></div><div class="settings-grid"><section class="settings-card settings-reputation"><p class="page-kicker">EXTERNAL INTELLIGENCE</p><h2>Reputation</h2><p class="settings-note">Only technical indicators are sent to external services — never the EML file or email body.</p><ul class="credential-list">${keyRow("VirusTotal API key", keys.virustotal)}${keyRow("AbuseIPDB API key", keys.abuseipdb)}</ul><button class="soft-action edit-credentials" id="edit-reputation-keys" type="button">${reputationReady ? "Edit keys" : "Configure keys"}</button><form id="reputation-settings" ${reputationReady ? "hidden" : ""}><label>VirusTotal API key<input name="virustotal" type="password" autocomplete="new-password" placeholder="${keys.virustotal ? "Leave empty to keep the current key" : "Enter the VirusTotal token"}" /></label><label>AbuseIPDB API key<input name="abuseipdb" type="password" autocomplete="new-password" placeholder="${keys.abuseipdb ? "Leave empty to keep the current key" : "Enter the AbuseIPDB token"}" /></label><div><button class="primary-action" type="submit">Save changes</button>${reputationReady ? `<button class="cancel-credentials" id="cancel-reputation-edit" type="button">Cancel</button>` : ""}<span id="settings-status" aria-live="polite"></span></div></form></section><section class="settings-card ollama-lab"><p class="page-kicker">LOCAL AI ENVIRONMENT</p><h2>Machine and automatic model</h2><p class="settings-note">FishStop selects one approved quantized Qwen model automatically. Manual model selection is disabled.</p><div class="machine-profile" id="machine-profile" aria-live="polite"><p>Reading machine information…</p></div></section><section class="settings-card model-provenance model-provenance-card" aria-live="polite"><div><p class="page-kicker">CONTEXTUAL TEXT ANALYSIS</p><h2>Hugging Face model</h2></div><p id="bert-model-provenance">Loading model provenance…</p></section></div>`;
+  }
   return `<div class="page-heading dashboard-heading"><div><p class="page-kicker">YOUR PRIVATE WORKSPACE</p><h1>${dashboardGreeting()}, ${firstName}.</h1><p>Keep track of your inbox security.</p></div></div><section class="welcome-card"><div><p class="page-kicker">READY WHEN YOU ARE</p><h2>Received a suspicious email?</h2><p>Upload the EML file and let FishStop inspect its risk signals.</p><button class="primary-action" data-go="analyse" type="button">Analyse a file <span>→</span></button></div><div class="mail-art" aria-hidden="true"><span></span><i></i></div></section><div class="overview-row"><section class="mini-panel"><div class="panel-top"><h2>Recent activity</h2><button data-go="history" type="button">View history</button></div><div class="no-activity"><span>✓</span><div><strong>All clear</strong><p>You have not run an analysis yet.</p></div></div></section><section class="mini-panel security-panel"><span class="lock">⌾</span><h2>Your data stays yours.</h2><p>History and statistics are separated by account.</p></section></div>`;
 }
 
@@ -1576,6 +1573,10 @@ function renderDashboard(user: GoogleUser, section: Section = "dashboard"): void
     void ensureAnalysisHistory(user).then(() => {
       if (storedUser()?.sub === user.sub) renderDashboard(user, section);
     });
+  }
+  if (!phi4WarmupRequested) {
+    phi4WarmupRequested = true;
+    void invoke("warm_phi4").catch(() => { /* Ollama remains optional until it is running. */ });
   }
   const labels: Record<Section, string> = { dashboard: "Dashboard", analyse: "Analyse", history: "History", statistics: "Statistics", settings: "Settings" };
   const icons: Record<Section, string> = { dashboard: "⌂", analyse: searchIconMarkup(), history: "◴", statistics: "◔", settings: "⚙" };
@@ -1704,77 +1705,129 @@ function renderDashboard(user: GoogleUser, section: Section = "dashboard"): void
     document.querySelector<HTMLFormElement>("#reputation-settings")?.setAttribute("hidden", "");
   });
   document.querySelector<HTMLFormElement>("#reputation-settings")?.addEventListener("submit", (event) => {
-    event.preventDefault(); const form = new FormData(event.currentTarget as HTMLFormElement);
+    event.preventDefault();
+    const formElement = event.currentTarget as HTMLFormElement;
+    const form = new FormData(formElement);
     const virustotal = String(form.get("virustotal") || "").trim();
     const abuseipdb = String(form.get("abuseipdb") || "").trim();
     const status = document.querySelector<HTMLElement>("#settings-status");
     if (status) status.textContent = "Saving in the system keychain…";
     void invoke("save_reputation_keys", { userSub: user.sub, virustotal, abuseipdb }).then(async () => {
       if (status) status.textContent = "Credentials saved securely.";
-      (event.currentTarget as HTMLFormElement).reset();
+      formElement.reset();
       await refreshReputationSettings(user);
       void refreshProtectionStatus(user, true);
     }).catch((error) => { if (status) status.textContent = `Could not save credentials: ${String(error)}`; });
   });
-  const ollamaSelect = document.querySelector<HTMLSelectElement>("#ollama-model");
-  const ollamaStatus = document.querySelector<HTMLElement>("#ollama-status");
   const ollamaLab = document.querySelector<HTMLElement>(".ollama-lab");
-  if (ollamaLab) ollamaLab.insertAdjacentHTML("beforeend", `<section class="managed-model" aria-live="polite"><p class="page-kicker">FISHSTOP AI</p><h3>Qwen locale</h3><p id="managed-model-status">Checking the bundled AI runtime…</p><div class="ollama-actions"><button class="primary-action" id="install-managed-qwen" type="button" hidden>Install model</button><button class="soft-action" id="remove-managed-qwen" type="button" hidden>Remove model</button></div></section>`);
+  const machineProfile = document.querySelector<HTMLElement>("#machine-profile");
+  if (ollamaLab) ollamaLab.insertAdjacentHTML("beforeend", `<section class="managed-model" aria-live="polite"><p class="page-kicker">FISHSTOP AI</p><h3>Qwen locale</h3><p id="managed-model-status">Checking the bundled AI runtime…</p><div class="managed-model-progress" id="managed-model-progress" hidden><div><span id="managed-model-progress-label">Preparing download…</span><strong id="managed-model-progress-value">0%</strong></div><div class="managed-model-progress-track" id="managed-model-progress-track" role="progressbar" aria-label="Qwen download progress" aria-valuemin="0" aria-valuemax="100"><i id="managed-model-progress-fill"></i></div></div><div class="ollama-actions managed-model-actions"><button class="primary-action" id="install-managed-qwen" type="button" disabled>Checking…</button><button class="soft-action" id="remove-managed-qwen" type="button" hidden>Remove model</button></div></section>`);
   const managedModelStatus = document.querySelector<HTMLElement>("#managed-model-status");
   const installManagedQwen = document.querySelector<HTMLButtonElement>("#install-managed-qwen");
   const removeManagedQwen = document.querySelector<HTMLButtonElement>("#remove-managed-qwen");
+  const managedProgress = document.querySelector<HTMLElement>("#managed-model-progress");
+  const managedProgressLabel = document.querySelector<HTMLElement>("#managed-model-progress-label");
+  const managedProgressValue = document.querySelector<HTMLElement>("#managed-model-progress-value");
+  const managedProgressTrack = document.querySelector<HTMLElement>("#managed-model-progress-track");
+  const managedProgressFill = document.querySelector<HTMLElement>("#managed-model-progress-fill");
+  const renderManagedOperation = (): boolean => {
+    if (!managedModelOperation || !managedModelStatus || !installManagedQwen || !removeManagedQwen) return false;
+    const installing = managedModelOperation.phase === "installing";
+    installManagedQwen.hidden = !installing;
+    installManagedQwen.disabled = true;
+    installManagedQwen.textContent = "Installing Qwen…";
+    removeManagedQwen.hidden = installing;
+    removeManagedQwen.disabled = true;
+    removeManagedQwen.textContent = "Removing…";
+    managedModelStatus.textContent = managedModelOperation.status;
+    if (managedProgress) managedProgress.hidden = !installing;
+    if (installing && managedProgress && managedProgressLabel && managedProgressValue && managedProgressTrack && managedProgressFill) {
+      const { completed, total } = managedModelOperation;
+      const determinate = typeof completed === "number" && typeof total === "number" && total > 0;
+      const percent = determinate ? Math.max(0, Math.min(100, Math.floor(completed / total * 100))) : 0;
+      managedProgressLabel.textContent = managedModelOperation.status || "Downloading Qwen…";
+      managedProgressValue.textContent = determinate ? `${percent}%` : "…";
+      managedProgress.classList.toggle("is-indeterminate", !determinate);
+      managedProgressFill.style.width = determinate ? `${percent}%` : "35%";
+      if (determinate) managedProgressTrack.setAttribute("aria-valuenow", String(percent));
+      else managedProgressTrack.removeAttribute("aria-valuenow");
+    }
+    return true;
+  };
   const refreshManagedModel = async () => {
+    if (renderManagedOperation()) return;
+    if (managedModelStatus && installManagedQwen && removeManagedQwen) {
+      managedModelStatus.textContent = "Checking the bundled AI runtime…";
+      installManagedQwen.hidden = false;
+      installManagedQwen.disabled = true;
+      installManagedQwen.textContent = "Checking…";
+      removeManagedQwen.hidden = true;
+      removeManagedQwen.disabled = true;
+      if (managedProgress) managedProgress.hidden = true;
+    }
     try {
       const runtime = await invoke<OllamaRuntimeStatus>("ollama_runtime_status");
+      ollamaRuntimeSnapshot = runtime;
+      if (machineProfile) {
+        const memory = runtime.memory_bytes ? `${(runtime.memory_bytes / 1024 ** 3).toFixed(1)} GB` : "Unavailable";
+        const loaded = runtime.loaded_model || "Not loaded";
+        machineProfile.innerHTML = `<dl><div><dt>System</dt><dd>${escapeHtml(runtime.platform)} · ${escapeHtml(runtime.architecture)}</dd></div><div><dt>Processor</dt><dd>${escapeHtml(runtime.cpu)}</dd></div><div><dt>Memory</dt><dd>${memory}</dd></div><div><dt>Execution</dt><dd>${escapeHtml(runtime.accelerator)}${runtime.loaded_on_gpu ? " · accelerated" : ""}</dd></div><div><dt>Selected model</dt><dd><strong>${escapeHtml(runtime.model)}</strong></dd></div><div><dt>Loaded model</dt><dd>${escapeHtml(loaded)}</dd></div></dl><p>${escapeHtml(runtime.selection_reason)}</p>`;
+      }
       if (!managedModelStatus || !installManagedQwen || !removeManagedQwen) return;
-      managedModelStatus.textContent = runtime.model_ready
-        ? `${runtime.model} is installed and ready.`
-        : runtime.runtime_ready
-          ? `Install ${runtime.model} to enable local semantic analysis.`
-          : "Bundled AI runtime is unavailable.";
-      installManagedQwen.toggleAttribute("hidden", runtime.model_ready);
-      removeManagedQwen.toggleAttribute("hidden", !runtime.model_ready);
+      if (renderManagedOperation()) return;
+      installManagedQwen.textContent = "Install Qwen";
+      removeManagedQwen.textContent = "Remove model";
+      removeManagedQwen.disabled = false;
+      if (runtime.model_ready) {
+        managedModelStatus.textContent = `${runtime.model} is installed and ready.`;
+        installManagedQwen.hidden = true;
+        removeManagedQwen.hidden = false;
+      } else {
+        managedModelStatus.textContent = runtime.runtime_ready ? `Install ${runtime.model} to enable local semantic analysis.` : "Bundled AI runtime is unavailable.";
+        installManagedQwen.hidden = false;
+        installManagedQwen.disabled = !runtime.runtime_ready;
+        removeManagedQwen.hidden = true;
+      }
     } catch (error) {
+      if (machineProfile) machineProfile.innerHTML = `<p>Machine information unavailable: ${escapeHtml(String(error))}</p>`;
       if (managedModelStatus) managedModelStatus.textContent = `AI runtime unavailable: ${String(error)}`;
-      installManagedQwen?.setAttribute("hidden", "");
-      removeManagedQwen?.setAttribute("hidden", "");
+      if (installManagedQwen) { installManagedQwen.hidden = false; installManagedQwen.disabled = true; installManagedQwen.textContent = "Install unavailable"; }
+      if (removeManagedQwen) removeManagedQwen.hidden = true;
     }
   };
   installManagedQwen?.addEventListener("click", async () => {
-    if (!managedModelStatus || !installManagedQwen) return;
-    installManagedQwen.disabled = true;
-    const unlisten = await listen<OllamaModelProgress>("ollama-model-progress", (event) => { const { status, completed, total } = event.payload; const progress = total && completed !== undefined ? ` ${Math.floor(completed / total * 100)}%` : ""; managedModelStatus.textContent = `${status}${progress}`; });
-    try { await invoke("install_default_ollama_model"); await loadOllamaModels(); await refreshManagedModel(); void refreshProtectionStatus(user, true); }
-    catch (error) { managedModelStatus.textContent = `Qwen installation failed: ${String(error)}`; }
-    finally { unlisten(); installManagedQwen.disabled = false; }
+    if (!managedModelStatus || !installManagedQwen || managedModelOperation) return;
+    managedModelOperation = { phase: "installing", status: "Preparing Qwen download…" };
+    renderManagedOperation();
+    let unlisten: (() => void) | null = null;
+    let installationError: unknown = null;
+    try {
+      unlisten = await listen<OllamaModelProgress>("ollama-model-progress", (event) => {
+        managedModelOperation = { phase: "installing", ...event.payload };
+        renderManagedOperation();
+      });
+      await invoke("install_default_ollama_model");
+    } catch (error) {
+      installationError = error;
+    } finally {
+      unlisten?.();
+      managedModelOperation = null;
+      await refreshManagedModel();
+    }
+    if (installationError) managedModelStatus.textContent = `Qwen installation failed: ${String(installationError)}`;
+    else void refreshProtectionStatus(user, true);
   });
   removeManagedQwen?.addEventListener("click", async () => {
-    if (!managedModelStatus) return;
-    try { await invoke("remove_default_ollama_model"); await loadOllamaModels(); await refreshManagedModel(); void refreshProtectionStatus(user, true); }
-    catch (error) { managedModelStatus.textContent = `Could not remove Qwen: ${String(error)}`; }
+    if (!managedModelStatus || managedModelOperation) return;
+    managedModelOperation = { phase: "removing", status: "Removing Qwen from this device…" };
+    renderManagedOperation();
+    let removalError: unknown = null;
+    try { await invoke("remove_default_ollama_model"); }
+    catch (error) { removalError = error; }
+    finally { managedModelOperation = null; await refreshManagedModel(); }
+    if (removalError) managedModelStatus.textContent = `Could not remove Qwen: ${String(removalError)}`;
+    else void refreshProtectionStatus(user, true);
   });
-  const loadOllamaModels = async () => {
-    if (!ollamaSelect) return;
-    ollamaSelect.disabled = true; if (ollamaStatus) ollamaStatus.textContent = "Looking for installed Ollama models…";
-    try {
-      const models = await invoke<string[]>("list_ollama_models");
-      const selected = ollamaModel(user);
-      const options = Array.from(new Set([selected, ...models]));
-      ollamaSelect.innerHTML = options.length ? options.map((model) => `<option value="${escapeHtml(model)}" ${model === selected ? "selected" : ""}>${escapeHtml(model)}</option>`).join("") : `<option value="${escapeHtml(selected)}">${escapeHtml(selected)}</option>`;
-      if (ollamaStatus) ollamaStatus.textContent = models.length ? `${models.length} local models found.` : "No models found: run ollama pull <model-name> in the terminal.";
-    } catch (error) {
-      ollamaSelect.innerHTML = `<option value="${escapeHtml(ollamaModel(user))}">${escapeHtml(ollamaModel(user))}</option>`;
-      if (ollamaStatus) ollamaStatus.textContent = `Ollama unavailable: ${String(error)}`;
-    } finally { ollamaSelect.disabled = false; }
-  };
-  document.querySelector<HTMLButtonElement>("#refresh-ollama-models")?.addEventListener("click", () => { void loadOllamaModels(); });
-  document.querySelector<HTMLFormElement>("#ollama-settings")?.addEventListener("submit", (event) => {
-    event.preventDefault(); const model = ollamaSelect?.value.trim(); if (!model) return;
-    localStorage.setItem(`${OLLAMA_MODEL_PREFIX}${user.sub}`, model);
-    if (ollamaStatus) ollamaStatus.textContent = `${model} will be used for the next analysis.`;
-    void refreshProtectionStatus(user, true);
-  });
-  if (ollamaSelect) void loadOllamaModels();
   void refreshManagedModel();
   const bertProvenance = document.querySelector<HTMLElement>("#bert-model-provenance");
   if (bertProvenance) {

@@ -19,8 +19,10 @@ OLLAMA_CHAT_ENDPOINT = os.getenv("OLLAMA_CHAT_ENDPOINT", "http://localhost:11434
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3:4b-q4_K_M")
 OLLAMA_KEEP_ALIVE = os.getenv("OLLAMA_KEEP_ALIVE", "1m")
 OLLAMA_NUM_CTX = int(os.getenv("OLLAMA_NUM_CTX", "4096"))
-OLLAMA_NUM_PREDICT = int(os.getenv("OLLAMA_NUM_PREDICT", "220"))
+OLLAMA_NUM_PREDICT = int(os.getenv("OLLAMA_NUM_PREDICT", "320"))
 OLLAMA_DISABLE_THINKING = os.getenv("OLLAMA_DISABLE_THINKING", "1").strip().lower() not in {"0", "false", "no"}
+OLLAMA_REQUEST_TIMEOUT = int(os.getenv("OLLAMA_REQUEST_TIMEOUT", "90"))
+OLLAMA_SINGLE_PASS = os.getenv("OLLAMA_SINGLE_PASS", "0").strip().lower() in {"1", "true", "yes"}
 PHI4_PROMPT_RESERVED_TOKENS = int(os.getenv("PHI4_PROMPT_RESERVED_TOKENS", "1600"))
 PHI4_CHARS_PER_TOKEN = float(os.getenv("PHI4_CHARS_PER_TOKEN", "3"))
 PHI4_BODY_CHUNK_CHARS = int(os.getenv(
@@ -193,9 +195,10 @@ TASK_INSTRUCTIONS = (
     "Before returning JSON, verify that every non-none action has an exact supporting phrase, that its channel is supported by META, and that no evidence was taken from a footer or TECHNICAL EVIDENCE. "
     "Evidence fields must be copied verbatim in the email's original language: never translate or paraphrase them. "
     "Evidence may come from the email subject or body only, never from TECHNICAL EVIDENCE. "
-    "signal_evidence is the shortest exact phrase proving the strongest secondary signal, otherwise empty.\n"
+    "signal_evidence is the shortest exact phrase proving the strongest secondary signal, otherwise empty. "
+    "summary must be one concise factual sentence describing what the email says and asks, without deciding whether it is phishing and without inventing details.\n"
     "JSON only:\n"
-    "{\"action\":\"none|info|visit_link|open_attachment|reply|provide_information|provide_credentials|payment|change_settings|"
+    "{\"summary\":\"concise factual sentence\",\"action\":\"none|info|visit_link|open_attachment|reply|provide_information|provide_credentials|payment|change_settings|"
     "verify_account|claim_reward|bypass|other\",\"channel\":\"none|known_procedure|link|form|attachment|reply|phone|unclear\","
     "\"evidence\":\"exact action phrase\",\"signals\":[\"financial_pretext|incentive|threat|urgency|impersonation\"],"
     "\"signal_evidence\":\"exact context phrase\",\"credential_type\":\"none|password|otp_or_pin|recovery_code|wallet_seed|other\","
@@ -210,6 +213,7 @@ TASK_INSTRUCTIONS = (
 PHI4_OUTPUT_SCHEMA = {
     "type": "object",
     "properties": {
+        "summary": {"type": "string", "minLength": 12, "maxLength": 400},
         "action": {
             "type": "string",
             "enum": [
@@ -283,7 +287,7 @@ PHI4_OUTPUT_SCHEMA = {
         },
     },
     "required": [
-        "action", "channel", "evidence", "signals",
+        "summary", "action", "channel", "evidence", "signals",
         "signal_evidence", "credential_type", "payment_method",
         "payment_asset", "amount", "payment_destination_change",
         "payment_change_evidence", "coercion",
@@ -2430,7 +2434,7 @@ def _valid_content_summary(value: str) -> bool:
         summary,
     ):
         return False
-    return 4 <= len(summary.split()) <= 35
+    return 4 <= len(summary.split()) <= 50
 
 
 TARGETED_INTENT_INSTRUCTIONS = (
@@ -2977,7 +2981,7 @@ def _merge_semantic_candidates(candidates: list[dict], soc: dict) -> dict:
 def stream_phi4_email_analysis(
     soc: dict,
     model: str = OLLAMA_MODEL,
-    timeout: int = 90,
+    timeout: int = OLLAMA_REQUEST_TIMEOUT,
     cancellation_requested=None,
 ):
     if cancellation_requested and cancellation_requested():
@@ -3110,7 +3114,7 @@ def stream_phi4_email_analysis(
                     semantic,
                     soc=section_soc,
                 )
-                if _needs_targeted_intent_verifier(section_soc, primary):
+                if not OLLAMA_SINGLE_PASS and _needs_targeted_intent_verifier(section_soc, primary):
                     targeted = _request_targeted_intent(
                         section_soc,
                         model=model,
@@ -3128,7 +3132,7 @@ def stream_phi4_email_analysis(
                         )
                         semantic["intent_verifier_used"] = True
                 payment_primary = normalize_semantic_extraction(semantic, soc=section_soc)
-                if _needs_payment_diversion_verifier(soc, payment_primary):
+                if not OLLAMA_SINGLE_PASS and _needs_payment_diversion_verifier(soc, payment_primary):
                     payment_diversion = _request_payment_diversion_verifier(
                         section_soc,
                         model=model,
@@ -3149,7 +3153,7 @@ def stream_phi4_email_analysis(
                 if grounded_diversion:
                     semantic.update(grounded_diversion)
                 security_primary = normalize_semantic_extraction(semantic, soc=section_soc)
-                if _needs_security_lure_verifier(section_soc, security_primary):
+                if not OLLAMA_SINGLE_PASS and _needs_security_lure_verifier(section_soc, security_primary):
                     security_lure = _request_security_lure_verifier(
                         section_soc,
                         model=model,
@@ -3163,7 +3167,7 @@ def stream_phi4_email_analysis(
                     if security_lure:
                         semantic.update(security_lure)
                 extortion_primary = normalize_semantic_extraction(semantic, soc=section_soc)
-                if _needs_extortion_verifier(extortion_primary):
+                if not OLLAMA_SINGLE_PASS and _needs_extortion_verifier(extortion_primary):
                     extortion = _request_extortion_verifier(
                         section_soc,
                         model=model,
@@ -3209,7 +3213,12 @@ def stream_phi4_email_analysis(
     }
     try:
         semantic = _merge_semantic_candidates(semantic_candidates, soc)
-        semantic["summary"] = _fallback_content_summary(soc, semantic)
+        model_summary = re.sub(r"\s+", " ", str(semantic.get("summary") or "")).strip()
+        semantic["summary"] = (
+            _clip(model_summary, 400)
+            if _valid_content_summary(model_summary)
+            else _fallback_content_summary(soc, semantic)
+        )
         analysis = apply_email_risk_policy(soc, semantic)
     except (ValueError, json.JSONDecodeError) as exc:
         yield {
@@ -3247,7 +3256,7 @@ def _generate_plain_summary(messages: list[dict], model: str, timeout: int) -> d
     return {"status": "ok", "summary": _clip(summary, 620), "model": final.get("model") or model, "backend": final.get("backend") or "ollama"}
 
 
-def generate_content_summary(soc: dict, model: str = OLLAMA_MODEL, timeout: int = 90) -> dict:
+def generate_content_summary(soc: dict, model: str = OLLAMA_MODEL, timeout: int = OLLAMA_REQUEST_TIMEOUT) -> dict:
     """Generate the content-only prose shown in the Content panel."""
     if not _use_ollama():
         raise RuntimeError("Content summary unavailable: start local Ollama and install the selected model.")
@@ -3263,7 +3272,7 @@ def generate_content_summary(soc: dict, model: str = OLLAMA_MODEL, timeout: int 
     )
 
 
-def generate_analysis_summary(soc: dict, semantic: dict, model: str = OLLAMA_MODEL, timeout: int = 90) -> dict:
+def generate_analysis_summary(soc: dict, semantic: dict, model: str = OLLAMA_MODEL, timeout: int = OLLAMA_REQUEST_TIMEOUT) -> dict:
     """Generate the final evidence-informed explanation after risk policy runs."""
     if not _use_ollama():
         raise RuntimeError("LLM summary unavailable: start local Ollama and install the selected model.")

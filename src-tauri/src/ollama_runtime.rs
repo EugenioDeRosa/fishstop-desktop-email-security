@@ -157,12 +157,26 @@ pub fn recommended_model() -> &'static str {
 }
 
 fn command_value(program: &str, arguments: &[&str]) -> Option<String> {
-    let output = Command::new(program).args(arguments).output().ok()?;
+    let mut command = Command::new(program);
+    command.args(arguments);
+    configure_background_command(&mut command);
+    let output = command.output().ok()?;
     if !output.status.success() {
         return None;
     }
     let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
     (!value.is_empty()).then_some(value)
+}
+
+fn configure_background_command(command: &mut Command) {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    #[cfg(not(target_os = "windows"))]
+    let _ = command;
 }
 
 fn cpu_name() -> String {
@@ -331,13 +345,16 @@ fn ensure_server(
             .map_err(|_| "Local AI runtime is unavailable.".to_string())?;
         if runtime.child.is_none() {
             let models = managed_models_directory(app)?;
-            let child = Command::new(binary)
+            let mut command = Command::new(binary);
+            command
                 .arg("serve")
                 .env("OLLAMA_HOST", MANAGED_HOST)
                 .env("OLLAMA_MODELS", models)
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
-                .stderr(Stdio::null())
+                .stderr(Stdio::null());
+            configure_background_command(&mut command);
+            let child = command
                 .spawn()
                 .map_err(|error| format!("Could not start the bundled AI runtime: {error}"))?;
             runtime.child = Some(child);

@@ -12,8 +12,7 @@ use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use tauri::{path::BaseDirectory, AppHandle, Emitter, Manager};
 
-pub const WINDOWS_CPU_MODEL: &str = "qwen3:4b-instruct-2507-q4_K_M";
-pub const PERFORMANCE_MODEL: &str = "qwen3:4b-q4_K_M";
+pub const MANAGED_MODEL: &str = "qwen3:4b-q4_K_M";
 const MANAGED_HOST: &str = "127.0.0.1:11435";
 const MANAGED_ENDPOINT: &str = "http://127.0.0.1:11435";
 const TARGET_TRIPLE: &str = env!("TAURI_ENV_TARGET_TRIPLE");
@@ -149,11 +148,7 @@ fn managed_model_installed(app: &AppHandle, model: &str) -> bool {
 }
 
 pub fn recommended_model() -> &'static str {
-    if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-        PERFORMANCE_MODEL
-    } else {
-        WINDOWS_CPU_MODEL
-    }
+    MANAGED_MODEL
 }
 
 fn command_value(program: &str, arguments: &[&str]) -> Option<String> {
@@ -248,11 +243,9 @@ fn machine_profile() -> (String, String, String, Option<u64>, String, String) {
         "CPU".to_string()
     };
     let selection_reason = if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-        "The 4B quantized model is selected for the Apple Silicon accelerated runtime."
-    } else if cfg!(target_os = "windows") {
-        "The 4B Instruct Q4_K_M model is selected for higher-quality structured analysis; FishStop uses a single serialized Ollama request on this CPU runtime."
+        "The shared 4B quantized model uses the Apple Silicon accelerated runtime."
     } else {
-        "The 4B Instruct Q4_K_M model is selected for higher-quality structured analysis on this CPU runtime."
+        "The same 4B quantized model is used on every supported platform."
     }
     .to_string();
     (

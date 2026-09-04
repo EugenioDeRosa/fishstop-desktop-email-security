@@ -48,11 +48,7 @@ const HISTORY_STORAGE_PREFIX = "fishstop.analysis-history.";
 const REPUTATION_KEYS_PREFIX = "fishstop.reputation-keys.";
 const INDICATOR_COPY_STORAGE_PREFIX = "fishstop.indicator-copies.";
 const STATISTICS_PERIOD_PREFIX = "fishstop.statistics-period.";
-const WINDOWS_CPU_OLLAMA_MODEL = "qwen3:4b-instruct-2507-q4_K_M";
-const PERFORMANCE_OLLAMA_MODEL = "qwen3:4b-q4_K_M";
-const DEFAULT_OLLAMA_MODEL = /Windows|Linux/i.test(navigator.userAgent)
-  ? WINDOWS_CPU_OLLAMA_MODEL
-  : PERFORMANCE_OLLAMA_MODEL;
+const DEFAULT_OLLAMA_MODEL = "qwen3:4b-q4_K_M";
 const analysisHistoryCache = new Map<string, AnalysisRecord[]>();
 const analysisHistoryReady = new Set<string>();
 const analysisHistoryRequests = new Map<string, Promise<void>>();

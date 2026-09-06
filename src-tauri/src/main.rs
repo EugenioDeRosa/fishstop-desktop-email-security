@@ -38,6 +38,13 @@ const GOOGLE_CLIENT_SECRET_RESOURCE: &str = "google-oauth-client-secret";
 const AUTHORIZATION_ENDPOINT: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_ENDPOINT: &str = "https://oauth2.googleapis.com/token";
 const USERINFO_ENDPOINT: &str = "https://openidconnect.googleapis.com/v1/userinfo";
+const MICROSOFT_CLIENT_ID: &str = "88f66c62-5edc-41a8-bbe8-eccb8f5815a2";
+const MICROSOFT_AUTHORIZATION_ENDPOINT: &str =
+    "https://login.microsoftonline.com/common/oauth2/v2.0/authorize";
+const MICROSOFT_TOKEN_ENDPOINT: &str = "https://login.microsoftonline.com/common/oauth2/v2.0/token";
+const MICROSOFT_PROFILE_ENDPOINT: &str =
+    "https://graph.microsoft.com/v1.0/me?$select=id,displayName,mail,userPrincipalName";
+const MICROSOFT_SCOPES: &str = "openid profile email User.Read";
 const IDENTITY_MODEL_ID: &str = "Davlan/distilbert-base-multilingual-cased-ner-hrl";
 const IDENTITY_MODEL_REVISION: &str = "d421f57d5b1d36b375408588669e9340f9b11a89";
 const KEYRING_SERVICE: &str = "it.fishstop.desktop";
@@ -334,12 +341,30 @@ struct TokenResponse {
     access_token: String,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-struct GoogleUser {
+#[derive(Debug, Serialize)]
+struct AuthUser {
     sub: String,
     name: Option<String>,
     email: String,
     picture: Option<String>,
+    provider: &'static str,
+}
+
+#[derive(Debug, Deserialize)]
+struct GoogleProfile {
+    sub: String,
+    name: Option<String>,
+    email: String,
+    picture: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MicrosoftProfile {
+    id: String,
+    display_name: Option<String>,
+    mail: Option<String>,
+    user_principal_name: Option<String>,
 }
 
 fn random_url_safe(bytes: usize) -> String {
@@ -456,7 +481,11 @@ fn reply(stream: &mut std::net::TcpStream, title: &str, body: &str) {
     let _ = stream.write_all(response.as_bytes());
 }
 
-fn wait_for_callback(listener: TcpListener, expected_state: &str) -> Result<String, String> {
+fn wait_for_callback(
+    listener: TcpListener,
+    expected_state: &str,
+    provider: &str,
+) -> Result<String, String> {
     listener
         .set_nonblocking(true)
         .map_err(|error| format!("Could not prepare the callback: {error}"))?;
@@ -474,9 +503,9 @@ fn wait_for_callback(listener: TcpListener, expected_state: &str) -> Result<Stri
                     .lines()
                     .next()
                     .and_then(|line| line.split_whitespace().nth(1))
-                    .ok_or("Invalid Google callback")?;
+                    .ok_or_else(|| format!("Invalid {provider} callback"))?;
                 let callback = Url::parse(&format!("http://127.0.0.1{target}"))
-                    .map_err(|_| "Invalid Google callback".to_string())?;
+                    .map_err(|_| format!("Invalid {provider} callback"))?;
                 let parameters: std::collections::HashMap<_, _> =
                     callback.query_pairs().into_owned().collect();
 
@@ -494,7 +523,7 @@ fn wait_for_callback(listener: TcpListener, expected_state: &str) -> Result<Stri
                         "Sign-in cancelled",
                         "You can close this page and return to FishStop.",
                     );
-                    return Err(format!("Google cancelled the sign-in: {error}"));
+                    return Err(format!("{provider} cancelled the sign-in: {error}"));
                 }
                 if let Some(code) = parameters.get("code") {
                     reply(
@@ -507,14 +536,18 @@ fn wait_for_callback(listener: TcpListener, expected_state: &str) -> Result<Stri
                 reply(
                     &mut stream,
                     "Sign-in cancelled",
-                    "Google did not return a sign-in code.",
+                    &format!("{provider} did not return a sign-in code."),
                 );
-                return Err("Google did not return a sign-in code".to_string());
+                return Err(format!("{provider} did not return a sign-in code"));
             }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 thread::sleep(Duration::from_millis(100));
             }
-            Err(error) => return Err(format!("Could not receive the Google callback: {error}")),
+            Err(error) => {
+                return Err(format!(
+                    "Could not receive the {provider} callback: {error}"
+                ))
+            }
         }
     }
 
@@ -537,7 +570,7 @@ fn google_token_form<'a>(
     ]
 }
 
-fn google_sign_in() -> Result<GoogleUser, String> {
+fn google_sign_in() -> Result<AuthUser, String> {
     let client_secret = google_client_secret()?;
     let listener = TcpListener::bind("127.0.0.1:0")
         .map_err(|error| format!("Could not start the local callback: {error}"))?;
@@ -559,7 +592,7 @@ fn google_sign_in() -> Result<GoogleUser, String> {
     );
 
     launch_browser(&authorization_url)?;
-    let code = wait_for_callback(listener, &state)?;
+    let code = wait_for_callback(listener, &state, "Google")?;
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(30))
         .build()
@@ -579,7 +612,7 @@ fn google_sign_in() -> Result<GoogleUser, String> {
         .json()
         .map_err(|error| format!("Invalid Google response: {error}"))?;
 
-    client
+    let profile: GoogleProfile = client
         .get(USERINFO_ENDPOINT)
         .bearer_auth(token.access_token)
         .send()
@@ -587,14 +620,120 @@ fn google_sign_in() -> Result<GoogleUser, String> {
         .error_for_status()
         .map_err(|error| format!("Google denied profile access: {error}"))?
         .json()
-        .map_err(|error| format!("Invalid Google profile: {error}"))
+        .map_err(|error| format!("Invalid Google profile: {error}"))?;
+
+    Ok(AuthUser {
+        sub: profile.sub,
+        name: profile.name,
+        email: profile.email,
+        picture: profile.picture,
+        provider: "google",
+    })
 }
 
 #[tauri::command]
-async fn sign_in_with_google() -> Result<GoogleUser, String> {
+async fn sign_in_with_google() -> Result<AuthUser, String> {
     tauri::async_runtime::spawn_blocking(google_sign_in)
         .await
         .map_err(|error| format!("Google sign-in interrupted: {error}"))?
+}
+
+fn microsoft_token_form<'a>(
+    code: &'a str,
+    code_verifier: &'a str,
+    redirect_uri: &'a str,
+) -> [(&'static str, &'a str); 6] {
+    [
+        ("client_id", MICROSOFT_CLIENT_ID),
+        ("code", code),
+        ("code_verifier", code_verifier),
+        ("grant_type", "authorization_code"),
+        ("redirect_uri", redirect_uri),
+        ("scope", MICROSOFT_SCOPES),
+    ]
+}
+
+fn microsoft_user(profile: MicrosoftProfile) -> Result<AuthUser, String> {
+    let email = profile
+        .mail
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            profile
+                .user_principal_name
+                .filter(|value| !value.trim().is_empty())
+        })
+        .ok_or_else(|| "Microsoft did not return an email address for this account.".to_string())?;
+
+    Ok(AuthUser {
+        sub: format!("microsoft:{}", profile.id),
+        name: profile.display_name,
+        email,
+        picture: None,
+        provider: "microsoft",
+    })
+}
+
+fn microsoft_sign_in() -> Result<AuthUser, String> {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .map_err(|error| format!("Could not start the local callback: {error}"))?;
+    let port = listener
+        .local_addr()
+        .map_err(|error| format!("Could not read the local port: {error}"))?
+        .port();
+    // Entra matches localhost loopback redirects independently of their
+    // ephemeral port. Register http://localhost as a mobile/desktop redirect.
+    let redirect_uri = format!("http://localhost:{port}");
+    let state = random_url_safe(32);
+    let code_verifier = random_url_safe(64);
+    let code_challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(code_verifier.as_bytes()));
+    let authorization_url = format!(
+        "{MICROSOFT_AUTHORIZATION_ENDPOINT}?client_id={}&redirect_uri={}&response_type=code&response_mode=query&scope={}&state={}&code_challenge={}&code_challenge_method=S256&prompt=select_account",
+        encode(MICROSOFT_CLIENT_ID),
+        encode(&redirect_uri),
+        encode(MICROSOFT_SCOPES),
+        encode(&state),
+        encode(&code_challenge),
+    );
+
+    launch_browser(&authorization_url)?;
+    let code = wait_for_callback(listener, &state, "Microsoft")?;
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|error| format!("Could not prepare the secure connection: {error}"))?;
+    let token_response = client
+        .post(MICROSOFT_TOKEN_ENDPOINT)
+        .form(&microsoft_token_form(&code, &code_verifier, &redirect_uri))
+        .send()
+        .map_err(|error| format!("Microsoft did not respond: {error}"))?;
+    if !token_response.status().is_success() {
+        let status = token_response.status();
+        let details = token_response.text().unwrap_or_default();
+        return Err(format!(
+            "Microsoft denied the sign-in ({status}): {details}"
+        ));
+    }
+    let token: TokenResponse = token_response
+        .json()
+        .map_err(|error| format!("Invalid Microsoft response: {error}"))?;
+    let profile: MicrosoftProfile = client
+        .get(MICROSOFT_PROFILE_ENDPOINT)
+        .bearer_auth(token.access_token)
+        .send()
+        .map_err(|error| format!("Could not retrieve the Microsoft profile: {error}"))?
+        .error_for_status()
+        .map_err(|error| format!("Microsoft denied profile access: {error}"))?
+        .json()
+        .map_err(|error| format!("Invalid Microsoft profile: {error}"))?;
+
+    microsoft_user(profile)
+}
+
+#[tauri::command]
+async fn sign_in_with_microsoft() -> Result<AuthUser, String> {
+    tauri::async_runtime::spawn_blocking(microsoft_sign_in)
+        .await
+        .map_err(|error| format!("Microsoft sign-in interrupted: {error}"))?
 }
 
 fn development_engine_path() -> PathBuf {
@@ -1222,6 +1361,7 @@ fn main() {
         .manage(Arc::new(Mutex::new(ReputationCredentialCache::default())))
         .invoke_handler(tauri::generate_handler![
             sign_in_with_google,
+            sign_in_with_microsoft,
             reputation_key_status,
             save_reputation_keys,
             load_analysis_history,
@@ -1266,5 +1406,35 @@ mod tests {
                 .map(|(_, value)| *value),
             Some("desktop-client-secret")
         );
+    }
+
+    #[test]
+    fn microsoft_desktop_oauth_exchange_uses_pkce_without_a_client_secret() {
+        let form = microsoft_token_form(
+            "authorization-code",
+            "pkce-verifier",
+            "http://localhost:1234",
+        );
+        let keys: Vec<&str> = form.iter().map(|(key, _)| *key).collect();
+
+        assert!(keys.contains(&"client_id"));
+        assert!(keys.contains(&"code_verifier"));
+        assert!(keys.contains(&"scope"));
+        assert!(!keys.contains(&"client_secret"));
+    }
+
+    #[test]
+    fn microsoft_profile_falls_back_to_the_user_principal_name() {
+        let user = microsoft_user(MicrosoftProfile {
+            id: "user-id".to_string(),
+            display_name: Some("Ada Lovelace".to_string()),
+            mail: None,
+            user_principal_name: Some("ada@example.com".to_string()),
+        })
+        .expect("the profile should be accepted");
+
+        assert_eq!(user.sub, "microsoft:user-id");
+        assert_eq!(user.email, "ada@example.com");
+        assert_eq!(user.provider, "microsoft");
     }
 }

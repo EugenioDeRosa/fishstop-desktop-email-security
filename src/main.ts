@@ -8,7 +8,7 @@ import worldAtlas from "world-atlas/countries-110m.json";
 import { animate } from "motion/mini";
 import "./styles.css";
 
-type GoogleUser = { sub: string; name?: string; email: string; picture?: string };
+type AuthUser = { sub: string; name?: string; email: string; picture?: string; provider?: "google" | "microsoft" };
 type Section = "dashboard" | "analyse" | "history" | "statistics" | "settings";
 type SocFlag = { level: "HIGH" | "MEDIUM" | "LOW" | "INFO"; field: string; message: string };
 type AuthResult = { status?: string; identity?: string; source?: string; raw?: string; all_results?: AuthResult[] };
@@ -104,21 +104,21 @@ function escapeHtml(value: string): string {
   return value.replace(/[&<>'"]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[character] || character));
 }
 
-function historyStorageKey(user: GoogleUser): string { return `${HISTORY_STORAGE_PREFIX}${user.sub}`; }
-function indicatorCopyStorageKey(user: GoogleUser): string { return `${INDICATOR_COPY_STORAGE_PREFIX}${user.sub}`; }
-function statisticsPeriodStorageKey(user: GoogleUser): string { return `${STATISTICS_PERIOD_PREFIX}${user.sub}`; }
-function legacyReputationKeys(user: GoogleUser): { virustotal: string; abuseipdb: string } {
+function historyStorageKey(user: AuthUser): string { return `${HISTORY_STORAGE_PREFIX}${user.sub}`; }
+function indicatorCopyStorageKey(user: AuthUser): string { return `${INDICATOR_COPY_STORAGE_PREFIX}${user.sub}`; }
+function statisticsPeriodStorageKey(user: AuthUser): string { return `${STATISTICS_PERIOD_PREFIX}${user.sub}`; }
+function legacyReputationKeys(user: AuthUser): { virustotal: string; abuseipdb: string } {
   try { return { virustotal: "", abuseipdb: "", ...JSON.parse(localStorage.getItem(`${REPUTATION_KEYS_PREFIX}${user.sub}`) || "{}") }; }
   catch { return { virustotal: "", abuseipdb: "" }; }
 }
 // The settings shell is rendered before the asynchronous native-keychain lookup.
 // `refreshReputationSettings` fills in availability without exposing secret values.
-function reputationKeys(_user: GoogleUser): { virustotal: string; abuseipdb: string } { return { virustotal: "", abuseipdb: "" }; }
+function reputationKeys(_user: AuthUser): { virustotal: string; abuseipdb: string } { return { virustotal: "", abuseipdb: "" }; }
 function maskedSecret(value: string): string {
   return value.length <= 8 ? "••••••••" : `${value.slice(0, 4)}••••••${value.slice(-4)}`;
 }
 
-async function migrateLegacyReputationKeys(user: GoogleUser): Promise<void> {
+async function migrateLegacyReputationKeys(user: AuthUser): Promise<void> {
   const pending = reputationMigrationRequests.get(user.sub);
   if (pending) return pending;
   const legacy = legacyReputationKeys(user);
@@ -131,7 +131,7 @@ async function migrateLegacyReputationKeys(user: GoogleUser): Promise<void> {
   return request;
 }
 
-async function refreshReputationSettings(user: GoogleUser): Promise<void> {
+async function refreshReputationSettings(user: AuthUser): Promise<void> {
   const card = document.querySelector<HTMLElement>(".settings-reputation");
   if (!card) return;
   try {
@@ -161,7 +161,7 @@ function setProtectionStatus(element: HTMLElement, tone: ProtectionTone, message
   element.querySelector("span")!.textContent = message;
 }
 
-async function resolveProtectionStatus(user: GoogleUser): Promise<ProtectionStatusSnapshot> {
+async function resolveProtectionStatus(user: AuthUser): Promise<ProtectionStatusSnapshot> {
   try {
     const [engine, runtime, keys] = await Promise.all([
       invoke<LocalEngineStatus>("local_engine_status"),
@@ -183,7 +183,7 @@ async function resolveProtectionStatus(user: GoogleUser): Promise<ProtectionStat
   }
 }
 
-async function refreshProtectionStatus(user: GoogleUser, force = false): Promise<void> {
+async function refreshProtectionStatus(user: AuthUser, force = false): Promise<void> {
   const element = document.querySelector<HTMLElement>("[data-protection-status]");
   if (!element) return;
   if (!force && protectionStatusSnapshot?.userSub === user.sub) {
@@ -227,7 +227,7 @@ function validAnalysisRecords(value: unknown): AnalysisRecord[] {
   } catch { return []; }
 }
 
-function legacyAnalysisHistory(user: GoogleUser): AnalysisRecord[] {
+function legacyAnalysisHistory(user: AuthUser): AnalysisRecord[] {
   try { return validAnalysisRecords(JSON.parse(localStorage.getItem(historyStorageKey(user)) || "[]") as unknown); }
   catch { return []; }
 }
@@ -245,11 +245,11 @@ function mergeAnalysisHistory(...groups: AnalysisRecord[][]): AnalysisRecord[] {
     });
 }
 
-function readAnalysisHistory(user: GoogleUser): AnalysisRecord[] {
+function readAnalysisHistory(user: AuthUser): AnalysisRecord[] {
   return analysisHistoryCache.get(user.sub) || [];
 }
 
-async function ensureAnalysisHistory(user: GoogleUser): Promise<void> {
+async function ensureAnalysisHistory(user: AuthUser): Promise<void> {
   if (analysisHistoryReady.has(user.sub)) return;
   const pending = analysisHistoryRequests.get(user.sub);
   if (pending) return pending;
@@ -277,7 +277,7 @@ async function ensureAnalysisHistory(user: GoogleUser): Promise<void> {
   return request;
 }
 
-async function saveAnalysis(user: GoogleUser, report: AnalysisReport): Promise<string | null> {
+async function saveAnalysis(user: AuthUser, report: AnalysisReport): Promise<string | null> {
   await ensureAnalysisHistory(user);
   if (analysisHistoryErrors.has(user.sub)) return null;
   const history = readAnalysisHistory(user);
@@ -297,7 +297,7 @@ async function saveAnalysis(user: GoogleUser, report: AnalysisReport): Promise<s
   }
 }
 
-async function updateStoredAnalysis(user: GoogleUser, id: string, report: Partial<AnalysisReport>, analysisDurationMs?: number): Promise<void> {
+async function updateStoredAnalysis(user: AuthUser, id: string, report: Partial<AnalysisReport>, analysisDurationMs?: number): Promise<void> {
   await ensureAnalysisHistory(user);
   if (analysisHistoryErrors.has(user.sub)) return;
   const history = readAnalysisHistory(user).map((record) => record.id === id ? {
@@ -313,7 +313,7 @@ async function updateStoredAnalysis(user: GoogleUser, id: string, report: Partia
   }
 }
 
-function readIndicatorCopyEvents(user: GoogleUser): CopyEvent[] {
+function readIndicatorCopyEvents(user: AuthUser): CopyEvent[] {
   try {
     const value = JSON.parse(localStorage.getItem(indicatorCopyStorageKey(user)) || "[]") as unknown;
     return Array.isArray(value)
@@ -322,7 +322,7 @@ function readIndicatorCopyEvents(user: GoogleUser): CopyEvent[] {
   } catch { return []; }
 }
 
-function trackIndicatorCopy(user: GoogleUser): void {
+function trackIndicatorCopy(user: AuthUser): void {
   const events = readIndicatorCopyEvents(user);
   events.push({ copiedAt: new Date().toISOString() });
   try { localStorage.setItem(indicatorCopyStorageKey(user), JSON.stringify(events.slice(-1000))); }
@@ -482,7 +482,7 @@ document.addEventListener("click", (event) => {
   showExternalLinkDialog(link.href, link.textContent?.trim() || "Open external report");
 });
 
-function statisticsPeriod(user: GoogleUser): StatisticsPeriod {
+function statisticsPeriod(user: AuthUser): StatisticsPeriod {
   const value = localStorage.getItem(statisticsPeriodStorageKey(user));
   return ["today", "week", "month", "3m", "6m", "9m", "12m", "all"].includes(value || "") ? value as StatisticsPeriod : "week";
 }
@@ -1375,7 +1375,7 @@ function integrateReputation(report: AnalysisReport): void {
   }
 }
 
-function bindReportInteractions(user: GoogleUser, report: AnalysisReport): void {
+function bindReportInteractions(user: AuthUser, report: AnalysisReport): void {
   integrateReputation(report);
   document.querySelectorAll<HTMLButtonElement>("[data-copy-ioc]").forEach((button) => button.addEventListener("click", async () => {
     const copied = await copyIndicator(button.dataset.copyIoc || "");
@@ -1498,7 +1498,7 @@ function setPhiSemanticPanel(container: HTMLElement, analysis: NonNullable<NonNu
   panel.innerHTML = `<p class="page-kicker">OLLAMA · ${escapeHtml(model)}</p><h3>Content summary</h3><p class="semantic-summary">${escapeHtml(contentSummary)}</p>${signals.length || details.length || signalEvidence ? `<details class="semantic-details"><summary>Reasoning and evidence <span>${signals.length + details.length + Number(Boolean(signalEvidence))}</span></summary>${signals.length ? `<p><b>Signals:</b> ${escapeHtml(signals.map(semanticLabel).join(" · "))}</p>` : ""}${signalEvidence ? `<p><b>Context:</b> ${escapeHtml(signalEvidence)}</p>` : ""}${details.length ? `<ul>${details.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>` : ""}</details>` : ""}<small class="semantic-meta">${durationMs ? `${(durationMs / 1000).toFixed(1)} s · ` : ""}${corroboration.supports_decision ? "Independent evidence is available" : "Assessment should be confirmed with technical evidence"}</small>`;
 }
 
-async function runAiAnalysis(user: GoogleUser, report: AnalysisReport, recordId: string | null, container: HTMLElement, startedAt: number, onSettled?: (engine: "identity" | "phi4" | "content-summary" | "summary") => void): Promise<void> {
+async function runAiAnalysis(user: AuthUser, report: AnalysisReport, recordId: string | null, container: HTMLElement, startedAt: number, onSettled?: (engine: "identity" | "phi4" | "content-summary" | "summary") => void): Promise<void> {
   const runtime = await invoke<OllamaRuntimeStatus>("ollama_runtime_status").catch(() => ollamaRuntimeSnapshot);
   if (runtime) ollamaRuntimeSnapshot = runtime;
   const model = runtime?.model || DEFAULT_OLLAMA_MODEL;
@@ -1561,25 +1561,45 @@ function restoreAiAnalysis(report: AnalysisReport, container: HTMLElement): void
   }
 }
 
-function storedUser(): GoogleUser | null {
+function storedUser(): AuthUser | null {
   try {
     const saved = localStorage.getItem(USER_STORAGE_KEY);
     if (!saved) return null;
-    const user = JSON.parse(saved) as GoogleUser;
+    const user = JSON.parse(saved) as AuthUser;
     return user.sub && user.email ? user : null;
   } catch { localStorage.removeItem(USER_STORAGE_KEY); return null; }
 }
 
+function googleLogo(): string {
+  return `<svg viewBox="0 0 18 18" role="img" aria-label="Google"><path fill="#4285F4" d="M17.64 9.205c0-.638-.057-1.252-.164-1.841H9v3.481h4.844a4.14 4.14 0 0 1-1.797 2.716v2.258h2.909c1.702-1.567 2.684-3.875 2.684-6.614Z"/><path fill="#34A853" d="M9 18c2.43 0 4.468-.806 5.956-2.181l-2.91-2.258c-.805.54-1.835.859-3.046.859-2.344 0-4.328-1.585-5.037-3.714H.956v2.332A9 9 0 0 0 9 18Z"/><path fill="#FBBC05" d="M3.963 10.706A5.41 5.41 0 0 1 3.682 9c0-.592.102-1.167.281-1.706V4.962H.956A9 9 0 0 0 0 9c0 1.452.347 2.827.956 4.038l3.007-2.332Z"/><path fill="#EA4335" d="M9 3.58c1.322 0 2.508.455 3.441 1.346l2.582-2.581C13.464.892 11.426 0 9 0A9 9 0 0 0 .956 4.962l3.007 2.332C4.672 5.165 6.656 3.58 9 3.58Z"/></svg>`;
+}
+
+function microsoftLogo(): string {
+  return `<svg viewBox="0 0 23 23" role="img" aria-label="Microsoft"><path fill="#F35325" d="M1 1h10v10H1z"/><path fill="#81BC06" d="M12 1h10v10H12z"/><path fill="#05A6F0" d="M1 12h10v10H1z"/><path fill="#FFBA08" d="M12 12h10v10H12z"/></svg>`;
+}
+
 function renderLogin(): void {
-  root.innerHTML = `<section class="shell" aria-labelledby="title"><aside class="brand-panel"><div class="brand"><span class="brand-mark" aria-hidden="true">⌁</span><span>fish<span>stop</span></span></div><div class="hero-copy"><p class="eyebrow">EMAIL DEFENSE DESK</p><h1>Every message<br><em>deserves a check.</em></h1><p class="intro">Quickly identify phishing, scams and Business Email Compromise in email files.</p></div><div class="signal"><span class="signal-dot"></span><span>Private, local protection</span></div><p class="version">FISHSTOP · DESKTOP EDITION</p></aside><section class="login-panel"><div class="login-content"><div class="steps"><span class="active"></span><span></span><span></span></div><p class="kicker">WELCOME</p><h2 id="title">Sign in to FishStop</h2><p class="subtitle">Use your Google account to access your personal analysis workspace.</p><div class="auth-options"><button class="provider google" id="google-login" type="button"><span class="provider-icon google-icon" aria-hidden="true">G</span><span>Continue with Google</span><b aria-hidden="true">→</b></button></div><p class="privacy">By continuing, you agree to the <a href="#">Terms of Service</a> and <a href="#">Privacy Policy</a>.</p><p class="status" role="status" aria-live="polite"></p></div><footer><span>© 2026 FishStop</span><span>Analyse. Understand. Protect.</span></footer></section></section>`;
-  const button = document.querySelector<HTMLButtonElement>("#google-login");
+  root.innerHTML = `<section class="shell" aria-labelledby="title"><aside class="brand-panel"><div class="brand"><span class="brand-mark" aria-hidden="true">⌁</span><span>fish<span>stop</span></span></div><div class="hero-copy"><p class="eyebrow">EMAIL DEFENSE DESK</p><h1>Every message<br><em>deserves a check.</em></h1><p class="intro">Quickly identify phishing, scams and Business Email Compromise in email files.</p></div><div class="signal"><span class="signal-dot"></span><span>Private, local protection</span></div><p class="version">FISHSTOP · DESKTOP EDITION</p></aside><section class="login-panel"><div class="login-content"><div class="steps"><span class="active"></span><span></span><span></span></div><p class="kicker">WELCOME</p><h2 id="title">Sign in to FishStop</h2><p class="subtitle">Use your Google or Microsoft account to access your personal analysis workspace.</p><div class="auth-options"><button class="provider google" id="google-login" type="button"><span class="provider-icon" aria-hidden="true">${googleLogo()}</span><span>Continue with Google</span><b aria-hidden="true">→</b></button><button class="provider microsoft" id="microsoft-login" type="button"><span class="provider-icon" aria-hidden="true">${microsoftLogo()}</span><span>Continue with Microsoft</span><b aria-hidden="true">→</b></button></div><p class="privacy">By continuing, you agree to the <a href="#">Terms of Service</a> and <a href="#">Privacy Policy</a>.</p><p class="status" role="status" aria-live="polite"></p></div><footer><span>© 2026 FishStop</span><span>Analyse. Understand. Protect.</span></footer></section></section>`;
   const status = document.querySelector<HTMLParagraphElement>(".status");
-  button?.addEventListener("click", async () => {
-    button.disabled = true; button.classList.add("loading");
-    if (status) status.textContent = "Opening Google in your browser…";
-    try { const user = await invoke<GoogleUser>("sign_in_with_google"); localStorage.setItem(USER_STORAGE_KEY, JSON.stringify(user)); renderDashboard(user); }
-    catch (error) { if (status) status.textContent = `Sign-in did not complete: ${String(error)}`; button.disabled = false; button.classList.remove("loading"); }
-  });
+  const bindLogin = (buttonId: string, provider: string, command: string): void => {
+    const button = document.querySelector<HTMLButtonElement>(`#${buttonId}`);
+    button?.addEventListener("click", async () => {
+      const buttons = [...document.querySelectorAll<HTMLButtonElement>(".provider")];
+      buttons.forEach((item) => { item.disabled = true; });
+      button.classList.add("loading");
+      if (status) status.textContent = `Opening ${provider} in your browser…`;
+      try {
+        const user = await invoke<AuthUser>(command);
+        localStorage.setItem(USER_STORAGE_KEY, JSON.stringify(user));
+        renderDashboard(user);
+      } catch (error) {
+        if (status) status.textContent = `Sign-in did not complete: ${String(error)}`;
+        buttons.forEach((item) => { item.disabled = false; item.classList.remove("loading"); });
+      }
+    });
+  };
+  bindLogin("google-login", "Google", "sign_in_with_google");
+  bindLogin("microsoft-login", "Microsoft", "sign_in_with_microsoft");
 }
 
 function riskReasons(report: AnalysisReport): string[] {
@@ -1610,11 +1630,11 @@ function riskReasonCounts(history: AnalysisRecord[]): Array<{ label: string; cou
   return [...counts.entries()].map(([label, count]) => ({ label, count })).sort((left, right) => right.count - left.count || left.label.localeCompare(right.label));
 }
 
-function currentAnalysis(user: GoogleUser): ActiveAnalysis | null {
+function currentAnalysis(user: AuthUser): ActiveAnalysis | null {
   return activeAnalysis?.userSub === user.sub ? activeAnalysis : null;
 }
 
-function analysisPageContent(user: GoogleUser): string {
+function analysisPageContent(user: AuthUser): string {
   const active = currentAnalysis(user);
   const isProcessing = active?.status === "processing";
   const hasReport = Boolean(active?.report);
@@ -1634,7 +1654,7 @@ function analysisPageContent(user: GoogleUser): string {
   return `<div class="page-heading analysis-heading"><div><p class="page-kicker">NEW CHECK</p><h1 id="analysis-title">${title}</h1><p>The file stays on your device and is processed locally.</p></div><button class="change-analysis" id="change-eml" type="button" ${hasReport || active?.status === "error" ? "" : "hidden"}>Change email</button></div><section class="eml-intake" id="eml-intake" ${isProcessing || hasReport ? "hidden" : ""}><button class="drop-zone" id="eml-drop" type="button"><span class="drop-icon">↥</span><strong>Drop an .eml file here</strong><span>or select it from your computer · max 10 MB</span></button><input id="eml-input" type="file" accept=".eml,message/rfc822" hidden /><p class="upload-status" id="upload-status">${status}</p></section>${isProcessing || hasReport ? `<p class="upload-status" id="upload-status">${status}</p>` : ""}<div id="analysis-result">${result}</div>`;
 }
 
-function contentFor(section: Section, user: GoogleUser): string {
+function contentFor(section: Section, user: AuthUser): string {
   const firstName = escapeHtml(user.name?.trim().split(/\s+/)[0] || user.email.split("@")[0]);
   const history = readAnalysisHistory(user);
   const selectedPeriod = statisticsPeriod(user);
@@ -1667,7 +1687,7 @@ function contentFor(section: Section, user: GoogleUser): string {
   return `<div class="page-heading dashboard-heading"><div><p class="page-kicker">YOUR PRIVATE WORKSPACE</p><h1>${dashboardGreeting()}, ${firstName}.</h1><p>Keep track of your inbox security.</p></div></div><section class="welcome-card"><div><p class="page-kicker">READY WHEN YOU ARE</p><h2>Received a suspicious email?</h2><p>Upload the EML file and let FishStop inspect its risk signals.</p><button class="primary-action" data-go="analyse" type="button">Analyse a file <span>→</span></button></div><div class="mail-art" aria-hidden="true"><span></span><i></i></div></section><div class="overview-row"><section class="mini-panel"><div class="panel-top"><h2>Recent activity</h2><button data-go="history" type="button">View history</button></div><div class="no-activity"><span>✓</span><div><strong>All clear</strong><p>You have not run an analysis yet.</p></div></div></section><section class="mini-panel security-panel"><span class="lock">⌾</span><h2>Your data stays yours.</h2><p>History and statistics are separated by account.</p></section></div>`;
 }
 
-function renderDashboard(user: GoogleUser, section: Section = "dashboard"): void {
+function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
   removeStatisticsMenuDismissal?.();
   removeStatisticsMenuDismissal = null;
   if (!analysisHistoryReady.has(user.sub)) {
@@ -1678,7 +1698,7 @@ function renderDashboard(user: GoogleUser, section: Section = "dashboard"): void
   const labels: Record<Section, string> = { dashboard: "Dashboard", analyse: "Analyse", history: "History", statistics: "Statistics", settings: "Settings" };
   const icons: Record<Section, string> = { dashboard: "⌂", analyse: searchIconMarkup(), history: "◴", statistics: "◔", settings: "⚙" };
   const initial = escapeHtml((user.name || user.email).trim().charAt(0).toUpperCase());
-  const safeName = escapeHtml(user.name || "Account Google");
+  const safeName = escapeHtml(user.name || (user.provider === "microsoft" ? "Microsoft account" : "Google account"));
   const safeEmail = escapeHtml(user.email);
   const safePicture = user.picture ? escapeHtml(user.picture) : "";
   root.innerHTML = `<div class="app-shell"><aside class="sidebar"><div class="sidebar-brand"><span class="brand-mark">⌁</span><span>fish<span>stop</span></span></div><nav aria-label="Primary navigation">${(Object.keys(labels) as Section[]).map((key) => `<button class="nav-item ${section === key ? "selected" : ""}" data-section="${key}" type="button"><span>${icons[key]}</span>${labels[key]}</button>`).join("")}</nav><div class="sidebar-bottom"><div class="account"><span class="avatar">${safePicture ? `<img src="${safePicture}" alt="" />` : initial}</span><div><strong>${safeName}</strong><small>${safeEmail}</small></div></div><button class="logout" id="logout" type="button">Sign out <span>↗</span></button></div></aside><main class="workspace"><header class="topbar"><div class="crumb"><span>FishStop</span><b>/</b><strong>${labels[section]}</strong></div><div class="top-status top-status-checking" data-protection-status role="status" aria-live="polite"><i aria-hidden="true"></i><span>Checking protection…</span></div></header><section class="content">${contentFor(section, user)}</section></main></div>`;

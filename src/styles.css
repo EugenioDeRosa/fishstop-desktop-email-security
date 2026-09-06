@@ -48,9 +48,7 @@ h2 { font-size: 34px; letter-spacing: -1.75px; line-height: 1.15; margin: 0; }
 .provider:disabled { cursor: wait; opacity: .75; }
 .provider b { color: #8a9b98; font-size: 19px; font-weight: 400; }
 .provider-icon { display: grid; place-items: center; width: 28px; height: 28px; }
-.microsoft-icon { grid-template-columns: repeat(2, 12px); grid-template-rows: repeat(2, 12px); gap: 2px; }
-.microsoft-icon i:nth-child(1) { background: #f35325; }.microsoft-icon i:nth-child(2) { background: #81bc06; }.microsoft-icon i:nth-child(3) { background: #05a6f0; }.microsoft-icon i:nth-child(4) { background: #ffba08; }
-.google-icon { border-radius: 50%; color: #4285f4; background: conic-gradient(from -50deg, #4285f4 0 26%, #34a853 0 43%, #fbbc05 0 64%, #ea4335 0 80%, #4285f4 0); -webkit-background-clip: text; background-clip: text; font-family: Arial, sans-serif; font-size: 22px; font-weight: 800; }
+.provider-icon svg { display: block; width: 24px; height: 24px; }
 .privacy { margin: 24px 3px 0; color: #8a9997; font-size: 10px; line-height: 1.7; }.privacy a { color: #557876; text-underline-offset: 2px; }
 .status { min-height: 20px; margin: 14px 3px 0; color: #278477; font-size: 11px; line-height: 1.5; }
 footer { display: flex; justify-content: space-between; gap: 18px; color: #9aa8a5; font-family: "DM Mono", monospace; font-size: 9px; letter-spacing: .4px; }

@@ -50,4 +50,4 @@ Il sidecar evita di richiedere Python all'utente finale. Qwen viene scaricato lo
 
 ## Accesso e dati locali
 
-L'accesso Google usa OAuth Authorization Code con PKCE e callback su `127.0.0.1`. Non vengono salvati password o client secret dell'utente. Le chiavi API di reputazione sono conservate nel portachiavi di sistema; cronologia e preferenze restano sul dispositivo.
+Gli accessi Google e Microsoft usano OAuth Authorization Code con PKCE e callback loopback locale. Microsoft usa un client desktop pubblico e non richiede un client secret; nel portale Entra deve essere registrato `http://localhost` come URI di reindirizzamento per applicazioni mobili e desktop. Non vengono salvati password o token OAuth. Le chiavi API di reputazione sono conservate nel portachiavi di sistema; cronologia e preferenze restano sul dispositivo e sono separate per provider e account.

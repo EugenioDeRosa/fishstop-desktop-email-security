@@ -14,18 +14,40 @@ type SocFlag = { level: "HIGH" | "MEDIUM" | "LOW" | "INFO"; field: string; messa
 type AuthResult = { status?: string; identity?: string; source?: string; raw?: string; all_results?: AuthResult[] };
 type ReceivedHop = { from_host?: string; by_host?: string; sender_ip?: string; all_ips?: string[]; received_at?: string; raw?: string };
 type AnalysisReport = {
-  subject?: string; from_?: string; reply_to?: string; return_path?: string; flags?: SocFlag[];
+  subject?: string; from_?: string; from_registered_domain?: string; reply_to?: string; return_path?: string; flags?: SocFlag[];
   delivered_to?: string; to?: string; date?: string; message_id?: string; errors_to?: string; importance?: string;
   body_source?: string; body_clean?: string; body_ai?: string; body_context?: string; body_html?: string; body_html_safe?: string; injection_sender_ip?: string;
   eml_sha256?: string;
+  mime_status?: "clean" | "review";
+  mime_defect_count?: number;
+  mime_duplicate_header_count?: number;
+  mime_findings?: Array<{ kind?: string; code?: string; level?: "HIGH" | "MEDIUM" | "LOW" | "INFO"; part_path?: string; header?: string; count?: number; message?: string }>;
+  mime_alternative_analysis?: { status?: "not_applicable" | "consistent" | "divergent"; groups_analyzed?: number; divergent_group_count?: number; message?: string; groups?: Array<{ part_path?: string; alternative_count?: number; content_types?: string[]; minimum_similarity?: number; divergent?: boolean; alternatives?: Array<{ part_path?: string; content_type?: string; effective_content_type?: string; character_count?: number; token_count?: number }> }> };
   return_path_domain_mismatch?: boolean; reply_to_mismatch?: boolean; display_name_spoofing?: string;
-  links?: Array<{ url?: string; host?: string; is_ip?: boolean; scheme?: string; source?: string; display_text?: string; display_host?: string; display_mismatch?: boolean; resolved_display_destination?: boolean; signature_tracking_redirect?: boolean; html_call_to_action?: boolean; is_possible_shortener?: boolean; shortener_reason?: string; has_userinfo?: boolean; has_credentials?: boolean; nonstandard_port?: boolean; port?: number; nested_redirect_count?: number; redirect_hosts?: string[]; unicode_host?: boolean; unicode_path_or_query?: boolean; role?: string; actionable?: boolean; sources?: string[]; download_filename?: string; download_extension?: string; dangerous_download?: boolean; financial_attachment_mismatch?: boolean; context_risk_level?: string; context_risk_message?: string }>;
+  links?: Array<{ url?: string; host?: string; registered_domain?: string; is_ip?: boolean; scheme?: string; source?: string; display_text?: string; display_host?: string; display_registered_domain?: string; display_mismatch?: boolean; resolved_display_destination?: boolean; signature_tracking_redirect?: boolean; html_call_to_action?: boolean; is_possible_shortener?: boolean; shortener_reason?: string; has_userinfo?: boolean; has_credentials?: boolean; nonstandard_port?: boolean; port?: number; nested_redirect_count?: number; redirect_hosts?: string[]; redirect_downloads?: Array<{ filename?: string; extension?: string; dangerous?: boolean }>; unicode_host?: boolean; unicode_path_or_query?: boolean; role?: string; actionable?: boolean; sources?: string[]; download_filename?: string; download_extension?: string; download_source?: string; dangerous_download?: boolean; financial_attachment_mismatch?: boolean; context_risk_level?: string; context_risk_message?: string }>;
   link_reputation?: Record<string, ReputationResult>;
   hop_reputation?: Record<string, ReputationResult>;
   domain_reputation?: Record<string, { infrastructure?: ReputationResult; virustotal?: ReputationResult & { registrar?: string; creation_date?: string | number }; rdap?: ReputationResult & { registration_date?: string; registrar?: string } }>;
   geolocation_results?: Record<string, ReputationResult>;
-  attachments?: Array<{ filename?: string; content_type?: string; size?: number; hash_sha256?: string; anomaly?: string; magic_detected_format?: string; mime_role?: string; actionable?: boolean; pdf_security?: { risk_level?: string; summary?: string }; archive_security?: { risk_level?: string; summary?: string; entry_count?: number; total_uncompressed_bytes?: number; encrypted_entry_count?: number; nested_archive_count?: number; findings?: Array<{ label?: string; severity?: string; count?: number; samples?: string[] }> }; file_reputation?: ReputationResult }>;
-  lookalike_alerts?: Array<{ url?: string; host?: string; matched_brand?: string; technique?: string; detail?: string; edit_distance?: number }>;
+  attachments?: Array<{
+    filename?: string;
+    content_type?: string;
+    size?: number;
+    hash_sha256?: string;
+    anomaly?: string;
+    magic_detected_format?: string;
+    mime_role?: string;
+    actionable?: boolean;
+    attachment_security?: {
+      risk_level?: string;
+      summary?: string;
+      findings?: Array<{ key?: string; label?: string; severity?: string; evidence?: string }>;
+    };
+    pdf_security?: { risk_level?: string; summary?: string };
+    archive_security?: { risk_level?: string; summary?: string; entry_count?: number; total_uncompressed_bytes?: number; encrypted_entry_count?: number; nested_archive_count?: number; findings?: Array<{ label?: string; severity?: string; count?: number; samples?: string[] }> };
+    file_reputation?: ReputationResult;
+  }>;
+  lookalike_alerts?: Array<{ url?: string; host?: string; registered_domain?: string; matched_brand?: string; technique?: string; detail?: string; edit_distance?: number; level?: "HIGH" | "MEDIUM" | "LOW" | "INFO" }>;
   authentication_results_raw?: string; arc_authentication_results?: string; received_spf_raw?: string;
   dkim_signature_present?: boolean; dkim_signature_raw?: string;
   html_form_analysis?: { status?: string; form_count?: number; message?: string; forms?: Array<{ risk?: string; method?: string; action?: string; action_host?: string; action_kind?: string; external_action?: boolean; field_count?: number; sensitive_fields?: string[]; message?: string }> };
@@ -617,29 +639,20 @@ function highSeverityStaticReason(report: AnalysisReport): string | null {
   if (/pdf/i.test(decisive.field)) {
     return "Static PDF inspection found high-risk active content, such as redirects or external actions.";
   }
+  if (
+    /attachment/i.test(decisive.field)
+    && /high-risk attachment|executable|script|bidirectional|double extension/i.test(decisive.message)
+  ) {
+    return "Static attachment inspection found an executable, script, or disguised high-risk file type.";
+  }
   if (/attachment/i.test(decisive.field) && /(?:content-type|magic bytes|filename|extension)/i.test(decisive.message)) {
     return "Static attachment inspection found an inconsistency between the filename, declared type, and binary format.";
   }
   return `A high-severity static check failed: ${decisive.field} — ${decisive.message}`;
 }
 
-function mailboxDomain(value?: string): string {
-  const matches = String(value || "").toLowerCase().match(/@([a-z0-9.-]+\.[a-z]{2,})/g);
-  return matches?.at(-1)?.slice(1).replace(/\.+$/, "") || "";
-}
-
-function registrableDomain(value?: string): string {
-  const host = String(value || "").toLowerCase().replace(/^\[|\]$/g, "").replace(/\.+$/, "");
-  const labels = host.split(".").filter(Boolean);
-  if (labels.length <= 2) return host;
-  const multipartSuffixes = new Set([
-    "ac.uk", "co.uk", "gov.uk", "org.uk",
-    "com.au", "net.au", "org.au",
-    "com.br", "net.br", "org.br",
-    "co.jp", "co.nz", "co.za",
-  ]);
-  const suffix = labels.slice(-2).join(".");
-  return labels.slice(multipartSuffixes.has(suffix) ? -3 : -2).join(".");
+function normalizedDomain(value?: string): string {
+  return String(value || "").trim().toLowerCase().replace(/^\[|\]$/g, "").replace(/\.+$/, "");
 }
 
 function stronglyAuthenticatedSender(report: AnalysisReport): boolean {
@@ -663,16 +676,27 @@ function verdictFlags(report: AnalysisReport): SocFlag[] {
   ));
 }
 
+function isRiskyLookalikeAlert(alert: NonNullable<AnalysisReport["lookalike_alerts"]>[number]): boolean {
+  // Reports saved before severity was added retain their fail-closed behaviour.
+  return ["HIGH", "MEDIUM"].includes((alert.level || "HIGH").toUpperCase());
+}
+
 function isAuthenticatedFirstPartyLink(report: AnalysisReport, link: NonNullable<AnalysisReport["links"]>[number]): boolean {
   if (!stronglyAuthenticatedSender(report)) return false;
   if (link.is_ip || link.display_mismatch || link.has_userinfo || link.has_credentials || link.is_possible_shortener) return false;
-  const linkDomain = registrableDomain(link.host);
+  // The Python engine owns Public Suffix List resolution. If an old stored
+  // report lacks these fields, fail closed instead of guessing from labels.
+  const linkDomain = normalizedDomain(link.registered_domain);
   if (!linkDomain) return false;
   const trustedDomains = new Set([
-    registrableDomain(mailboxDomain(report.from_)),
-    ...(report.identity_analysis?.coherence || []).map((item) => registrableDomain(item.official_domain)),
+    normalizedDomain(report.from_registered_domain),
+    ...(report.identity_analysis?.coherence || []).map((item) => normalizedDomain(item.official_domain)),
   ].filter(Boolean));
-  const lookalikeDomains = new Set((report.lookalike_alerts || []).map((alert) => registrableDomain(alert.host)));
+  const lookalikeDomains = new Set(
+    (report.lookalike_alerts || [])
+      .filter(isRiskyLookalikeAlert)
+      .map((alert) => normalizedDomain(alert.registered_domain)),
+  );
   return trustedDomains.has(linkDomain) && !lookalikeDomains.has(linkDomain);
 }
 
@@ -1013,29 +1037,32 @@ function reportMarkup(report: AnalysisReport): string {
     senderConsistencyItem(returnPathTone, "Return-Path domain", returnPathDetail, report.return_path_domain_mismatch ? returnPathDmarcPassed ? "Mismatch · DMARC passed" : returnPathDmarcFailed ? "Technical mismatch" : "Weak mismatch" : "Aligned", report.return_path_domain_mismatch ? returnPathAddress : ""),
     senderConsistencyItem(displayNameSpoofed ? "fail" : "pass", "Display name", displayNameSpoofed ? displayNameSpoofing : "No display-name impersonation detected.", displayNameSpoofed ? "Impersonation detected" : "Aligned"),
   ].join("");
-  const lookalikeHosts = new Set((report.lookalike_alerts || []).map((alert) => (alert.host || "").toLowerCase()));
+  const riskyLookalikeAlerts = (report.lookalike_alerts || []).filter(isRiskyLookalikeAlert);
+  const informationalIdnAlerts = (report.lookalike_alerts || []).filter((alert) => !isRiskyLookalikeAlert(alert));
+  const lookalikeHosts = new Set(riskyLookalikeAlerts.map((alert) => (alert.host || "").toLowerCase()));
   const sourceLabel: Record<string, string> = { html_href: "HTML link", html_button: "HTML button", html_text: "HTML text", plain_text: "Email text", attachment: "Attachment URL" };
   const techniqueLabel: Record<string, string> = {
     edit_distance: "Edit distance", homoglyph: "Unicode homoglyphs", unicode_homoglyph: "Confusable Unicode characters",
-    punycode_idna: "Punycode / IDNA domain", punycode_homograph: "Punycode homograph", typosquatting: "Typosquatting",
+    punycode_idna: "Internationalized IDN domain", punycode_invalid: "Invalid Punycode / IDNA domain", mixed_script_idn: "Mixed-script IDN domain", punycode_homograph: "Punycode homograph", typosquatting: "Typosquatting",
   };
   const links = (report.links || []).filter((link) => (link.scheme || "").toLowerCase() !== "mailto").map((link) => {
     const signatureTracking = Boolean(link.signature_tracking_redirect);
+    const safeSignatureTracking = signatureTracking && !link.dangerous_download;
     const htmlCallToAction = Boolean(link.html_call_to_action);
-    const dangerous = Boolean(link.is_ip || lookalikeHosts.has((link.host || "").toLowerCase()));
+    const dangerous = Boolean(link.is_ip || link.dangerous_download || lookalikeHosts.has((link.host || "").toLowerCase()));
     const structuralDanger = Boolean(link.has_userinfo || link.has_credentials);
     const structuralWarning = Boolean(link.nonstandard_port || link.nested_redirect_count || link.unicode_path_or_query);
     const reputationResult = report.link_reputation?.[link.url || ""];
     const reputation = reputationCheckTone(reputationResult);
     const invoiceDeliveryMismatch = Boolean(link.financial_attachment_mismatch);
-    const tone = signatureTracking ? "pass" : dangerous || structuralDanger || link.display_mismatch || invoiceDeliveryMismatch ? "fail" : reputation || (structuralWarning || link.is_possible_shortener ? "warn" : "neutral");
-    const status = signatureTracking ? "Signature tracking redirect" : invoiceDeliveryMismatch ? (link.dangerous_download ? "Invoice link points to a script/executable" : "Invoice delivery is unrelated to sender domain") : dangerous ? (link.is_ip ? "Direct IP" : "Lookalike domain") : structuralDanger ? "Hidden destination userinfo" : link.display_mismatch ? "Destination differs from visible text" : reputation === "fail" ? "Detected by VirusTotal" : reputation === "warn" ? "Review required" : reputation === "pass" ? "VirusTotal clean" : link.nested_redirect_count ? "Nested redirect destination" : link.nonstandard_port ? "Non-standard port" : link.unicode_path_or_query ? "Unicode path or query" : link.is_possible_shortener ? "Possible URL shortener" : "Valid URL structure";
+    const tone = safeSignatureTracking ? "pass" : dangerous || structuralDanger || link.display_mismatch || invoiceDeliveryMismatch ? "fail" : reputation || (structuralWarning || link.is_possible_shortener ? "warn" : "neutral");
+    const status = safeSignatureTracking ? "Signature tracking redirect" : invoiceDeliveryMismatch ? (link.dangerous_download ? "Invoice link points to a script/executable" : "Invoice delivery is unrelated to sender domain") : dangerous ? (link.is_ip ? "Direct IP" : link.dangerous_download ? "Executable or script download" : "Lookalike domain") : structuralDanger ? "Hidden destination userinfo" : link.display_mismatch ? "Destination differs from visible text" : reputation === "fail" ? "Detected by VirusTotal" : reputation === "warn" ? "Review required" : reputation === "pass" ? "VirusTotal clean" : link.nested_redirect_count ? "Nested redirect destination" : link.nonstandard_port ? "Non-standard port" : link.unicode_path_or_query ? "Unicode path or query" : link.is_possible_shortener ? "Possible URL shortener" : "Valid URL structure";
     const host = link.host || "URL without host";
     const vtUrl = reputationResult?.permalink || `https://www.virustotal.com/gui/domain/${encodeURIComponent(host)}`;
     const whoisUrl = `https://www.whois.com/whois/${encodeURIComponent(host)}`;
     const isWebLink = ["http", "https"].includes((link.scheme || "").toLowerCase());
     const metadata = [sourceLabel[link.source || ""] || link.source, link.scheme ? link.scheme.toUpperCase() : ""].filter(Boolean).join(" · ");
-    const notes = [htmlCallToAction && "Clickable HTML call-to-action", invoiceDeliveryMismatch && link.context_risk_message, link.dangerous_download && `Download filename: ${link.download_filename || `.${link.download_extension || "unknown"}`}`, signatureTracking && `Final destination: ${(link.redirect_hosts || []).join(", ") || "embedded target"}`, link.display_mismatch && `Visible text: ${link.display_host || link.display_text || "different domain"}`, link.has_credentials && "Username or password is embedded before the destination host", link.has_userinfo && "Userinfo is present before the destination host", link.nonstandard_port && `Port ${link.port}`, !signatureTracking && link.nested_redirect_count && `Redirects to: ${(link.redirect_hosts || []).join(", ") || "embedded target"}`, link.unicode_path_or_query && "Unicode characters in path or query", link.is_possible_shortener && link.shortener_reason, reputationResult?.detection_ratio && `VirusTotal: ${reputationResult.detection_ratio}`, reputationResult?.last_analysis && `Last analysis: ${reputationResult.last_analysis}`].filter(Boolean).join(" · ");
+    const notes = [htmlCallToAction && "Clickable HTML call-to-action", invoiceDeliveryMismatch && link.context_risk_message, link.dangerous_download && `${link.download_source === "redirect" ? "Redirect download filename" : "Download filename"}: ${link.download_filename || `.${link.download_extension || "unknown"}`}`, signatureTracking && `Final destination: ${(link.redirect_hosts || []).join(", ") || "embedded target"}`, link.display_mismatch && `Visible text: ${link.display_host || link.display_text || "different domain"}`, link.has_credentials && "Username or password is embedded before the destination host", link.has_userinfo && "Userinfo is present before the destination host", link.nonstandard_port && `Port ${link.port}`, !signatureTracking && link.nested_redirect_count && `Redirects to: ${(link.redirect_hosts || []).join(", ") || "embedded target"}`, link.unicode_path_or_query && "Unicode characters in path or query", link.is_possible_shortener && link.shortener_reason, reputationResult?.detection_ratio && `VirusTotal: ${reputationResult.detection_ratio}`, reputationResult?.last_analysis && `Last analysis: ${reputationResult.last_analysis}`].filter(Boolean).join(" · ");
     const virusTotalAction = !isWebLink ? ""
       : reputationResult?.status === "not_found"
       ? `<a class="manual-vt-action" href="https://www.virustotal.com/gui/home/url" target="_blank" rel="noopener noreferrer" data-vt-manual-url="${escapeHtml(link.url || "")}">Copy URL &amp; open VirusTotal ↗</a>`
@@ -1059,37 +1086,62 @@ function reportMarkup(report: AnalysisReport): string {
     return `<li class="static-check static-check-neutral email-action"><div><strong>${escapeHtml(action.recipient)}</strong><span>Email action</span></div><small>${escapeHtml(`${countDetail} · ${subjectDetail}`)}</small><button class="copy-evidence" type="button" data-copy-ioc="${escapeHtml(action.recipient)}">Copy address</button></li>`;
   }).join("") || staticCheckItem("neutral", "No email actions", "No mailto destinations are present in the message.", "Not applicable");
   const attachments = (report.attachments || []).map((attachment) => {
+    const attachmentRisk = (attachment.attachment_security?.risk_level || "").toLowerCase();
     const pdfRisk = (attachment.pdf_security?.risk_level || "").toLowerCase();
     const archiveRisk = (attachment.archive_security?.risk_level || "").toLowerCase();
-    const risky = Boolean(attachment.anomaly || ["high", "critical"].includes(pdfRisk) || ["high", "critical"].includes(archiveRisk));
-    const caution = ["medium", "warning"].includes(pdfRisk) || ["medium", "warning"].includes(archiveRisk);
+    const dangerousType = ["high", "critical"].includes(attachmentRisk);
+    const risky = Boolean(dangerousType || attachment.anomaly || ["high", "critical"].includes(pdfRisk) || ["high", "critical"].includes(archiveRisk));
+    const caution = ["medium", "warning"].includes(attachmentRisk) || ["medium", "warning"].includes(pdfRisk) || ["medium", "warning"].includes(archiveRisk);
     const reputationResult = attachment.file_reputation;
     const reputation = reputationCheckTone(reputationResult);
     const detail = `${attachment.content_type || "unknown type"} · ${attachment.size || 0} bytes · ${attachment.magic_detected_format || "unrecognised format"}`;
     const archiveMeta = attachment.archive_security ? `${attachment.archive_security.entry_count || 0} entries${attachment.archive_security.nested_archive_count ? ` · ${attachment.archive_security.nested_archive_count} nested` : ""}${attachment.archive_security.encrypted_entry_count ? ` · ${attachment.archive_security.encrypted_entry_count} encrypted` : ""}` : "";
-    const note = attachment.anomaly || attachment.pdf_security?.summary || attachment.archive_security?.summary || (caution ? "Archive or PDF requires review" : "Local structure valid");
+    const note = (dangerousType ? attachment.attachment_security?.summary : "") || attachment.anomaly || attachment.pdf_security?.summary || attachment.archive_security?.summary || (caution ? "Archive or PDF requires review" : "Local structure valid");
     const tone = risky ? "fail" : caution ? "warn" : reputation || "pass";
-    const status = risky ? "Anomaly detected" : caution || reputation === "warn" ? "Review required" : reputation === "fail" ? "Detected by VirusTotal" : reputation === "pass" ? "VirusTotal clean" : "Passed";
+    const status = dangerousType ? "High-risk file type" : risky ? "Anomaly detected" : caution || reputation === "warn" ? "Review required" : reputation === "fail" ? "Detected by VirusTotal" : reputation === "pass" ? "VirusTotal clean" : "Passed";
     const intelligence = [reputationResult?.detection_ratio && `VirusTotal: ${reputationResult.detection_ratio}`, reputationResult?.last_analysis && `Last analysis: ${reputationResult.last_analysis}`].filter(Boolean).join(" · ");
     const reportLink = reputationResult?.permalink ? `<p><a href="${escapeHtml(reputationResult.permalink)}" target="_blank" rel="noopener noreferrer">VirusTotal report ↗</a></p>` : "";
     const copyAction = tone === "fail" && attachment.hash_sha256 ? `<button class="copy-evidence" type="button" data-copy-ioc="${escapeHtml(attachment.hash_sha256)}">Copy SHA-256</button>` : "";
     return `<li class="static-check static-check-${tone}"><strong>${escapeHtml(attachment.filename || "Unnamed attachment")}</strong><small>${escapeHtml(`${status} · ${detail} · ${note}`)}</small>${archiveMeta ? `<em>Archive inspection: ${escapeHtml(archiveMeta)}</em>` : ""}${intelligence ? `<em>${escapeHtml(intelligence)}</em>` : ""}${copyAction}${reportLink}</li>`;
   }).join("") || staticCheckItem("neutral", "No attachments detected", "No MIME files are available to check.", "Not applicable");
   const lookalikes = (report.lookalike_alerts || []).map((alert) => {
+    const risky = isRiskyLookalikeAlert(alert);
+    const tone: CheckTone = alert.level === "MEDIUM" ? "warn" : risky ? "fail" : "neutral";
     const technique = techniqueLabel[alert.technique || ""] || alert.technique || "Suspicious domain";
     const brand = alert.matched_brand && alert.matched_brand !== "-" ? ` → ${alert.matched_brand}` : "";
     const editDistance = alert.edit_distance === undefined || alert.edit_distance === null ? "" : ` · distance ${alert.edit_distance}`;
     const copyValue = alert.url || alert.host || "";
-    return `<li class="static-check static-check-fail lookalike-evidence"><div><strong>${escapeHtml(technique)}</strong><span>Possible impersonation</span></div><b>${escapeHtml(`${alert.host || "Domain"}${brand}`)}</b>${editDistance ? `<em>${escapeHtml(editDistance.trim().replace(/^·\s*/, ""))}</em>` : ""}${alert.detail ? `<small>${escapeHtml(alert.detail)}</small>` : ""}${alert.url ? `<code>${escapeHtml(alert.url)}</code>` : ""}${copyValue ? `<button class="copy-evidence" type="button" data-copy-ioc="${escapeHtml(copyValue)}">Copy ${alert.url ? "URL" : "domain"}</button>` : ""}</li>`;
+    return `<li class="static-check static-check-${tone} lookalike-evidence"><div><strong>${escapeHtml(technique)}</strong><span>${risky ? "Possible impersonation" : "Informational"}</span></div><b>${escapeHtml(`${alert.host || "Domain"}${brand}`)}</b>${editDistance ? `<em>${escapeHtml(editDistance.trim().replace(/^·\s*/, ""))}</em>` : ""}${alert.detail ? `<small>${escapeHtml(alert.detail)}</small>` : ""}${alert.url ? `<code>${escapeHtml(alert.url)}</code>` : ""}${copyValue ? `<button class="copy-evidence" type="button" data-copy-ioc="${escapeHtml(copyValue)}">Copy ${alert.url ? "URL" : "domain"}</button>` : ""}</li>`;
   }).join("") || staticCheckItem("pass", "No lookalike domains", "No suspicious similarity with monitored brands.", "Passed");
+  const lookalikeSummary = riskyLookalikeAlerts.length
+    ? `${riskyLookalikeAlerts.length} possible lookalike domain(s).`
+    : informationalIdnAlerts.length
+      ? `${informationalIdnAlerts.length} internationalized domain(s) observed; no homograph evidence found.`
+      : "No lookalike domains detected.";
+  const mimeAnalysis = report.mime_alternative_analysis;
+  const mimeFindings = report.mime_findings || [];
+  const mimeTone: CheckTone = report.mime_status === "review" || mimeAnalysis?.status === "divergent" ? "warn" : "pass";
+  const mimeFindingRows = mimeFindings.map((finding) => staticCheckItem(
+    finding.level === "HIGH" ? "fail" : finding.level === "MEDIUM" ? "warn" : "neutral",
+    finding.header ? `${finding.code || finding.kind || "MIME finding"} · ${finding.header}` : finding.code || finding.kind || "MIME finding",
+    finding.message || `MIME part ${finding.part_path || "unknown"} requires review.`,
+    finding.level || "Review",
+  )).join("");
+  const alternativeRows = (mimeAnalysis?.groups || []).map((group) => staticCheckItem(
+    group.divergent ? "warn" : "pass",
+    `Alternative group ${group.part_path || "unknown"}`,
+    `${group.alternative_count || 0} variant(s) · ${(group.content_types || []).join(", ") || "unknown types"} · minimum similarity ${Math.round((group.minimum_similarity ?? 1) * 100)}%.`,
+    group.divergent ? "Divergent · all variants analysed" : "Consistent",
+  )).join("");
+  const mimeInspection = `<section class="html-form-inspection static-surface-${mimeTone}"><div><p class="page-kicker">MIME INTEGRITY</p><h3>Structure and alternative bodies</h3><p>${escapeHtml(mimeAnalysis?.message || (mimeFindings.length ? "The MIME structure requires review." : "No MIME ambiguity was detected."))}</p></div><ul>${mimeFindingRows}${alternativeRows || staticCheckItem("pass", "No divergent alternatives", "No conflicting text/plain and text/html bodies were detected.", "Passed")}</ul></section>`;
   const fields = (items: Array<[string, string | undefined | null | boolean]>) => `<dl class="field-list">${items.filter(([, value]) => value !== undefined && value !== null && value !== "").map(([label, value]) => `<div><dt>${label}</dt><dd>${escapeHtml(String(value))}</dd></div>`).join("") || "<div><dd>No data available.</dd></div>"}</dl>`;
   const menu = [["summary", "Summary"], ["sender", "Sender"], ["auth", "Authentication"], ["links", "Links"], ["files", "Files"], ["content", "Content"], ["technical", "Technical"]];
   const tabs = menu.map(([id, label], index) => `<button class="report-tab ${index === 0 ? "active" : ""}" data-report-tab="${id}" type="button">${label}</button>`).join("");
   const panel = (id: string, content: string, active = false) => {
-    const composedContent = id === "content" ? `${content}${htmlFormDetails}` : content;
+    const composedContent = id === "content" ? `${mimeInspection}${content}${htmlFormDetails}` : content;
     return `<section class="report-panel ${active ? "active" : ""}" data-report-panel="${id}">${composedContent}</section>`;
   };
-  return `<section class="analysis-report verdict-${verdict.tone}"><div class="report-summary"><p class="page-kicker">ANALYSIS RESULT</p><h2>${risk}</h2><p class="verdict-detail">${escapeHtml(verdict.detail)}</p>${rationale}<p><strong>${escapeHtml(report.subject || "No subject")}</strong> · ${escapeHtml(report.from_ || "Sender unavailable")}</p><div class="report-stats"><span>${high} high</span><span>${medium} medium</span><span>${(report.links || []).filter((link) => (link.scheme || "").toLowerCase() !== "mailto").length} web links</span><span>${(report.attachments || []).length} attachments</span></div></div><nav class="report-tabs" aria-label="Report sections"><span class="report-tab-indicator" aria-hidden="true"></span>${tabs}</nav>${panel("summary", `<div class="report-grid"><section><h3>Message</h3>${fields([["From", report.from_], ["To", report.to], ["Subject", report.subject], ["Date", report.date]])}</section><section><h3>Trust checks</h3><ul class="auth-grid">${auth}</ul><p class="quiet">${report.lookalike_alerts?.length ? `${report.lookalike_alerts.length} possible lookalike domain(s).` : "No lookalike domains detected."}</p></section></div><div class="report-flags"><h3>All signals</h3><ul>${details}</ul></div>`, true)}${panel("sender", `<div class="report-grid"><section><h3>Sender identity</h3>${fields([["Delivered-To", report.delivered_to], ["Return-Path", report.return_path], ["Reply-To", report.reply_to], ["Errors-To", report.errors_to], ["Importance", report.importance]])}</section><section class="sender-consistency"><h3>Identity consistency</h3><ul class="auth-grid">${senderInconsistencies}</ul></section></div>`)}${panel("auth", `<div class="report-grid"><section><h3>Routing</h3>${fields([["Received hops", String((report.received_hops || []).length)], ["Injection IP", report.injection_sender_ip]])}</section></div><section class="authentication-checks"><h3>Authentication checks</h3><div class="auth-evidence-grid">${authDetails}</div></section>`)}${panel("links", `<div class="report-grid"><section class="evidence-card"><h3>Web links</h3><ul>${links}</ul></section><section class="evidence-card"><h3>Email actions</h3><ul>${emailActions}</ul></section><section class="evidence-card"><h3>Lookalike / Typosquatting</h3><ul>${lookalikes}</ul></section></div>`)}${panel("files", `<section class="evidence-card"><h3>Attachments</h3><ul>${attachments}</ul></section>`)}${panel("content", `<div class="report-grid"><section><h3>Context</h3>${fields([["Source", report.body_source], ["Selection", report.body_context]])}</section><section><h3>Extracted body</h3><pre>${escapeHtml((report.body_ai || report.body_clean || "No extractable text.").slice(0, 12000))}</pre></section></div>`)}${panel("technical", `<section class="technical-report"><div><h3>Structured report</h3><p>Export technical evidence as JSON, without the original binary content.</p></div><button id="download-report" type="button">Download JSON</button><pre>${escapeHtml(JSON.stringify(report, null, 2))}</pre></section>`)}</section>`;
+  return `<section class="analysis-report verdict-${verdict.tone}"><div class="report-summary"><p class="page-kicker">ANALYSIS RESULT</p><h2>${risk}</h2><p class="verdict-detail">${escapeHtml(verdict.detail)}</p>${rationale}<p><strong>${escapeHtml(report.subject || "No subject")}</strong> · ${escapeHtml(report.from_ || "Sender unavailable")}</p><div class="report-stats"><span>${high} high</span><span>${medium} medium</span><span>${(report.links || []).filter((link) => (link.scheme || "").toLowerCase() !== "mailto").length} web links</span><span>${(report.attachments || []).length} attachments</span></div></div><nav class="report-tabs" aria-label="Report sections"><span class="report-tab-indicator" aria-hidden="true"></span>${tabs}</nav>${panel("summary", `<div class="report-grid"><section><h3>Message</h3>${fields([["From", report.from_], ["To", report.to], ["Subject", report.subject], ["Date", report.date]])}</section><section><h3>Trust checks</h3><ul class="auth-grid">${auth}</ul><p class="quiet">${lookalikeSummary}</p></section></div><div class="report-flags"><h3>All signals</h3><ul>${details}</ul></div>`, true)}${panel("sender", `<div class="report-grid"><section><h3>Sender identity</h3>${fields([["Delivered-To", report.delivered_to], ["Return-Path", report.return_path], ["Reply-To", report.reply_to], ["Errors-To", report.errors_to], ["Importance", report.importance]])}</section><section class="sender-consistency"><h3>Identity consistency</h3><ul class="auth-grid">${senderInconsistencies}</ul></section></div>`)}${panel("auth", `<div class="report-grid"><section><h3>Routing</h3>${fields([["Received hops", String((report.received_hops || []).length)], ["Injection IP", report.injection_sender_ip]])}</section><section class="authentication-checks"><h3>Authentication checks</h3><div class="auth-evidence-grid">${authDetails}</div></section>`)}${panel("links", `<div class="report-grid"><section class="evidence-card"><h3>Web links</h3><ul>${links}</ul></section><section class="evidence-card"><h3>Email actions</h3><ul>${emailActions}</ul></section><section class="evidence-card"><h3>Lookalike / Typosquatting</h3><ul>${lookalikes}</ul></section></div>`)}${panel("files", `<section class="evidence-card"><h3>Attachments</h3><ul>${attachments}</ul></section>`)}${panel("content", `<div class="report-grid"><section><h3>Context</h3>${fields([["Source", report.body_source], ["Selection", report.body_context]])}</section><section><h3>Extracted body</h3><pre>${escapeHtml((report.body_ai || report.body_clean || "No extractable text.").slice(0, 12000))}</pre></section></div>`)}${panel("technical", `<section class="technical-report"><div><h3>Structured report</h3><p>Export technical evidence as JSON, without the original binary content.</p></div><button id="download-report" type="button">Download JSON</button><pre>${escapeHtml(JSON.stringify(report, null, 2))}</pre></section>`)}</section>`;
 }
 
 function reputationRows(items: Array<{ title: string; detail: string; result?: ReputationResult; copyValue?: string }>): string {
@@ -1118,7 +1170,28 @@ function safeHtmlPreview(html: string): string {
   return html
     .replace(/<(script|style|iframe|object|embed|form|input|button|meta|base|link|svg|math)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, "")
     .replace(/<(script|style|iframe|object|embed|form|input|button|meta|base|link|svg|math)\b[^>]*\/?\s*>/gi, "")
-    .replace(/\s(?:on\w+|style|src|srcset|href|action|formaction|poster|background|ping)\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, "");
+    .replace(/\s(?:on\w+|style|src|srcset|xlink:href|href|action|formaction|poster|background|dynsrc|lowsrc|srcdoc|ping)\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, "");
+}
+
+const HTML_PREVIEW_CSP = [
+  "default-src 'none'",
+  "base-uri 'none'",
+  "form-action 'none'",
+  "frame-src 'none'",
+  "child-src 'none'",
+  "connect-src 'none'",
+  "img-src 'none'",
+  "media-src 'none'",
+  "font-src 'none'",
+  "style-src 'none'",
+  "script-src 'none'",
+  "object-src 'none'",
+  "manifest-src 'none'",
+  "worker-src 'none'",
+].join("; ");
+
+function safeHtmlPreviewDocument(fragment: string): string {
+  return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${escapeHtml(HTML_PREVIEW_CSP)}"><meta name="referrer" content="no-referrer"></head><body>${fragment}</body></html>`;
 }
 
 function addReputationPanel(report: AnalysisReport): void {
@@ -1296,7 +1369,10 @@ function integrateReputation(report: AnalysisReport): void {
   auth?.insertAdjacentHTML("beforeend", `<section class="evidence-card geographic-route"><div class="route-heading"><div><h3>Email route</h3><p>Drag the globe to explore the route from sender to recipient.</p></div><div class="globe-actions"><button type="button" data-globe-toggle>Start rotation</button><button type="button" data-globe-fit>Centre route</button></div></div><div class="email-globe-wrap"><canvas data-email-globe aria-label="Email geographic route globe"></canvas><div class="globe-tooltip" data-globe-tooltip hidden></div><div class="globe-legend"><span><i class="risk-low"></i>Low risk</span><span><i class="risk-medium"></i>Review required</span><span><i class="risk-high"></i>High risk</span></div></div>${hops}</section>`);
   const content = panel("content");
   const rawHtml = report.body_html_safe || safeHtmlPreview(report.body_html || "");
-  if (rawHtml) content?.insertAdjacentHTML("beforeend", `<section class="safe-html-preview"><h3>Safe HTML preview</h3><p>Scripts, forms, active links and remote content are blocked.</p><iframe sandbox="" referrerpolicy="no-referrer" srcdoc="${escapeHtml(rawHtml)}" title="Safe email HTML preview"></iframe></section>`);
+  if (rawHtml) {
+    const previewDocument = safeHtmlPreviewDocument(rawHtml);
+    content?.insertAdjacentHTML("beforeend", `<section class="safe-html-preview"><h3>Safe HTML preview</h3><p>Scripts, forms, CSS, active links and every remote resource are blocked.</p><iframe sandbox="" allow="" csp="${escapeHtml(HTML_PREVIEW_CSP)}" referrerpolicy="no-referrer" loading="lazy" srcdoc="${escapeHtml(previewDocument)}" title="Safe email HTML preview"></iframe></section>`);
+  }
 }
 
 function bindReportInteractions(user: GoogleUser, report: AnalysisReport): void {
@@ -1519,6 +1595,7 @@ function riskReasons(report: AnalysisReport): string[] {
   if ((report.attachments || []).some((file) => {
     const anomaly = String(file.anomaly || "").trim().toLowerCase();
     return Boolean(anomaly && anomaly !== "none")
+      || ["high", "critical"].includes((file.attachment_security?.risk_level || "").toLowerCase())
       || ["medium", "high", "critical", "warning"].includes((file.pdf_security?.risk_level || "").toLowerCase())
       || maliciousLink(file.file_reputation);
   }) || /attachment.*(malicious|suspicious)|pdf.*risk/.test(flags)) reasons.add("Suspicious attachment");

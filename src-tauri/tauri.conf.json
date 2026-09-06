@@ -11,7 +11,9 @@
   },
   "app": {
     "windows": [{ "title": "FishStop", "width": 1120, "height": 720, "minWidth": 760, "minHeight": 560, "resizable": true }],
-    "security": { "csp": null }
+    "security": {
+      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:1420 ws://127.0.0.1:1420; img-src 'self' data: asset: http://asset.localhost https://*.googleusercontent.com; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self' data:; frame-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'"
+    }
   },
   "bundle": {
     "active": true,
@@ -24,6 +26,6 @@
       "icons/icon.ico"
     ],
     "externalBin": ["binaries/fishstop-engine"],
-    "resources": ["resources"]
+    "resources": ["resources/ollama/**/*"]
   }
 }

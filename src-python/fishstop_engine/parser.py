@@ -29,13 +29,35 @@ def _sanitize_eml_bytes(raw_bytes: bytes) -> bytes:
        folded long headers. Python's parser does not recognise these as continuation
        lines and misparses multi-line headers (Received, ARC-*, etc.). Fix: lines
        that start with Unicode whitespace but not ASCII whitespace are prefixed with
-       a regular space; inline NBSP is replaced with a regular space throughout.
+       a regular space; inline NBSP is replaced with a regular space in headers.
 
     3. **Missing blank-line separator** - Header-only exports (no body, no trailing
        blank line) confuse Python's ``email`` parser boundary detection. Fix: append
        ``\\n\\n`` if no blank line is already present.
+
+    Only the RFC 5322 header block is normalised. The original header/body
+    separator and all body bytes are preserved exactly.
     """
-    lines = raw_bytes.split(b'\n')
+    separator_match = re.search(rb'\r\n\r\n|\n\n|\r\r', raw_bytes)
+    if separator_match:
+        header_bytes = raw_bytes[:separator_match.start()]
+        separator = separator_match.group(0)
+        body_bytes = raw_bytes[separator_match.end():]
+    else:
+        header_bytes = raw_bytes
+        separator = None
+        body_bytes = b''
+
+    # Preserve line endings in the header block. The separator and every byte
+    # after it are reattached verbatim so MIME payloads cannot be modified.
+    lines = header_bytes.splitlines(keepends=True)
+
+    def split_line_ending(line: bytes) -> tuple[bytes, bytes]:
+        if line.endswith(b'\r\n'):
+            return line[:-2], b'\r\n'
+        if line.endswith(b'\n') or line.endswith(b'\r'):
+            return line[:-1], line[-1:]
+        return line, b''
 
     # ── Fix 1: skip leading non-RFC-2822 header lines ────────────────────────
     # RFC 5322 field-name: one or more printable US-ASCII characters except ':'
@@ -43,7 +65,8 @@ def _sanitize_eml_bytes(raw_bytes: bytes) -> bytes:
     valid_field_re = re.compile(rb'^[!-9;-~]+:')
     start = 0
     for i, line in enumerate(lines):
-        if valid_field_re.match(line):
+        content, _ = split_line_ending(line)
+        if valid_field_re.match(content):
             start = i
             break
     lines = lines[start:]
@@ -54,21 +77,33 @@ def _sanitize_eml_bytes(raw_bytes: bytes) -> bytes:
     unicode_indent_re = re.compile(rb'^(?:(?:\xe2\x80[\x80-\x8b])|\xc2\xa0)+')
     fixed_lines = []
     for line in lines:
+        content, line_ending = split_line_ending(line)
         # If line starts with Unicode WS but NOT ASCII space/tab, it's a folded
         # continuation that Python won't recognise - prefix with ASCII space.
-        if line and line[0:1] not in (b' ', b'\t') and unicode_indent_re.match(line):
-            line = b' ' + unicode_indent_re.sub(b'', line)
+        if (
+            content
+            and content[0:1] not in (b' ', b'\t')
+            and unicode_indent_re.match(content)
+        ):
+            content = b' ' + unicode_indent_re.sub(b'', content)
         # Replace any remaining NBSP inline (e.g. inside Received header values)
-        line = line.replace(b'\xc2\xa0', b' ')
-        fixed_lines.append(line)
+        content = content.replace(b'\xc2\xa0', b' ')
+        fixed_lines.append(content + line_ending)
 
-    result = b'\n'.join(fixed_lines)
+    sanitized_headers = b''.join(fixed_lines)
 
-    # ── Fix 3: ensure blank-line header/body separator ───────────────────────
-    if b'\n\n' not in result:
-        result = result + b'\n\n'
+    if separator is not None:
+        return sanitized_headers + separator + body_bytes
 
-    return result
+    # ── Fix 3: ensure one blank-line header/body separator ──────────────────
+    if sanitized_headers.endswith(b'\r\n'):
+        return sanitized_headers + b'\r\n'
+    if sanitized_headers.endswith(b'\n'):
+        return sanitized_headers + b'\n'
+    if sanitized_headers.endswith(b'\r'):
+        return sanitized_headers + b'\r'
+    preferred_newline = b'\r\n' if b'\r\n' in sanitized_headers else b'\n'
+    return sanitized_headers + preferred_newline + preferred_newline
 
 
 class EmailParserPipeline:

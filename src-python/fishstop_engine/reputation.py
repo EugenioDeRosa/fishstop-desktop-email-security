@@ -7,6 +7,8 @@ import socket
 import re
 from urllib.parse import urlparse
 
+from fishstop_engine.domain_utils import registered_domain
+
 try:
     import requests
 except ImportError:  # Static parsing must remain usable without optional lookups.
@@ -131,15 +133,9 @@ def check_ip(api_key: str, ip: str) -> dict:
 
 
 def _parent_domain_for_reputation(domain: str) -> str:
-    """Return the registrable-looking parent used by the Streamlit fallback."""
-    labels = [label for label in domain.lower().strip(".").split(".") if label]
-    if len(labels) <= 2:
-        return domain
-    # Preserve the commonly used three-label country suffixes handled by the
-    # Streamlit implementation, otherwise inspect the final two labels.
-    if len(labels[-2]) <= 3 and labels[-1] in {"uk", "it", "au", "br", "za", "jp"}:
-        return ".".join(labels[-3:])
-    return ".".join(labels[-2:])
+    """Return the Public Suffix List registrable parent for reputation lookup."""
+    normalized = (domain or "").lower().strip(". ")
+    return registered_domain(normalized) or normalized
 
 
 def check_domain(api_key: str, domain: str) -> dict:

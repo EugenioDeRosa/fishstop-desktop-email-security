@@ -6,7 +6,7 @@ import re
 from collections import defaultdict
 from typing import Any
 
-from publicsuffix2 import get_sld
+from fishstop_engine.domain_utils import registrable_label
 
 
 MAX_SEGMENT_CHARS = 1_000
@@ -64,8 +64,7 @@ def _sender_domain_claims(report: dict[str, Any], text: str) -> list[str]:
     """Recover a claimed brand when its visible text matches the sender domain."""
     candidates: list[str] = []
     for domain in _EMAIL_RE.findall(str(report.get("from_") or "")):
-        registered = (get_sld(domain, strict=False) or domain).lower().strip(".")
-        label = registered.split(".", 1)[0].replace("-", " ")
+        label = registrable_label(domain).replace("-", " ")
         compact = re.sub(r"\s+", "", label)
         if len(compact) < 3 or compact.casefold() in _NON_BRAND_TOKENS:
             continue

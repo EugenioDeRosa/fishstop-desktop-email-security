@@ -48,10 +48,6 @@ _URL_PREVIEW_ATTRS = {
     "srcdoc",
 }
 
-_DANGEROUS_STYLE_RE = re.compile(
-    r"(?is)(?:expression\s*\(|url\s*\(|@import|behavior\s*:|-moz-binding\s*:|javascript\s*:|vbscript\s*:|data\s:)"
-)
-
 _UTF7_SHIFT_SEQUENCE_RE = re.compile(r"\+[A-Za-z0-9/]{3,}-")
 _HTML_TAG_RE = re.compile(
     r"(?is)<\s*/?\s*(?:html|head|body|table|tbody|tr|td|div|span|p|br|a|img|style|strong|ul|li)\b"
@@ -127,26 +123,23 @@ def _sanitize_preview_soup(html: str, block_images: bool = True) -> str:
                 label = f"{label}: external source removed"
             placeholder = soup.new_tag("div")
             placeholder.string = label
-            placeholder["style"] = (
-                "display:block; box-sizing:border-box; min-height:96px; padding:18px; "
-                "margin:8px 0; border:1px dashed #d0d7de; border-radius:6px; "
-                "background:#f6f8fa; color:#57606a; text-align:center; "
-                "font-family:Arial,sans-serif; font-size:14px;"
-            )
+            placeholder["data-fishstop-placeholder"] = "remote-image"
             placeholder["title"] = "Remote image was not loaded to prevent tracking or external content."
             img.replace_with(placeholder)
 
     for tag in soup.find_all(True):
         for attr in list(tag.attrs):
             attr_l = attr.lower()
-            value = tag.attrs.get(attr)
             if attr_l.startswith("on") or attr_l in _URL_PREVIEW_ATTRS:
                 del tag.attrs[attr]
                 if tag.name == "a":
                     tag.attrs["title"] = "Link removed for safety: use the Links found in the email section."
-                    tag.attrs["style"] = "color: inherit; text-decoration: none; cursor: default;"
                 continue
-            if attr_l == "style" and _DANGEROUS_STYLE_RE.search(str(value or "")):
+            # Remove all sender-controlled CSS, not only obvious url(...) and
+            # @import constructs. CSS has many resource-loading and historical
+            # execution primitives, and visual fidelity is less important than
+            # a preview that is guaranteed not to contact the sender.
+            if attr_l == "style":
                 del tag.attrs[attr]
                 continue
             if attr_l in {"target", "ping"}:
@@ -273,83 +266,34 @@ def sanitize_html_for_preview(html: str) -> str:
         safe_html = re.sub(r"(?is)<(script|style|head|iframe|object|embed|form|button|input|meta|base|link|svg|math)\b[^>]*?/?>", " ", safe_html)
         safe_html = re.sub(r"(?is)<img\b[^>]*>", "[Remote image blocked]", safe_html)
         safe_html = re.sub(r"""(?is)\son[a-z0-9_-]+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)""", "", safe_html)
-        safe_html = re.sub(r"""(?is)\s(?:href|src|srcset|xlink:href|action|formaction|poster|background|dynsrc|lowsrc|srcdoc|ping)\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)""", "", safe_html)
+        safe_html = re.sub(r"""(?is)\s(?:href|src|srcset|xlink:href|action|formaction|poster|background|dynsrc|lowsrc|srcdoc|ping|style)\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)""", "", safe_html)
         safe_html = re.sub(r"(?i)\b(?:javascript|vbscript|data)\s*:", "#", safe_html)
         escaped = html_lib.escape(safe_html)
-        return f"<pre style='white-space: pre-wrap'>{escaped}</pre>"
+        return f"<pre>{escaped}</pre>"
 
     body = _sanitize_preview_soup(html, block_images=True)
-    return f"""
-    <div style="font-family: Arial, sans-serif; font-size: 14px; line-height: 1.45; color: #24292f;">
-      {body}
-    </div>
-    """
+    return f'<div data-fishstop-email-preview="true">{body}</div>'
 
 
 def sanitize_html_for_js_preview(html: str) -> str:
     """
-    Restituisce una preview isolata: il JavaScript dell'email non viene mai
-    eseguito. Resta solo un piccolo script interno, protetto da CSP nonce, che
-    disabilita i click sui link anche se il DOM cambia.
+    Return a complete, inert preview document protected by a deny-all CSP.
+
+    The historical function name is kept for compatibility. No JavaScript is
+    included or allowed: the sanitized markup is static and cannot load remote
+    images, CSS, fonts, media, frames, or network connections.
     """
-    if not html or not html.strip():
-        return "<p><em>No HTML is available.</em></p>"
-
-    if _BS4_AVAILABLE:
-        body = _sanitize_preview_soup(html, block_images=True)
-    else:
-        body = sanitize_html_for_preview(html)
-
-    nonce = "fishstop-preview-guard"
+    body = sanitize_html_for_preview(html)
     csp = (
         "default-src 'none'; "
-        "img-src data:; "
-        "style-src 'unsafe-inline'; "
-        f"script-src 'nonce-{nonce}'; "
-        "connect-src 'none'; frame-src 'none'; object-src 'none'; "
-        "base-uri 'none'; form-action 'none'"
+        "base-uri 'none'; form-action 'none'; frame-src 'none'; child-src 'none'; "
+        "connect-src 'none'; img-src 'none'; media-src 'none'; font-src 'none'; "
+        "style-src 'none'; script-src 'none'; object-src 'none'; "
+        "manifest-src 'none'; worker-src 'none'"
     )
-    link_guard = f"""
-    <meta http-equiv="Content-Security-Policy" content="{html_lib.escape(csp, quote=True)}">
-    <style>
-      a, a:visited {{
-        color: inherit !important;
-        text-decoration: none !important;
-        cursor: default !important;
-        pointer-events: none !important;
-      }}
-    </style>
-    <script nonce="{nonce}">
-    (function () {{
-      function disableLinks(root) {{
-        var scope = root || document;
-        scope.querySelectorAll('a').forEach(function (link) {{
-          link.removeAttribute('href');
-          link.removeAttribute('target');
-          link.removeAttribute('ping');
-          link.setAttribute('aria-disabled', 'true');
-          link.setAttribute('title', 'Link disabilitato nella preview.');
-        }});
-      }}
-
-      document.addEventListener('click', function (event) {{
-        if (event.target && event.target.closest && event.target.closest('a')) {{
-          event.preventDefault();
-          event.stopImmediatePropagation();
-        }}
-      }}, true);
-
-      document.addEventListener('DOMContentLoaded', function () {{
-        disableLinks(document);
-        var observer = new MutationObserver(function () {{ disableLinks(document); }});
-        observer.observe(document.documentElement, {{ childList: true, subtree: true, attributes: true }});
-      }});
-    }}());
-    </script>
-    """
-    return f"""
-    {link_guard}
-    <div style="font-family: Arial, sans-serif; font-size: 14px; line-height: 1.45; color: #24292f;">
-      {body}
-    </div>
-    """
+    return (
+        "<!doctype html><html><head><meta charset=\"utf-8\">"
+        f"<meta http-equiv=\"Content-Security-Policy\" content=\"{html_lib.escape(csp, quote=True)}\">"
+        "<meta name=\"referrer\" content=\"no-referrer\"></head>"
+        f"<body>{body}</body></html>"
+    )

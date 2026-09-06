@@ -10,12 +10,13 @@ from urllib.parse import urljoin, urlparse
 
 import requests
 
+from fishstop_engine.domain_utils import registered_domain, registrable_label
+
 
 WIKIDATA_API = "https://www.wikidata.org/w/api.php"
 ENTITY_DATA_URL = "https://www.wikidata.org/wiki/Special:EntityData/{entity_id}.json"
 WIKIDATA_HEADERS = {"User-Agent": "FishStopDesktop/0.1 (local email-security analysis)"}
 _EMAIL_RE = re.compile(r"[A-Z0-9._%+\-]+@([A-Z0-9.\-]+\.[A-Z]{2,})", re.IGNORECASE)
-_MULTI_SUFFIXES = {"co.uk", "org.uk", "ac.uk", "com.au", "com.br", "co.jp"}
 _POSTAL_ADDRESS_CONTEXT_RE = re.compile(
     r"\b(?:via|viale|piazza|corso|largo|strada|street|road|avenue|boulevard)\b.{0,140}\b\d{5}\b",
     re.IGNORECASE | re.DOTALL,
@@ -28,28 +29,17 @@ _MAX_ALIAS_REDIRECTS = 3
 _REDIRECT_STATUSES = {301, 302, 303, 307, 308}
 
 
-def _registered_domain(value: str) -> str:
-    host = (value or "").lower().strip(". ")
-    labels = [label for label in host.split(".") if label]
-    if len(labels) < 2:
-        return host
-    suffix = ".".join(labels[-2:])
-    if suffix in _MULTI_SUFFIXES and len(labels) >= 3:
-        return ".".join(labels[-3:])
-    return suffix
-
-
 def _official_domain(url: str) -> str:
     try:
-        return _registered_domain(urlparse(url).hostname or "")
+        return registered_domain(urlparse(url).hostname or "")
     except ValueError:
         return ""
 
 
 def _same_organisation_label(left: str, right: str) -> bool:
     """Limit alias probing to sibling domains such as example.it / example.com."""
-    left_label = _registered_domain(left).split(".", 1)[0]
-    right_label = _registered_domain(right).split(".", 1)[0]
+    left_label = registrable_label(left)
+    right_label = registrable_label(right)
     return len(left_label) >= 4 and left_label == right_label
 
 
@@ -78,8 +68,8 @@ def _redirects_to_official_domain(candidate_domain: str, official_domain: str) -
     no ambient proxy configuration, accept HTTPS only, verify every redirect
     host resolves to global IP addresses, and never send credentials.
     """
-    candidate = _registered_domain(candidate_domain)
-    official = _registered_domain(official_domain)
+    candidate = registered_domain(candidate_domain)
+    official = registered_domain(official_domain)
     if not candidate or not official or candidate == official or not _same_organisation_label(candidate, official):
         return False
 
@@ -106,7 +96,7 @@ def _redirects_to_official_domain(candidate_domain: str, official_domain: str) -
             target_host = (target.hostname or "").lower().rstrip(".")
             if target.scheme != "https" or not target_host:
                 return False
-            if _registered_domain(target_host) == official:
+            if registered_domain(target_host) == official:
                 return _resolves_only_to_public_addresses(target_host)
     except requests.RequestException:
         return False
@@ -148,7 +138,7 @@ def _contact_domains(report: dict) -> list[dict]:
         ("Return-Path", report.get("return_path")),
     ):
         for domain in _EMAIL_RE.findall(str(raw or "")):
-            item = {"source": source, "domain": _registered_domain(domain)}
+            item = {"source": source, "domain": registered_domain(domain)}
             if item["domain"] and item not in values:
                 values.append(item)
     return values

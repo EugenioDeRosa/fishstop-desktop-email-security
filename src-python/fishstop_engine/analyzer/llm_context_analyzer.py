@@ -14,6 +14,8 @@ from fishstop_engine.analysis_limits import (
     MAX_AI_BODY_CHARS,
     MAX_PHI4_SECTIONS,
 )
+from fishstop_engine.domain_utils import registered_domain
+from .lookalike import is_risky_lookalike_alert
 
 OLLAMA_CHAT_ENDPOINT = os.getenv("OLLAMA_CHAT_ENDPOINT", "http://localhost:11434/api/chat")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3:4b-q4_K_M")
@@ -651,6 +653,21 @@ def _technical_context_lines(soc: dict, body_for_llm: str = "", link_reputation:
     if soc.get("display_name_spoofing"):
         lines.append(f"Display name spoofing indicator: {soc.get('display_name_spoofing')}")
 
+    mime_findings = soc.get("mime_findings") or []
+    if mime_findings:
+        lines.append(
+            "MIME parser ambiguity detected: "
+            f"defects={int(soc.get('mime_defect_count') or 0)} "
+            f"duplicate_singleton_headers={int(soc.get('mime_duplicate_header_count') or 0)}; "
+            "treat parsed fields and transfer-decoded content with caution"
+        )
+    alternative_analysis = soc.get("mime_alternative_analysis") or {}
+    if alternative_analysis.get("status") == "divergent":
+        lines.append(
+            "MIME alternatives differ substantially: all divergent visible variants "
+            "are included in the untrusted email body and must be evaluated"
+        )
+
     for att in attachments[:5]:
         anomaly = _attachment_anomaly_for_llm(att)
         pdf_security = att.get("pdf_security") or {}
@@ -673,7 +690,11 @@ def _technical_context_lines(soc: dict, body_for_llm: str = "", link_reputation:
         if link.get("is_ip"):
             lines.append("Link check did not pass: direct IP URL extracted from email")
 
-    for alert in lookalike_alerts[:5]:
+    risky_lookalike_alerts = [
+        alert for alert in lookalike_alerts
+        if is_risky_lookalike_alert(alert)
+    ]
+    for alert in risky_lookalike_alerts[:5]:
         lines.append(
             "Lookalike/domain check did not pass: "
             f"host={alert.get('host') or '-'} technique={alert.get('technique') or '-'} detail={alert.get('detail') or '-'}"
@@ -718,11 +739,13 @@ def _technical_context_lines(soc: dict, body_for_llm: str = "", link_reputation:
         )
 
     auth_only_fields = {"SPF", "DKIM", "DMARC", "Return-Path"}
-    pdf_fields_already_summarized = {"PDF Content", "PDF Attachment"}
+    fields_already_summarized = {
+        "PDF Content", "PDF Attachment", "MIME structure", "MIME alternatives",
+    }
     for flag in (soc.get("flags") or []):
         if flag.get("level") not in {"HIGH", "MEDIUM"}:
             continue
-        if flag.get("field") in auth_only_fields or flag.get("field") in pdf_fields_already_summarized:
+        if flag.get("field") in auth_only_fields or flag.get("field") in fields_already_summarized:
             continue
         message = _clip(flag.get("message", ""), 160)
         if message:
@@ -1943,11 +1966,6 @@ def _identity_risk(
     return "uncertain", reasons
 
 
-def _registered_domain(host: str) -> str:
-    labels = [label for label in str(host or "").lower().rstrip(".").split(".") if label]
-    return ".".join(labels[-2:]) if len(labels) >= 2 else (labels[0] if labels else "")
-
-
 def _sender_domain(soc: dict) -> str:
     match = re.search(r"@([\w.-]+)", str(soc.get("from_") or ""))
     return (match.group(1) if match else "").lower().rstrip(".")
@@ -2023,12 +2041,12 @@ def _sensitive_link_domain_mismatch(soc: dict, semantic: dict) -> bool:
     ) and not _claimed_brand_domain_mismatch(soc, semantic):
         return False
 
-    sender_domain = _registered_domain(_sender_domain(soc))
+    sender_domain = registered_domain(_sender_domain(soc))
     if not sender_domain:
         return False
     return any(
-        _registered_domain(link.get("host") or "")
-        and _registered_domain(link.get("host") or "") != sender_domain
+        registered_domain(link.get("host") or "")
+        and registered_domain(link.get("host") or "") != sender_domain
         for link in _actionable_links(soc)
     )
 
@@ -2051,11 +2069,28 @@ def _technical_risk(soc: dict, semantic: dict | None = None) -> tuple[str, list[
         elif file_status == "suspicious" or _safe_int(file_reputation.get("suspicious")) > 0:
             suspicious.append("an attachment has suspicious reputation")
 
+        attachment_security = att.get("attachment_security") or {}
+        dangerous_file_type = str(attachment_security.get("risk_level") or "").lower() in {
+            "high",
+            "critical",
+        }
+        if dangerous_file_type:
+            suspicious.append(
+                "an attachment uses an executable, script, or disguised high-risk file type"
+            )
+
         pdf = att.get("pdf_security") or {}
         pdf_risk = str(pdf.get("risk_level") or "").lower()
         if pdf.get("suspicious") and pdf_risk in {"high", "critical"}:
             malicious.append("an attached PDF contains high-risk active features")
-        elif pdf.get("suspicious") or pdf_risk == "medium" or _attachment_anomaly_for_llm(att) != "none":
+        elif (
+            pdf.get("suspicious")
+            or pdf_risk == "medium"
+            or (
+                not dangerous_file_type
+                and _attachment_anomaly_for_llm(att) != "none"
+            )
+        ):
             suspicious.append("an attachment has a structural or content anomaly")
 
     for rep in (soc.get("hop_reputation") or {}).values():
@@ -2075,7 +2110,11 @@ def _technical_risk(soc: dict, semantic: dict | None = None) -> tuple[str, list[
 
     if any(link.get("is_ip") for link in (soc.get("links") or [])):
         suspicious.append("the message contains a direct-IP URL")
-    if soc.get("lookalike_alerts"):
+    if soc.get("mime_findings"):
+        suspicious.append("the email has ambiguous or malformed MIME structure")
+    if (soc.get("mime_alternative_analysis") or {}).get("status") == "divergent":
+        suspicious.append("the visible MIME alternatives contain substantially different content")
+    if any(is_risky_lookalike_alert(alert) for alert in (soc.get("lookalike_alerts") or [])):
         suspicious.append("a lookalike or deceptive domain was detected")
     for link in (soc.get("links") or []):
         if link.get("actionable") is False or not link.get("financial_attachment_mismatch"):
@@ -3377,6 +3416,8 @@ def _stream_ollama(
     timeout: int,
     output_schema: dict | bool | None = None,
 ):
+    request_timeout = max(1.0, float(timeout))
+    deadline = monotonic() + request_timeout
     payload = {
         "model": model,
         "messages": messages,
@@ -3396,9 +3437,26 @@ def _stream_ollama(
         payload["think"] = False
     chunks: list[str] = []
     try:
-        with requests.post(OLLAMA_CHAT_ENDPOINT, json=payload, stream=True, timeout=timeout) as response:
+        # requests' scalar timeout is an inactivity timeout, not a wall-clock
+        # deadline. Keep short connect/read bounds and enforce the total budget
+        # below even when the server continues to trickle tokens indefinitely.
+        socket_timeout = (min(5.0, request_timeout), min(30.0, request_timeout))
+        with requests.post(
+            OLLAMA_CHAT_ENDPOINT,
+            json=payload,
+            stream=True,
+            timeout=socket_timeout,
+        ) as response:
             response.raise_for_status()
             for raw_line in response.iter_lines(decode_unicode=True):
+                if monotonic() >= deadline:
+                    response.close()
+                    yield {
+                        "status": "error",
+                        "message": f"Ollama exceeded the {timeout} second total time budget.",
+                        "text": "".join(chunks),
+                    }
+                    return
                 if not raw_line:
                     continue
                 try:
@@ -3417,7 +3475,7 @@ def _stream_ollama(
                 if event.get("done"):
                     break
     except requests.exceptions.Timeout:
-        yield {"status": "error", "message": f"Ollama timed out after {timeout} seconds.", "text": "".join(chunks)}
+        yield {"status": "error", "message": f"Ollama timed out after {timeout} seconds of total or network inactivity.", "text": "".join(chunks)}
         return
     except requests.exceptions.HTTPError as exc:
         code = exc.response.status_code if exc.response is not None else "?"

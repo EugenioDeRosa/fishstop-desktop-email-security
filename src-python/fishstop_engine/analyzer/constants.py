@@ -83,3 +83,46 @@ CONTENT_TYPE_TO_EXT: dict[str, list[str]] = {
     "text/xml":   ["xml"],
     "application/rtf": ["rtf"],
 }
+
+# File types that can directly execute code, launch another resource, or mount
+# attacker-controlled content when opened. These are risky delivery formats even
+# when filename, declared MIME type, and magic bytes agree with each other.
+DANGEROUS_ATTACHMENT_EXTENSIONS: frozenset[str] = frozenset({
+    "exe", "dll", "scr", "com", "msi", "msp", "cpl", "sys", "ocx", "pif",
+    "lnk", "url", "scf", "reg",
+    "js", "jse", "mjs", "vbs", "vbe", "wsf", "wsh", "hta",
+    "ps1", "psm1", "psd1", "bat", "cmd",
+    "sh", "bash", "zsh", "fish", "py", "pyw", "pl", "rb", "jar",
+    "iso", "img", "vhd", "vhdx",
+    "apk", "appx", "appxbundle", "msix", "msixbundle", "deb", "rpm", "dmg", "pkg",
+})
+
+DANGEROUS_ATTACHMENT_MIME_TYPES: frozenset[str] = frozenset({
+    "application/javascript",
+    "application/java-archive",
+    "application/vnd.microsoft.portable-executable",
+    "application/x-bat",
+    "application/x-dosexec",
+    "application/x-executable",
+    "application/x-java-archive",
+    "application/x-ms-shortcut",
+    "application/x-msdownload",
+    "application/x-msdos-program",
+    "application/x-powershell",
+    "application/x-sh",
+    "application/x-shellscript",
+    "text/javascript",
+    "text/x-powershell",
+    "text/x-python",
+    "text/x-script.python",
+    "text/x-shellscript",
+})
+
+DANGEROUS_MAGIC_FORMATS: frozenset[str] = frozenset({"exe", "elf", "sh"})
+
+# A benign-looking penultimate extension is a common disguise for a dangerous
+# final extension, for example invoice.pdf.exe.
+DECOY_ATTACHMENT_EXTENSIONS: frozenset[str] = frozenset({
+    "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx",
+    "jpg", "jpeg", "png", "gif", "txt", "rtf", "csv",
+})

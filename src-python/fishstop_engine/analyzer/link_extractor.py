@@ -17,16 +17,17 @@ except ImportError:  # pragma: no cover - fallback per ambienti minimali
 
 from .html_utils import strip_html
 from .lookalike import is_ip_url
+from .constants import DANGEROUS_ATTACHMENT_EXTENSIONS
 from fishstop_engine.analysis_limits import EmailAnalysisLimitError, MAX_LINKS
+from fishstop_engine.domain_utils import (
+    registered_domain,
+    registrable_label,
+    same_registered_domain,
+)
 
 
 _URL_RE = re.compile(
-    r"""(?i)\b(?:https?://|ftp://|www\.)"""
-    r"""(?:[^\s/@]+(?::[^\s/@]*)?@)?"""
-    r"""(?:[^\W_][\w\-]*\.)+[^\W_]{2,}"""
-    r"""(?::\d{1,5})?"""
-    r"""(?:/[^\s"'<>\]\)]*)?""",
-    re.VERBOSE,
+    r"(?i)(?<![\w@])(?:(?:https?|ftp)://|www\.)[^\s<>\"']+",
 )
 _BARE_DOMAIN_RE = re.compile(
     r"""(?i)(?<![@\w.-])(?:[^\W_][\w\-]*\.)+[^\W_]{2,}(?![\w.-])""",
@@ -52,16 +53,30 @@ _REDIRECT_PARAM_NAMES = {
     "url", "u", "uri", "target", "to", "dest", "destination", "redirect",
     "redirect_uri", "return", "returnurl", "next", "continue", "goto", "link",
 }
-_NESTED_WEB_URL_RE = re.compile(r"https?://[^\s<>()\[\]{}\"']+", re.IGNORECASE)
+_NESTED_WEB_URL_RE = re.compile(r"https?://[^\s<>{}\"']+", re.IGNORECASE)
 _BUTTON_CLASS_RE = re.compile(r"(?:^|[-_\s])(?:btn|button|cta|call[-_ ]?to[-_ ]?action)(?:$|[-_\s])", re.IGNORECASE)
 _BUTTON_URL_RE = re.compile(
     r"(?:window\s*\.\s*)?(?:location(?:\s*\.\s*href)?|open)\s*\(?(?:\s*=\s*)?[\"'](?P<url>https?://[^\"'\s<>]+)",
     re.IGNORECASE,
 )
-_DANGEROUS_DOWNLOAD_EXTENSIONS = {
-    "exe", "dll", "scr", "com", "msi", "lnk", "js", "jse", "vbs", "vbe",
-    "ps1", "bat", "cmd", "hta", "jar", "iso", "img",
-}
+_DANGEROUS_DOWNLOAD_EXTENSIONS = DANGEROUS_ATTACHMENT_EXTENSIONS
+
+
+def _trim_url_candidate(value: str) -> str:
+    """Remove prose punctuation without damaging balanced URL delimiters."""
+    candidate = (value or "").strip()
+    while candidate:
+        if candidate[-1] in ".,;:!?":
+            candidate = candidate[:-1]
+            continue
+        closing_pairs = {")": "(", "]": "[", "}": "{"}
+        closing = candidate[-1]
+        opening = closing_pairs.get(closing)
+        if opening and candidate.count(closing) > candidate.count(opening):
+            candidate = candidate[:-1]
+            continue
+        break
+    return candidate
 
 
 def _normalize_malformed_userinfo(value: str) -> str:
@@ -122,19 +137,12 @@ def _url_dedupe_key(value: str) -> str:
     ).geturl()
 
 
-def _registered_domain(host: str) -> str:
-    parts = (host or "").lower().rstrip(".").split(".")
-    if len(parts) >= 2:
-        return ".".join(parts[-2:])
-    return host or ""
-
-
 def _extract_display_destination(display: str) -> tuple[str, str]:
     text = display or ""
     match = _URL_RE.search(text) or _BARE_DOMAIN_RE.search(text)
     if not match:
         return "", ""
-    candidate = _with_scheme(match.group(0).strip().rstrip(".,;)"))
+    candidate = _with_scheme(_trim_url_candidate(match.group(0)))
     try:
         parsed = _safe_urlparse(candidate)
     except Exception:
@@ -144,13 +152,8 @@ def _extract_display_destination(display: str) -> tuple[str, str]:
     return candidate, (parsed.hostname or "").lower()
 
 
-def _same_registered_domain(left: str, right: str) -> bool:
-    return bool(left and right and _registered_domain(left) == _registered_domain(right))
-
-
 def _possible_shortener(host: str, path: str) -> tuple[bool, str]:
-    labels = (host or "").split(".")
-    sld = labels[-2] if len(labels) >= 2 else host
+    sld = registrable_label(host) or host
     token = (path or "").strip("/").split("/", 1)[0]
     compact_host = len(sld) <= 5 and len(host or "") <= 12
     compact_token = 4 <= len(token) <= 12 and bool(re.fullmatch(r"[A-Za-z0-9_-]+", token))
@@ -193,14 +196,24 @@ def _url_intelligence(parsed, original: str, host: str) -> dict:
         if not candidates and decoded.lower().startswith(("http%3a", "https%3a")):
             candidates = _NESTED_WEB_URL_RE.findall(_decode_repeated(decoded))
         for candidate in candidates:
+            candidate = _trim_url_candidate(candidate)
             if candidate not in redirect_targets:
                 redirect_targets.append(candidate[:500])
     redirect_hosts = []
+    redirect_downloads = []
     for target in redirect_targets:
         target_parsed = _safe_urlparse(target)
         target_host = (target_parsed.hostname or "").lower() if target_parsed else ""
         if target_host and target_host not in redirect_hosts:
             redirect_hosts.append(target_host)
+        if target_parsed:
+            filename, extension = _download_filename(target_parsed.path)
+            if filename and extension:
+                redirect_downloads.append({
+                    "filename": filename,
+                    "extension": extension,
+                    "dangerous": extension in _DANGEROUS_DOWNLOAD_EXTENSIONS,
+                })
     return {
         "has_userinfo": has_userinfo,
         "has_credentials": has_credentials,
@@ -209,6 +222,7 @@ def _url_intelligence(parsed, original: str, host: str) -> dict:
         "nested_redirect_count": len(redirect_targets),
         "redirect_targets": redirect_targets[:5],
         "redirect_hosts": redirect_hosts[:5],
+        "redirect_downloads": redirect_downloads[:5],
         "unicode_path_or_query": (
             _contains_non_ascii(parsed.path)
             or _contains_non_ascii(parsed.query)
@@ -314,7 +328,7 @@ def extract_links(
         role: str = "body_action",
         html_call_to_action: bool = False,
     ) -> None:
-        raw_url = (url or "").strip().rstrip(".,;)")
+        raw_url = _trim_url_candidate(url)
         if not _is_web_url_candidate(raw_url):
             return
         url = _normalize_malformed_userinfo(_with_scheme(raw_url))
@@ -360,8 +374,23 @@ def extract_links(
         intelligence = _url_intelligence(parsed, url, host) if scheme in _WEB_SCHEMES else {
             "has_userinfo": False, "has_credentials": False, "nonstandard_port": False,
             "port": None, "nested_redirect_count": 0, "redirect_targets": [], "redirect_hosts": [],
+            "redirect_downloads": [],
             "unicode_path_or_query": False, "unicode_host": False, "raw_at_sign": False,
         }
+        dangerous_redirect_download = next(
+            (
+                item
+                for item in intelligence.get("redirect_downloads") or []
+                if item.get("dangerous")
+            ),
+            None,
+        )
+        direct_download_is_dangerous = (
+            download_extension in _DANGEROUS_DOWNLOAD_EXTENSIONS
+        )
+        if dangerous_redirect_download and not direct_download_is_dangerous:
+            download_filename = str(dangerous_redirect_download.get("filename") or "")
+            download_extension = str(dangerous_redirect_download.get("extension") or "")
         redirect_hosts = intelligence.get("redirect_hosts") or []
         # Signature services can wrap a legitimate destination in a signed
         # redirect. When the visible domain agrees with the final embedded
@@ -369,7 +398,7 @@ def extract_links(
         resolved_display_destination = bool(
             display_host
             and redirect_hosts
-            and _same_registered_domain(display_host, redirect_hosts[-1])
+            and same_registered_domain(display_host, redirect_hosts[-1])
         )
         signature_tracking_redirect = bool(
             role == "signature"
@@ -380,7 +409,7 @@ def extract_links(
             # Corporate signatures are commonly repeated in quoted replies.
             # Keep one transparent record for each final destination instead
             # of filling the report with identical tracking wrappers.
-            signature_key = _registered_domain(redirect_hosts[-1])
+            signature_key = registered_domain(redirect_hosts[-1])
             if signature_key in seen_signature_destinations:
                 return
             seen_signature_destinations.add(signature_key)
@@ -394,10 +423,12 @@ def extract_links(
                 scheme in _WEB_SCHEMES
                 and display_host
                 and host
-                and not _same_registered_domain(display_host, host)
+                and not same_registered_domain(display_host, host)
                 and not resolved_display_destination
             ),
             "host": host,
+            "registered_domain": registered_domain(host),
+            "display_registered_domain": registered_domain(display_host),
             "scheme": scheme,
             "source": source,
             "role": role,
@@ -410,7 +441,14 @@ def extract_links(
             "shortener_reason": shortener_reason,
             "download_filename": download_filename,
             "download_extension": download_extension,
-            "dangerous_download": download_extension in _DANGEROUS_DOWNLOAD_EXTENSIONS,
+            "download_source": (
+                "redirect"
+                if dangerous_redirect_download and not direct_download_is_dangerous
+                else "path"
+            ),
+            "dangerous_download": bool(
+                direct_download_is_dangerous or dangerous_redirect_download
+            ),
             **intelligence,
         })
 

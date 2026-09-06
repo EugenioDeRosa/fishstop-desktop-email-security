@@ -16,6 +16,8 @@ import email
 import html as html_lib
 import ipaddress
 import re
+import unicodedata
+from difflib import SequenceMatcher
 from email import policy
 from typing import Optional
 
@@ -28,6 +30,8 @@ from fishstop_engine.analysis_limits import (
     MAX_MIME_PARTS,
     MAX_RECEIVED_HOPS,
 )
+from fishstop_engine.domain_utils import registered_domain, same_registered_domain
+from .archive_analysis import ArchiveAnalysisBudget
 from .attachment      import analyze_attachment
 from .body_context    import select_body_for_ai
 from .html_form_analysis import analyze_html_forms
@@ -114,23 +118,32 @@ _ATTACHMENT_CLAIM_RE = re.compile(
     r"w załączeniu|zalaczniku)\b",
     re.IGNORECASE,
 )
+_MIME_ROOT_SINGLETON_HEADERS = {
+    "from", "subject", "date", "message-id", "reply-to", "return-path",
+    "mime-version", "content-type", "content-transfer-encoding",
+}
+_MIME_PART_SINGLETON_HEADERS = {
+    "content-type", "content-transfer-encoding", "content-disposition",
+    "content-id", "mime-version",
+}
+_MIME_FINDING_LIMIT = 50
+_MIME_DEFECT_DESCRIPTIONS = {
+    "InvalidBase64CharactersDefect": "Base64 payload contains invalid characters.",
+    "InvalidBase64PaddingDefect": "Base64 payload has invalid or missing padding.",
+    "InvalidMultipartContentTransferEncodingDefect": "Multipart container declares an invalid transfer encoding.",
+    "StartBoundaryNotFoundDefect": "Declared MIME start boundary was not found.",
+    "CloseBoundaryNotFoundDefect": "MIME closing boundary was not found.",
+    "MultipartInvariantViolationDefect": "MIME content type and parsed multipart structure disagree.",
+    "NoBoundaryInMultipartDefect": "Multipart content type does not declare a boundary.",
+    "MissingHeaderBodySeparatorDefect": "A MIME part has no valid header/body separator.",
+    "MalformedHeaderDefect": "A malformed header line was encountered.",
+}
 
 
 def _extract_domain(email_or_addr: str) -> str:
     """Returns the domain portion of an email address, lowercased."""
     m = re.search(r"@([\w.\-]+)", email_or_addr or "")
     return m.group(1).lower() if m else ""
-
-
-def _registered_domain(domain: str) -> str:
-    parts = (domain or "").lower().rstrip(".").split(".")
-    if len(parts) >= 2:
-        return ".".join(parts[-2:])
-    return domain or ""
-
-
-def _same_registered_domain(left: str, right: str) -> bool:
-    return bool(left and right and _registered_domain(left) == _registered_domain(right))
 
 
 def _claims_financial_attachment(text: str) -> bool:
@@ -175,7 +188,7 @@ def _reply_to_mismatch_looks_legitimate(msg, from_addr: str | None, reply_addr: 
 
     from_domain = _extract_domain(from_addr)
     reply_domain = _extract_domain(reply_addr)
-    if _same_registered_domain(from_domain, reply_domain):
+    if same_registered_domain(from_domain, reply_domain):
         return True
 
     from_local = _local_part(from_addr)
@@ -304,18 +317,227 @@ def _strip_plaintext_noise_blocks(value: str) -> tuple[str, int, int]:
     return cleaned, removed_lines, removed_chars
 
 
-def _iter_body_leaf_parts(part):
-    """Yield body leaves without descending into attachments or attached emails."""
+def _iter_body_leaf_parts(part, path: str = "1", alternative_groups: tuple[str, ...] = ()):
+    """Yield body leaves with their MIME path and alternative ancestors."""
     disposition = str(part.get("Content-Disposition") or "").lower()
     if "attachment" in disposition or part.get_filename():
         return
     if part.get_content_type() == "message/rfc822":
         return
     if part.is_multipart():
-        for child in part.iter_parts():
-            yield from _iter_body_leaf_parts(child)
+        child_groups = alternative_groups
+        if part.get_content_subtype().lower() == "alternative":
+            child_groups = alternative_groups + (path,)
+        for index, child in enumerate(part.iter_parts(), 1):
+            yield from _iter_body_leaf_parts(
+                child,
+                f"{path}.{index}",
+                child_groups,
+            )
         return
-    yield part
+    yield part, path, alternative_groups
+
+
+def _iter_mime_parts(part, path: str = "1"):
+    yield part, path
+    if part.is_multipart():
+        for index, child in enumerate(part.iter_parts(), 1):
+            yield from _iter_mime_parts(child, f"{path}.{index}")
+
+
+def _collect_mime_findings(msg) -> tuple[list[dict], int, int]:
+    """Collect parser defects and security-relevant duplicate singleton headers."""
+    findings: list[dict] = []
+    defect_count = 0
+    duplicate_count = 0
+    seen: set[tuple[str, str, str, str]] = set()
+
+    def add(finding: dict) -> bool:
+        key = (
+            str(finding.get("part_path") or ""),
+            str(finding.get("kind") or ""),
+            str(finding.get("code") or ""),
+            str(finding.get("header") or ""),
+        )
+        if key in seen:
+            return False
+        seen.add(key)
+        if len(findings) < _MIME_FINDING_LIMIT:
+            findings.append(finding)
+        return True
+
+    for part, path in _iter_mime_parts(msg):
+        if not part.is_multipart() and part.get_content_type() != "message/rfc822":
+            # The stdlib records some transfer-decoding defects lazily.
+            try:
+                part.get_payload(decode=True)
+            except Exception as exc:  # Defensive: malformed input must still produce a report.
+                if add({
+                    "kind": "decode_error",
+                    "code": type(exc).__name__,
+                    "level": "MEDIUM",
+                    "part_path": path,
+                    "message": f"MIME part {path} could not be transfer-decoded ({type(exc).__name__}).",
+                }):
+                    defect_count += 1
+
+        allowed_singletons = (
+            _MIME_ROOT_SINGLETON_HEADERS
+            if path == "1"
+            else _MIME_PART_SINGLETON_HEADERS
+        )
+        header_counts: dict[str, int] = {}
+        for name, _ in part.raw_items():
+            normalized_name = str(name).lower()
+            header_counts[normalized_name] = header_counts.get(normalized_name, 0) + 1
+        for header_name, count in header_counts.items():
+            if header_name not in allowed_singletons or count <= 1:
+                continue
+            display_name = "-".join(piece.capitalize() for piece in header_name.split("-"))
+            if add({
+                "kind": "duplicate_header",
+                "code": "DuplicateSingletonHeader",
+                "level": "MEDIUM",
+                "part_path": path,
+                "header": display_name,
+                "count": count,
+                "message": f"MIME part {path} contains {count} `{display_name}` headers; interpretation is ambiguous.",
+            }):
+                duplicate_count += 1
+
+        defect_sources = [("message", defect) for defect in getattr(part, "defects", ())]
+        try:
+            for header_name, header_value in part.items():
+                defect_sources.extend(
+                    (str(header_name), defect)
+                    for defect in getattr(header_value, "defects", ())
+                )
+        except Exception as exc:
+            defect_sources.append(("header", exc))
+
+        for source, defect in defect_sources:
+            code = type(defect).__name__
+            description = _MIME_DEFECT_DESCRIPTIONS.get(code) or str(defect).strip()
+            if not description:
+                description = "The email parser reported a malformed MIME construct."
+            if add({
+                "kind": "parser_defect",
+                "code": code,
+                "level": "MEDIUM",
+                "part_path": path,
+                "header": None if source == "message" else source,
+                "message": f"MIME part {path}: {description}",
+            }):
+                defect_count += 1
+
+    return findings, defect_count, duplicate_count
+
+
+def _alternative_comparison_tokens(value: str) -> list[str]:
+    value = unicodedata.normalize("NFKC", value or "").lower()
+    # Link destinations are analysed separately. Ignore their raw length here
+    # so ordinary marketing text/plain fallbacks do not look divergent merely
+    # because they spell out tracking URLs hidden behind HTML buttons.
+    value = _RAW_URL_TOKEN_RE.sub(" ", value)
+    return re.findall(r"[\w@.-]{2,}", value, flags=re.UNICODE)
+
+
+def _alternative_pair_is_divergent(left: dict, right: dict, similarity: float) -> bool:
+    largest = max(int(left.get("token_count") or 0), int(right.get("token_count") or 0))
+    if largest < 6:
+        return False
+    smallest = min(int(left.get("token_count") or 0), int(right.get("token_count") or 0))
+    severe_length_gap = smallest / max(largest, 1) < 0.30
+    return similarity < 0.55 or (severe_length_gap and similarity < 0.72)
+
+
+def _analyze_mime_alternatives(body_variants: list[dict]) -> tuple[dict, set[str]]:
+    groups: dict[str, list[dict]] = {}
+    for variant in body_variants:
+        for group_path in variant.get("alternative_groups") or ():
+            groups.setdefault(group_path, []).append(variant)
+
+    group_results: list[dict] = []
+    divergent_paths: set[str] = set()
+    for group_path, variants in groups.items():
+        if len(variants) < 2:
+            continue
+        metadata = []
+        token_sequences: dict[str, list[str]] = {}
+        for variant in variants:
+            tokens = _alternative_comparison_tokens(str(variant.get("text") or ""))
+            token_sequences[variant["path"]] = tokens
+            metadata.append({
+                "part_path": variant["path"],
+                "content_type": variant["content_type"],
+                "effective_content_type": variant["effective_content_type"],
+                "character_count": len(str(variant.get("text") or "")),
+                "token_count": len(tokens),
+            })
+
+        minimum_similarity = 1.0
+        divergent = False
+        for left_index, left in enumerate(metadata):
+            for right in metadata[left_index + 1:]:
+                left_tokens = token_sequences[left["part_path"]]
+                right_tokens = token_sequences[right["part_path"]]
+                if not left_tokens and not right_tokens:
+                    similarity = 1.0
+                else:
+                    similarity = SequenceMatcher(None, left_tokens, right_tokens).ratio()
+                minimum_similarity = min(minimum_similarity, similarity)
+                if _alternative_pair_is_divergent(left, right, similarity):
+                    divergent = True
+                    divergent_paths.update({left["part_path"], right["part_path"]})
+
+        group_results.append({
+            "part_path": group_path,
+            "alternative_count": len(metadata),
+            "content_types": list(dict.fromkeys(item["content_type"] for item in metadata)),
+            "minimum_similarity": round(minimum_similarity, 3),
+            "divergent": divergent,
+            "alternatives": metadata,
+        })
+
+    divergent_count = sum(1 for group in group_results if group["divergent"])
+    if not group_results:
+        status = "not_applicable"
+        message = "No multipart/alternative body with multiple text variants was found."
+    elif divergent_count:
+        status = "divergent"
+        message = (
+            f"{divergent_count} multipart/alternative group(s) contain substantially "
+            "different visible content; every divergent variant is included in AI analysis."
+        )
+    else:
+        status = "consistent"
+        message = "MIME text alternatives contain materially consistent visible content."
+    return ({
+        "status": status,
+        "groups_analyzed": len(group_results),
+        "divergent_group_count": divergent_count,
+        "groups": group_results,
+        "message": message,
+    }, divergent_paths)
+
+
+def _combine_divergent_alternatives(body_variants: list[dict], paths: set[str]) -> str:
+    sections: list[str] = []
+    seen_content: set[str] = set()
+    for variant in body_variants:
+        if variant.get("path") not in paths:
+            continue
+        selected = select_body_for_ai(str(variant.get("text") or ""))
+        text = str(selected.get("body_ai") or variant.get("text") or "").strip()
+        comparison_key = " ".join(_alternative_comparison_tokens(text))
+        if not text or comparison_key in seen_content:
+            continue
+        seen_content.add(comparison_key)
+        content_type = variant.get("effective_content_type") or variant.get("content_type") or "text"
+        sections.append(
+            f"[MIME alternative: {content_type}, part {variant['path']}]\n{text}"
+        )
+    return "\n\n".join(sections).strip()
 
 
 def _validate_mime_structure(msg) -> None:
@@ -368,6 +590,9 @@ class EmlSOCAnalyzer:
         report["delivered_to"] = self._header(msg, "Delivered-To")
         report["to"]           = self._header(msg, "To")
         report["from_"]        = self._header(msg, "From")
+        report["from_registered_domain"] = registered_domain(
+            _extract_domain(report["from_"] or "")
+        )
         report["subject"]      = self._header(msg, "Subject")
         report["date"]         = self._header(msg, "Date")
         report["message_id"]   = self._header(msg, "Message-Id")
@@ -406,7 +631,7 @@ class EmlSOCAnalyzer:
         from_domain        = _extract_domain(from_addr or "") if from_addr else ""
         report["return_path_domain_mismatch"] = bool(
             return_path_domain and from_domain
-            and not _same_registered_domain(return_path_domain, from_domain)
+            and not same_registered_domain(return_path_domain, from_domain)
         )
         report["return_path_domain"] = return_path_domain
 
@@ -472,7 +697,9 @@ class EmlSOCAnalyzer:
         # ── 9. Body e allegati ────────────────────────────────────────────
         body_parts       = []
         html_parts       = []
+        body_variants    = []
         attachments_info = []
+        archive_budget = ArchiveAnalysisBudget()
         plain_noise_removed_lines = 0
         plain_noise_removed_chars = 0
         decoded_text_chars = 0
@@ -495,6 +722,7 @@ class EmlSOCAnalyzer:
                     content_type=ct,
                     encoding=encoding,
                     raw_payload=raw_payload,
+                    archive_budget=archive_budget,
                 )
                 disposition_type = str(part.get_content_disposition() or "").lower()
                 content_id = str(part.get("Content-ID") or "").strip().strip("<>")
@@ -517,10 +745,12 @@ class EmlSOCAnalyzer:
                 })
                 attachments_info.append(attachment_info)
 
-        for part in _iter_body_leaf_parts(msg):
+        for part, part_path, alternative_groups in _iter_body_leaf_parts(msg):
             ct = part.get_content_type()
             if ct == "text/plain":
                 text = _decode_text_part(part)
+                effective_content_type = "text/plain"
+                variant_text = ""
                 if text and text.strip():
                     decoded_text_chars += len(text)
                     if decoded_text_chars > MAX_DECODED_TEXT_CHARS:
@@ -529,14 +759,26 @@ class EmlSOCAnalyzer:
                         )
                     if _looks_like_html(text):
                         html_parts.append(text)
+                        effective_content_type = "text/html"
+                        variant_text = strip_html_for_intent(text)
                     else:
                         text, removed_lines, removed_chars = _strip_plaintext_noise_blocks(text)
                         plain_noise_removed_lines += removed_lines
                         plain_noise_removed_chars += removed_chars
                         if text:
                             body_parts.append(text)
+                            variant_text = text
+                if alternative_groups:
+                    body_variants.append({
+                        "path": part_path,
+                        "alternative_groups": alternative_groups,
+                        "content_type": ct,
+                        "effective_content_type": effective_content_type,
+                        "text": variant_text,
+                    })
             elif ct == "text/html":
                 text = _decode_text_part(part)
+                variant_text = ""
                 if text and text.strip():
                     decoded_text_chars += len(text)
                     if decoded_text_chars > MAX_DECODED_TEXT_CHARS:
@@ -544,10 +786,22 @@ class EmlSOCAnalyzer:
                             "Decoded email text exceeds the supported analysis limit."
                         )
                     html_parts.append(text)
+                    variant_text = strip_html_for_intent(text)
+                if alternative_groups:
+                    body_variants.append({
+                        "path": part_path,
+                        "alternative_groups": alternative_groups,
+                        "content_type": ct,
+                        "effective_content_type": "text/html",
+                        "text": variant_text,
+                    })
 
         combined_html = "\n".join(html_parts)
         html_clean = strip_html(combined_html) if combined_html else ""
         plain_clean = re.sub(r"\n{3,}", "\n\n", "\n".join(body_parts)).strip() if body_parts else ""
+        mime_alternative_analysis, divergent_alternative_paths = _analyze_mime_alternatives(
+            body_variants
+        )
         prefer_html_for_ai = _prefer_html_over_link_heavy_plain(plain_clean, html_clean)
         body_clean = html_clean if prefer_html_for_ai else (plain_clean or html_clean)
 
@@ -555,6 +809,8 @@ class EmlSOCAnalyzer:
         report["body_html"] = combined_html.strip() if html_parts else None
         report["body_html_safe"] = sanitize_html_for_preview(combined_html) if html_parts else None
         report["body_html_clean"] = html_clean
+        report["body_plain_clean"] = plain_clean
+        report["mime_alternative_analysis"] = mime_alternative_analysis
         report["html_form_analysis"] = analyze_html_forms(
             combined_html,
             from_domain=_extract_domain(from_addr or ""),
@@ -625,6 +881,28 @@ class EmlSOCAnalyzer:
         # content. Keeping the earlier intent source here would reintroduce
         # legal notices and contact cards for Ollama only.
         report["body_for_intent"] = report["body_for_ai"]
+        if mime_alternative_analysis["status"] == "divergent":
+            combined_alternatives = _combine_divergent_alternatives(
+                body_variants,
+                divergent_alternative_paths,
+            )
+            if combined_alternatives:
+                report["body_ai"] = combined_alternatives
+                report["body_extracted"] = combined_alternatives
+                report["body_for_ai"] = combined_alternatives
+                report["body_for_intent"] = combined_alternatives
+                report["body_context"] = "mime_alternatives"
+                report["body_source"] = "multipart/alternative (all divergent variants)"
+
+        mime_findings, mime_defect_count, mime_duplicate_header_count = _collect_mime_findings(msg)
+        report["mime_findings"] = mime_findings
+        report["mime_defect_count"] = mime_defect_count
+        report["mime_duplicate_header_count"] = mime_duplicate_header_count
+        report["mime_status"] = (
+            "review"
+            if mime_findings or mime_alternative_analysis["status"] == "divergent"
+            else "clean"
+        )
         report["ai_analysis_supported"] = (
             len(report["body_for_ai"]) <= MAX_AI_BODY_CHARS
         )
@@ -639,7 +917,7 @@ class EmlSOCAnalyzer:
 
         # ── 10. Link e lookalike ──────────────────────────────────────────
         report["links"] = extract_links(
-            body_plain=report["body"],
+            body_plain=plain_clean,
             body_html=report.get("body_html") or "",
             embedded_urls=[
                 {"url": url, "label": attachment.get("filename") or "Attachment URL", "source": "attachment"}
@@ -679,7 +957,7 @@ class EmlSOCAnalyzer:
         if any(item.get("actionable") is not False for item in report.get("attachments", [])):
             return []
 
-        sender_domain = _registered_domain(_extract_domain(str(report.get("from_") or "")))
+        sender_domain = registered_domain(_extract_domain(str(report.get("from_") or "")))
         if not sender_domain:
             return []
 
@@ -687,7 +965,7 @@ class EmlSOCAnalyzer:
         for link in report.get("links", []):
             if link.get("actionable") is False:
                 continue
-            host = _registered_domain(str(link.get("host") or ""))
+            host = registered_domain(str(link.get("host") or ""))
             if not host or host == sender_domain:
                 continue
             dangerous_download = bool(link.get("dangerous_download"))
@@ -850,6 +1128,29 @@ class EmlSOCAnalyzer:
         elif report.get("return_path") and not report.get("return_path_domain"):
             flag("LOW", "Return-Path", "Return-Path present but domain cannot be extracted")
 
+        mime_findings = report.get("mime_findings") or []
+        for finding in mime_findings[:10]:
+            flag(
+                str(finding.get("level") or "MEDIUM"),
+                "MIME structure",
+                str(finding.get("message") or "The MIME structure requires review."),
+            )
+        omitted_mime_findings = max(0, len(mime_findings) - 10)
+        if omitted_mime_findings:
+            flag(
+                "MEDIUM",
+                "MIME structure",
+                f"{omitted_mime_findings} additional MIME finding(s) are available in the structured report.",
+            )
+
+        alternative_analysis = report.get("mime_alternative_analysis") or {}
+        if alternative_analysis.get("status") == "divergent":
+            flag(
+                "MEDIUM",
+                "MIME alternatives",
+                str(alternative_analysis.get("message") or "Visible MIME alternatives differ substantially."),
+            )
+
         # HTML stripping applicato
         if report.get("html_strip_applied"):
             body_source = str(report.get("body_source") or "")
@@ -959,8 +1260,24 @@ class EmlSOCAnalyzer:
         for lnk in report.get("links", []):
             # Signature redirects are retained for transparency, but a
             # resolved, non-actionable signature link is not a risk signal.
-            if lnk.get("signature_tracking_redirect"):
+            if (
+                lnk.get("signature_tracking_redirect")
+                and not lnk.get("dangerous_download")
+            ):
                 continue
+            if lnk.get("dangerous_download"):
+                location = (
+                    "nested redirect"
+                    if lnk.get("download_source") == "redirect"
+                    else "URL path"
+                )
+                filename = lnk.get("download_filename") or "download"
+                flag(
+                    "HIGH",
+                    "Link",
+                    f"{location} exposes potentially executable or script content "
+                    f"through filename '{filename}': `{lnk['url']}`",
+                )
             if lnk.get("is_ip"):
                 flag(
                     "HIGH", "Link",
@@ -995,6 +1312,9 @@ class EmlSOCAnalyzer:
                     technique_label + ": `" + alert["host"] + "` looks like `"
                     + matched_brand + "` - " + alert["detail"]
                 )
-            flag("HIGH", "Lookalike Domain", message)
+            level = str(alert.get("level") or "HIGH").upper()
+            if level not in {"HIGH", "MEDIUM", "LOW", "INFO"}:
+                level = "HIGH"
+            flag(level, "Lookalike Domain", message)
 
         return flags

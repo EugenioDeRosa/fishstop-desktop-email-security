@@ -8,8 +8,11 @@ use std::{
     io::{BufRead, BufReader, BufWriter, Read, Write},
     net::TcpListener,
     path::PathBuf,
-    process::{Child, ChildStdin, ChildStdout, Command, Stdio},
-    sync::{Arc, Mutex},
+    process::{Child, ChildStdin, Command, Output, Stdio},
+    sync::{
+        mpsc::{self, Receiver, RecvTimeoutError},
+        Arc, Mutex,
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -31,13 +34,15 @@ use url::Url;
 // un client secret o credenziali personali.
 const GOOGLE_CLIENT_ID: &str =
     "676285460838-a927po5i3k4eo5cq7pls04ltjg63p8mf.apps.googleusercontent.com";
-const GOOGLE_CLIENT_SECRET_RESOURCE: &str = "google-oauth-client-secret";
 const AUTHORIZATION_ENDPOINT: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_ENDPOINT: &str = "https://oauth2.googleapis.com/token";
 const USERINFO_ENDPOINT: &str = "https://openidconnect.googleapis.com/v1/userinfo";
 const IDENTITY_MODEL_ID: &str = "Davlan/distilbert-base-multilingual-cased-ner-hrl";
 const IDENTITY_MODEL_REVISION: &str = "d421f57d5b1d36b375408588669e9340f9b11a89";
 const KEYRING_SERVICE: &str = "it.fishstop.desktop";
+const STATIC_ENGINE_TIMEOUT: Duration = Duration::from_secs(180);
+const IDENTITY_ENGINE_TIMEOUT: Duration = Duration::from_secs(180);
+const AI_ENGINE_TIMEOUT: Duration = Duration::from_secs(600);
 
 #[derive(Clone, Default, Deserialize, Serialize)]
 struct ReputationCredentials {
@@ -346,70 +351,6 @@ fn encode(value: &str) -> String {
     url::form_urlencoded::byte_serialize(value.as_bytes()).collect()
 }
 
-fn parse_google_client_secret(contents: &str) -> Option<String> {
-    let contents = contents.trim();
-    if contents.is_empty() {
-        return None;
-    }
-    if let Ok(document) = serde_json::from_str::<serde_json::Value>(contents) {
-        return document
-            .get("installed")
-            .or_else(|| document.get("web"))
-            .and_then(|client| client.get("client_secret"))
-            .and_then(serde_json::Value::as_str)
-            .map(str::trim)
-            .filter(|secret| !secret.is_empty())
-            .map(str::to_string);
-    }
-    Some(contents.to_string())
-}
-
-fn google_client_secret() -> Option<String> {
-    if let Ok(secret) = std::env::var("FISHSTOP_GOOGLE_CLIENT_SECRET") {
-        if let Some(secret) = parse_google_client_secret(&secret) {
-            return Some(secret);
-        }
-    }
-
-    let mut resources = Vec::new();
-    #[cfg(debug_assertions)]
-    resources.push(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("resources")
-            .join(GOOGLE_CLIENT_SECRET_RESOURCE),
-    );
-    let executable = std::env::current_exe().ok();
-    #[cfg(target_os = "macos")]
-    let packaged_resource = executable
-        .as_deref()
-        .and_then(|path| path.parent())
-        .and_then(|directory| directory.parent())
-        .map(|directory| {
-            directory
-                .join("Resources")
-                .join("resources")
-                .join(GOOGLE_CLIENT_SECRET_RESOURCE)
-        });
-    #[cfg(not(target_os = "macos"))]
-    let packaged_resource = executable
-        .as_deref()
-        .and_then(|path| path.parent())
-        .map(|directory| {
-            directory
-                .join("resources")
-                .join(GOOGLE_CLIENT_SECRET_RESOURCE)
-        });
-    if let Some(resource) = packaged_resource {
-        resources.push(resource);
-    }
-
-    resources.into_iter().find_map(|path| {
-        fs::read_to_string(path)
-            .ok()
-            .and_then(|secret| parse_google_client_secret(&secret))
-    })
-}
-
 fn launch_browser(url: &str) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     let result = Command::new("open").arg(url).spawn();
@@ -509,8 +450,21 @@ fn wait_for_callback(listener: TcpListener, expected_state: &str) -> Result<Stri
     Err("Timed out: complete Google sign-in within two minutes.".to_string())
 }
 
+fn google_token_form<'a>(
+    code: &'a str,
+    code_verifier: &'a str,
+    redirect_uri: &'a str,
+) -> [(&'static str, &'a str); 5] {
+    [
+        ("client_id", GOOGLE_CLIENT_ID),
+        ("code", code),
+        ("code_verifier", code_verifier),
+        ("grant_type", "authorization_code"),
+        ("redirect_uri", redirect_uri),
+    ]
+}
+
 fn google_sign_in() -> Result<GoogleUser, String> {
-    let client_secret = google_client_secret();
     let listener = TcpListener::bind("127.0.0.1:0")
         .map_err(|error| format!("Could not start the local callback: {error}"))?;
     let port = listener
@@ -536,16 +490,7 @@ fn google_sign_in() -> Result<GoogleUser, String> {
         .timeout(Duration::from_secs(30))
         .build()
         .map_err(|error| format!("Could not prepare the secure connection: {error}"))?;
-    let mut token_form = vec![
-        ("client_id", GOOGLE_CLIENT_ID),
-        ("code", code.as_str()),
-        ("code_verifier", code_verifier.as_str()),
-        ("grant_type", "authorization_code"),
-        ("redirect_uri", redirect_uri.as_str()),
-    ];
-    if let Some(secret) = client_secret.as_deref() {
-        token_form.push(("client_secret", secret));
-    }
+    let token_form = google_token_form(&code, &code_verifier, &redirect_uri);
     let token_response = client
         .post(TOKEN_ENDPOINT)
         .form(&token_form)
@@ -655,11 +600,79 @@ fn engine_command() -> Result<Command, String> {
     Err("FishStop analysis engine is unavailable in the application.".to_string())
 }
 
+fn run_command_with_timeout(
+    mut command: Command,
+    timeout: Duration,
+    description: &str,
+) -> Result<Output, String> {
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("Could not start {description}: {error}"))?;
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| format!("{description} has no stdout pipe"))?;
+    let mut stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| format!("{description} has no stderr pipe"))?;
+    let stdout_reader = thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stdout.read_to_end(&mut bytes).map(|_| bytes)
+    });
+    let stderr_reader = thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stderr.read_to_end(&mut bytes).map(|_| bytes)
+    });
+    let started_at = Instant::now();
+
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if started_at.elapsed() < timeout => {
+                thread::sleep(Duration::from_millis(25));
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = stdout_reader.join();
+                let _ = stderr_reader.join();
+                return Err(format!(
+                    "{description} exceeded the {} second safety timeout and was stopped.",
+                    timeout.as_secs()
+                ));
+            }
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = stdout_reader.join();
+                let _ = stderr_reader.join();
+                return Err(format!("Could not monitor {description}: {error}"));
+            }
+        }
+    };
+
+    let stdout = stdout_reader
+        .join()
+        .map_err(|_| format!("Could not collect {description} output"))?
+        .map_err(|error| format!("Could not read {description} output: {error}"))?;
+    let stderr = stderr_reader
+        .join()
+        .map_err(|_| format!("Could not collect {description} errors"))?
+        .map_err(|error| format!("Could not read {description} errors: {error}"))?;
+    Ok(Output {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
 #[derive(Default)]
 struct IdentityWorker {
     child: Option<Child>,
     stdin: Option<BufWriter<ChildStdin>>,
-    stdout: Option<BufReader<ChildStdout>>,
+    responses: Option<Receiver<Result<String, String>>>,
 }
 
 impl IdentityWorker {
@@ -677,10 +690,38 @@ impl IdentityWorker {
             .map_err(|error| format!("Could not start the identity worker: {error}"))?;
         let stdin = child.stdin.take().ok_or("Identity worker has no stdin")?;
         let stdout = child.stdout.take().ok_or("Identity worker has no stdout")?;
+        let (response_sender, response_receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let mut stdout = BufReader::new(stdout);
+            loop {
+                let mut response = String::new();
+                match stdout.read_line(&mut response) {
+                    Ok(0) => break,
+                    Ok(_) => {
+                        if response_sender.send(Ok(response)).is_err() {
+                            break;
+                        }
+                    }
+                    Err(error) => {
+                        let _ = response_sender.send(Err(error.to_string()));
+                        break;
+                    }
+                }
+            }
+        });
         self.stdin = Some(BufWriter::new(stdin));
-        self.stdout = Some(BufReader::new(stdout));
+        self.responses = Some(response_receiver);
         self.child = Some(child);
         Ok(())
+    }
+
+    fn stop(&mut self) {
+        self.stdin = None;
+        self.responses = None;
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
 
     fn analyze(&mut self, report: serde_json::Value) -> Result<serde_json::Value, String> {
@@ -688,24 +729,50 @@ impl IdentityWorker {
         let request = serde_json::to_string(&report)
             .map_err(|error| format!("Could not serialize the identity report: {error}"))?;
         let stdin = self.stdin.as_mut().ok_or("Identity worker unavailable")?;
-        stdin
+        if let Err(error) = stdin
             .write_all(request.as_bytes())
             .and_then(|_| stdin.write_all(b"\n"))
             .and_then(|_| stdin.flush())
-            .map_err(|error| format!("Could not send the report to identity analysis: {error}"))?;
-        let mut response = String::new();
-        let stdout = self.stdout.as_mut().ok_or("Identity worker unavailable")?;
-        stdout
-            .read_line(&mut response)
-            .map_err(|error| format!("Could not read the identity response: {error}"))?;
+        {
+            self.stop();
+            return Err(format!(
+                "Could not send the report to identity analysis: {error}"
+            ));
+        }
+        let response = match self
+            .responses
+            .as_ref()
+            .ok_or("Identity worker unavailable")?
+            .recv_timeout(IDENTITY_ENGINE_TIMEOUT)
+        {
+            Ok(Ok(response)) => response,
+            Ok(Err(error)) => {
+                self.stop();
+                return Err(format!("Could not read the identity response: {error}"));
+            }
+            Err(RecvTimeoutError::Timeout) => {
+                self.stop();
+                return Err(format!(
+                    "Identity analysis exceeded the {} second safety timeout and was stopped.",
+                    IDENTITY_ENGINE_TIMEOUT.as_secs()
+                ));
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                self.stop();
+                return Err("The identity worker stopped. Try the analysis again.".to_string());
+            }
+        };
         if response.trim().is_empty() {
-            self.child = None;
-            self.stdin = None;
-            self.stdout = None;
+            self.stop();
             return Err("The identity worker stopped. Try the analysis again.".to_string());
         }
-        let payload: serde_json::Value = serde_json::from_str(&response)
-            .map_err(|_| "The identity worker returned an invalid response.".to_string())?;
+        let payload: serde_json::Value = match serde_json::from_str(&response) {
+            Ok(payload) => payload,
+            Err(_) => {
+                self.stop();
+                return Err("The identity worker returned an invalid response.".to_string());
+            }
+        };
         if payload.get("ok").and_then(|value| value.as_bool()) != Some(true) {
             return Err(payload
                 .get("error")
@@ -720,6 +787,12 @@ impl IdentityWorker {
     }
 }
 
+impl Drop for IdentityWorker {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
 fn run_eml_engine(
     temporary_eml: PathBuf,
     credentials: ReputationCredentials,
@@ -728,9 +801,8 @@ fn run_eml_engine(
         command
             .arg(&temporary_eml)
             .env("VIRUSTOTAL_API_KEY", credentials.virustotal)
-            .env("ABUSEIPDB_API_KEY", credentials.abuseipdb)
-            .output()
-            .map_err(|error| format!("Could not start the FishStop engine: {error}"))
+            .env("ABUSEIPDB_API_KEY", credentials.abuseipdb);
+        run_command_with_timeout(command, STATIC_ENGINE_TIMEOUT, "the FishStop engine")
     });
     let _ = fs::remove_file(&temporary_eml);
     let output = output?;
@@ -856,9 +928,7 @@ fn analyze_ai_with_engine(
         engine
             .env("OLLAMA_REQUEST_TIMEOUT", "240")
             .env("OLLAMA_SINGLE_PASS", "1");
-        engine
-            .output()
-            .map_err(|error| format!("Could not start the AI engine: {error}"))
+        run_command_with_timeout(engine, AI_ENGINE_TIMEOUT, "the AI engine")
     });
     let _ = fs::remove_file(&temporary_report);
     let output = output?;
@@ -1097,4 +1167,23 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("FishStop failed to start");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn desktop_oauth_token_exchange_uses_pkce_without_a_client_secret() {
+        let form = google_token_form(
+            "authorization-code",
+            "pkce-verifier",
+            "http://127.0.0.1:1234",
+        );
+        let keys: Vec<&str> = form.iter().map(|(key, _)| *key).collect();
+
+        assert!(keys.contains(&"client_id"));
+        assert!(keys.contains(&"code_verifier"));
+        assert!(!keys.contains(&"client_secret"));
+    }
 }

@@ -10,6 +10,8 @@ from __future__ import annotations
 import re
 from urllib.parse import urlparse
 
+from fishstop_engine.domain_utils import same_registered_domain
+
 try:
     from bs4 import BeautifulSoup
 except ImportError:
@@ -22,19 +24,6 @@ _SENSITIVE_FIELD_RE = re.compile(
     re.IGNORECASE,
 )
 _UNSAFE_ACTION_SCHEMES = {"javascript", "data", "vbscript"}
-
-
-def _registered_domain(value: str) -> str:
-    domain = (value or "").lower().strip().rstrip(".")
-    if not domain:
-        return ""
-    try:
-        from publicsuffix2 import get_sld
-
-        return str(get_sld(domain) or domain).lower().rstrip(".")
-    except Exception:
-        labels = domain.split(".")
-        return ".".join(labels[-2:]) if len(labels) >= 2 else domain
 
 
 def _field_label(field) -> str:
@@ -69,7 +58,7 @@ def _action_details(action: str, from_domain: str) -> tuple[str, str, bool]:
     host = (parsed.hostname or "").lower().rstrip(".")
     if not host:
         return "unresolved", "", False
-    external = bool(from_domain and _registered_domain(host) != _registered_domain(from_domain))
+    external = bool(from_domain and not same_registered_domain(host, from_domain))
     return "external" if external else "same_sender", host, external
 
 

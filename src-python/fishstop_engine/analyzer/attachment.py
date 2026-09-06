@@ -3,13 +3,21 @@
 import hashlib
 import io
 import re
+import unicodedata
 import zipfile
 from collections import Counter
 from typing import Optional
 from urllib.parse import parse_qsl, unquote, urlparse
 
-from .constants import CONTENT_TYPE_TO_EXT, MAGIC_BYTES
-from .archive_analysis import analyze_archive_security
+from .constants import (
+    CONTENT_TYPE_TO_EXT,
+    DANGEROUS_ATTACHMENT_EXTENSIONS,
+    DANGEROUS_ATTACHMENT_MIME_TYPES,
+    DANGEROUS_MAGIC_FORMATS,
+    DECOY_ATTACHMENT_EXTENSIONS,
+    MAGIC_BYTES,
+)
+from .archive_analysis import ArchiveAnalysisBudget, analyze_archive_security
 
 ZIP_CONTAINER_EXTS = {"docx", "xlsx", "pptx", "zip"}
 
@@ -202,6 +210,10 @@ PDF_OBJECT_RE = re.compile(r"(?P<object>\d+\s+\d+\s+obj)(?P<body>.*?)(?:endobj|$
 PDF_REDIRECT_PARAM_NAMES = {"url", "u", "uri", "target", "to", "dest", "destination", "redirect", "redirect_uri", "return", "returnurl", "next", "continue", "__url"}
 PDF_TRACKING_PARAM_MARKERS = ("uid", "analytics", "track", "click", "pixel", "count", "campaign", "visitor", "session")
 PDF_PUBLIC_SITE_LANDING_HOSTS = {"sites.google.com", "forms.gle", "docs.google.com", "forms.office.com"}
+_BIDI_FILENAME_CONTROLS = frozenset({
+    "\u202a", "\u202b", "\u202c", "\u202d", "\u202e",
+    "\u2066", "\u2067", "\u2068", "\u2069",
+})
 
 
 def identify_magic_bytes(raw: bytes) -> Optional[str]:
@@ -217,6 +229,75 @@ def ext_from_filename(filename: str) -> Optional[str]:
     if "." not in filename:
         return None
     return filename.rsplit(".", 1)[-1].lower()
+
+
+def _analyze_attachment_file_type(
+    filename: str,
+    content_type: str,
+    magic_format: str | None,
+) -> dict:
+    """Classify inherently risky attachment delivery formats."""
+    findings: list[dict] = []
+
+    def add(key: str, label: str, evidence: str) -> None:
+        findings.append({
+            "key": key,
+            "severity": "high",
+            "label": label,
+            "evidence": evidence,
+        })
+
+    original_name = filename or ""
+    normalized_name = unicodedata.normalize("NFKC", original_name)
+    basename = re.split(r"[\\/]", normalized_name)[-1].rstrip(" .")
+    name_parts = [part.strip().lower() for part in basename.split(".") if part.strip()]
+    extension = name_parts[-1] if len(name_parts) >= 2 else ""
+    mime_type = (content_type or "").split(";", 1)[0].strip().lower()
+
+    if any(character in _BIDI_FILENAME_CONTROLS for character in original_name):
+        add(
+            "bidirectional_filename_control",
+            "bidirectional control character can disguise the displayed filename",
+            original_name,
+        )
+    if (
+        len(name_parts) >= 3
+        and extension in DANGEROUS_ATTACHMENT_EXTENSIONS
+        and name_parts[-2] in DECOY_ATTACHMENT_EXTENSIONS
+    ):
+        add(
+            "double_extension",
+            f"double extension disguises '.{extension}' as '.{name_parts[-2]}'",
+            basename,
+        )
+    if extension in DANGEROUS_ATTACHMENT_EXTENSIONS:
+        add(
+            "dangerous_extension",
+            f"potentially executable or active attachment extension '.{extension}'",
+            extension,
+        )
+    if mime_type in DANGEROUS_ATTACHMENT_MIME_TYPES:
+        add(
+            "dangerous_mime_type",
+            f"MIME type declares potentially executable or script content '{mime_type}'",
+            mime_type,
+        )
+    if magic_format in DANGEROUS_MAGIC_FORMATS:
+        add(
+            "dangerous_magic_bytes",
+            f"magic bytes identify potentially executable content '{magic_format}'",
+            magic_format,
+        )
+
+    return {
+        "risk_level": "high" if findings else "clean",
+        "findings": findings,
+        "summary": (
+            "; ".join(item["label"] for item in findings)
+            if findings
+            else "No inherently dangerous attachment file type detected."
+        ),
+    }
 
 
 def _payload_to_bytes(raw_payload) -> tuple[bytes | None, str | None]:
@@ -738,6 +819,7 @@ def analyze_attachment(
     content_type: str,
     encoding: str,
     raw_payload,
+    archive_budget: ArchiveAnalysisBudget | None = None,
 ) -> dict:
     """Analyze an attachment and flag extension/content/magic-byte mismatches."""
     entry: dict = {
@@ -753,6 +835,7 @@ def analyze_attachment(
         "hash_sha1": None,
         "hash_sha256": None,
         "size_bytes": None,
+        "attachment_security": None,
         "pdf_security": None,
         "archive_security": None,
         "embedded_urls": [],
@@ -760,7 +843,17 @@ def analyze_attachment(
 
     raw_bytes, payload_warning = _payload_to_bytes(raw_payload)
     if raw_bytes is None:
-        entry["anomaly"] = payload_warning
+        entry["attachment_security"] = _analyze_attachment_file_type(
+            filename,
+            content_type,
+            None,
+        )
+        anomaly_parts = [payload_warning] if payload_warning else []
+        if entry["attachment_security"]["risk_level"] == "high":
+            anomaly_parts.append(
+                f"High-risk attachment: {entry['attachment_security']['summary']}"
+            )
+        entry["anomaly"] = "; ".join(anomaly_parts) if anomaly_parts else None
         return entry
 
     entry["magic_bytes_hex"] = raw_bytes[:16].hex().upper()
@@ -769,11 +862,20 @@ def analyze_attachment(
     entry["hash_md5"] = hashlib.md5(raw_bytes).hexdigest()
     entry["hash_sha1"] = hashlib.sha1(raw_bytes).hexdigest()
     entry["hash_sha256"] = hashlib.sha256(raw_bytes).hexdigest()
+    entry["attachment_security"] = _analyze_attachment_file_type(
+        filename,
+        content_type,
+        entry["magic_detected_format"],
+    )
 
     if entry["magic_detected_format"] == "pdf" or entry["extension_from_filename"] == "pdf":
         entry["pdf_security"] = analyze_pdf_security(raw_bytes)
     if zipfile.is_zipfile(io.BytesIO(raw_bytes)) or entry["extension_from_filename"] in ZIP_CONTAINER_EXTS:
-        entry["archive_security"] = analyze_archive_security(raw_bytes, filename)
+        entry["archive_security"] = analyze_archive_security(
+            raw_bytes,
+            filename,
+            budget=archive_budget,
+        )
 
     ct_base = content_type.split(";", 1)[0].strip().lower()
     expected_exts = CONTENT_TYPE_TO_EXT.get(ct_base, [])
@@ -798,6 +900,11 @@ def analyze_attachment(
 
     entry["extension_match"] = not mismatches
     anomaly_parts = [part for part in (payload_warning, "; ".join(mismatches)) if part]
+    attachment_security = entry.get("attachment_security") or {}
+    if attachment_security.get("risk_level") == "high":
+        anomaly_parts.append(
+            f"High-risk attachment: {attachment_security.get('summary')}"
+        )
     pdf_security = entry.get("pdf_security") or {}
     if pdf_security.get("suspicious"):
         anomaly_parts.append(

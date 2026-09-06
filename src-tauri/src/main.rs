@@ -34,6 +34,7 @@ use url::Url;
 // un client secret o credenziali personali.
 const GOOGLE_CLIENT_ID: &str =
     "676285460838-a927po5i3k4eo5cq7pls04ltjg63p8mf.apps.googleusercontent.com";
+const GOOGLE_CLIENT_SECRET_RESOURCE: &str = "google-oauth-client-secret";
 const AUTHORIZATION_ENDPOINT: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_ENDPOINT: &str = "https://oauth2.googleapis.com/token";
 const USERINFO_ENDPOINT: &str = "https://openidconnect.googleapis.com/v1/userinfo";
@@ -351,6 +352,76 @@ fn encode(value: &str) -> String {
     url::form_urlencoded::byte_serialize(value.as_bytes()).collect()
 }
 
+fn parse_google_client_secret(contents: &str) -> Option<String> {
+    let contents = contents.trim();
+    if contents.is_empty() {
+        return None;
+    }
+    if let Ok(document) = serde_json::from_str::<serde_json::Value>(contents) {
+        return document
+            .get("installed")
+            .or_else(|| document.get("web"))
+            .and_then(|client| client.get("client_secret"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|secret| !secret.is_empty())
+            .map(str::to_string);
+    }
+    Some(contents.to_string())
+}
+
+fn google_client_secret() -> Result<String, String> {
+    if let Ok(secret) = std::env::var("FISHSTOP_GOOGLE_CLIENT_SECRET") {
+        if let Some(secret) = parse_google_client_secret(&secret) {
+            return Ok(secret);
+        }
+    }
+
+    let mut resources = Vec::new();
+    #[cfg(debug_assertions)]
+    resources.push(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("resources")
+            .join(GOOGLE_CLIENT_SECRET_RESOURCE),
+    );
+    let executable = std::env::current_exe().ok();
+    #[cfg(target_os = "macos")]
+    let packaged_resource = executable
+        .as_deref()
+        .and_then(|path| path.parent())
+        .and_then(|directory| directory.parent())
+        .map(|directory| {
+            directory
+                .join("Resources")
+                .join("resources")
+                .join(GOOGLE_CLIENT_SECRET_RESOURCE)
+        });
+    #[cfg(not(target_os = "macos"))]
+    let packaged_resource = executable
+        .as_deref()
+        .and_then(|path| path.parent())
+        .map(|directory| {
+            directory
+                .join("resources")
+                .join(GOOGLE_CLIENT_SECRET_RESOURCE)
+        });
+    if let Some(resource) = packaged_resource {
+        resources.push(resource);
+    }
+
+    resources
+        .into_iter()
+        .find_map(|path| {
+            fs::read_to_string(path)
+                .ok()
+                .and_then(|secret| parse_google_client_secret(&secret))
+        })
+        .ok_or_else(|| {
+            "Google Sign-In is unavailable because this build does not include its OAuth desktop credential."
+                .to_string()
+        })
+}
+
 fn launch_browser(url: &str) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     let result = Command::new("open").arg(url).spawn();
@@ -454,9 +525,11 @@ fn google_token_form<'a>(
     code: &'a str,
     code_verifier: &'a str,
     redirect_uri: &'a str,
-) -> [(&'static str, &'a str); 5] {
+    client_secret: &'a str,
+) -> [(&'static str, &'a str); 6] {
     [
         ("client_id", GOOGLE_CLIENT_ID),
+        ("client_secret", client_secret),
         ("code", code),
         ("code_verifier", code_verifier),
         ("grant_type", "authorization_code"),
@@ -465,6 +538,7 @@ fn google_token_form<'a>(
 }
 
 fn google_sign_in() -> Result<GoogleUser, String> {
+    let client_secret = google_client_secret()?;
     let listener = TcpListener::bind("127.0.0.1:0")
         .map_err(|error| format!("Could not start the local callback: {error}"))?;
     let port = listener
@@ -490,7 +564,7 @@ fn google_sign_in() -> Result<GoogleUser, String> {
         .timeout(Duration::from_secs(30))
         .build()
         .map_err(|error| format!("Could not prepare the secure connection: {error}"))?;
-    let token_form = google_token_form(&code, &code_verifier, &redirect_uri);
+    let token_form = google_token_form(&code, &code_verifier, &redirect_uri, &client_secret);
     let token_response = client
         .post(TOKEN_ENDPOINT)
         .form(&token_form)
@@ -1174,16 +1248,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn desktop_oauth_token_exchange_uses_pkce_without_a_client_secret() {
+    fn desktop_oauth_token_exchange_uses_pkce_and_the_configured_client_secret() {
         let form = google_token_form(
             "authorization-code",
             "pkce-verifier",
             "http://127.0.0.1:1234",
+            "desktop-client-secret",
         );
         let keys: Vec<&str> = form.iter().map(|(key, _)| *key).collect();
 
         assert!(keys.contains(&"client_id"));
         assert!(keys.contains(&"code_verifier"));
-        assert!(!keys.contains(&"client_secret"));
+        assert!(keys.contains(&"client_secret"));
+        assert_eq!(
+            form.iter()
+                .find(|(key, _)| *key == "client_secret")
+                .map(|(_, value)| *value),
+            Some("desktop-client-secret")
+        );
     }
 }

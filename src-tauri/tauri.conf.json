@@ -26,6 +26,6 @@
       "icons/icon.ico"
     ],
     "externalBin": ["binaries/fishstop-engine"],
-    "resources": ["resources/ollama/**/*"]
+    "resources": ["resources"]
   }
 }

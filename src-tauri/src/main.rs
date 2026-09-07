@@ -771,8 +771,8 @@ fn packaged_engine_path() -> Option<PathBuf> {
 }
 
 fn configure_engine_output(mut command: Command) -> Command {
-    // Python otherwise uses the active Windows code page for redirected
-    // output. serde_json expects UTF-8, so accented text can become invalid.
+    // These settings protect source-mode Python. The packaged engine also
+    // enforces UTF-8 directly at its binary JSON protocol boundary.
     command
         .env("PYTHONUTF8", "1")
         .env("PYTHONIOENCODING", "utf-8");

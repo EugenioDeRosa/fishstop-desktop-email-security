@@ -36,6 +36,37 @@ def _json_safe(value: Any) -> Any:
     return value
 
 
+def _json_bytes(payload: Any) -> bytes:
+    """Serialize one protocol message as valid UTF-8 bytes."""
+    return json.dumps(payload, ensure_ascii=False).encode("utf-8", errors="replace")
+
+
+def _write_json(payload: Any, *, flush: bool = False) -> None:
+    """Write JSON without relying on the platform's text-stream encoding."""
+    encoded = _json_bytes(payload) + b"\n"
+    binary_stdout = getattr(sys.stdout, "buffer", None)
+    if binary_stdout is not None:
+        binary_stdout.write(encoded)
+        if flush:
+            binary_stdout.flush()
+        return
+
+    # Some test runners replace stdout with a text-only stream.
+    sys.stdout.write(encoded.decode("utf-8"))
+    if flush:
+        sys.stdout.flush()
+
+
+def _stdin_lines() -> Any:
+    """Read protocol messages as UTF-8 even when Windows uses a legacy code page."""
+    binary_stdin = getattr(sys.stdin, "buffer", None)
+    if binary_stdin is None:
+        yield from sys.stdin
+        return
+    for raw_line in binary_stdin:
+        yield raw_line.decode("utf-8")
+
+
 def analyze(path_value: str) -> dict[str, Any]:
     path = Path(path_value).expanduser().resolve()
     if not path.is_file():
@@ -133,16 +164,16 @@ def analyze_content_summary(report_path: str) -> dict[str, Any]:
 
 def identity_worker() -> None:
     """Keep the NER weights in memory and handle JSON-line requests."""
-    for raw_line in sys.stdin:
+    for raw_line in _stdin_lines():
         report_path: Path | None = None
         try:
             with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", suffix=".json", delete=False) as handle:
                 handle.write(raw_line)
                 report_path = Path(handle.name)
             result = analyze_identity(str(report_path))
-            print(json.dumps({"ok": True, "result": result}, ensure_ascii=False), flush=True)
+            _write_json({"ok": True, "result": result}, flush=True)
         except Exception as error:
-            print(json.dumps({"ok": False, "error": str(error)}, ensure_ascii=False), flush=True)
+            _write_json({"ok": False, "error": str(error)}, flush=True)
         finally:
             if report_path:
                 report_path.unlink(missing_ok=True)
@@ -157,7 +188,7 @@ def health_check(component: str | None = None) -> None:
         missing = [name for name in required if importlib.util.find_spec(name) is None]
         if missing:
             raise RuntimeError(f"Missing identity dependencies: {', '.join(missing)}")
-    print(json.dumps({"ok": True, "component": component or "engine"}))
+    _write_json({"ok": True, "component": component or "engine"})
 
 
 def main() -> None:
@@ -185,9 +216,9 @@ def main() -> None:
             raise ValueError(f"Comando sconosciuto: {command}")
         payload = result(value)
         key = "report" if command == "static" else "result"
-        print(json.dumps({"ok": True, key: payload}, ensure_ascii=False))
+        _write_json({"ok": True, key: payload})
     except Exception as error:
-        print(json.dumps({"ok": False, "error": str(error)}, ensure_ascii=False))
+        _write_json({"ok": False, "error": str(error)})
         raise SystemExit(1)
 
 

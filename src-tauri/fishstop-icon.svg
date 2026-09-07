@@ -1,14 +1,21 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+<svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
   <defs>
-    <linearGradient id="sea" x1="72" y1="62" x2="445" y2="464" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#0E4545"/>
-      <stop offset="1" stop-color="#062324"/>
-    </linearGradient>
+    <clipPath id="roundedSquare">
+      <rect width="512" height="512" rx="96" ry="96"/>
+    </clipPath>
   </defs>
-  <rect width="512" height="512" rx="112" fill="url(#sea)"/>
-  <path d="M112 270c36-74 109-113 183-87 37 13 67 38 87 69l56-43v121l-56-43c-24 42-68 72-119 76-68 5-125-31-151-93Z" fill="#75E0C6"/>
-  <path d="M177 267c25-28 65-38 101-25 20 7 37 21 49 39-30-12-60-5-79 16-24 26-59 29-91 10 5-14 12-27 20-40Z" fill="#D7FFF4" opacity=".94"/>
-  <circle cx="286" cy="244" r="10" fill="#073233"/>
-  <path d="M179 193c32-32 84-43 128-24" fill="none" stroke="#A7F1DE" stroke-linecap="round" stroke-width="17" opacity=".7"/>
-  <path d="M110 389h292" stroke="#54BDA8" stroke-linecap="round" stroke-width="12" opacity=".42"/>
+  <g clip-path="url(#roundedSquare)">
+    <rect width="512" height="512" fill="#123331"/>
+    <g transform="translate(96,86)">
+      <rect width="320" height="220" rx="28" fill="#7FE0C4" stroke="#123331" stroke-width="12"/>
+      <path d="M10 18 L160 140 L310 18" fill="none" stroke="#123331" stroke-width="14" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+    <g transform="translate(300,232)">
+      <circle cx="58" cy="58" r="58" fill="#FFFFFF" stroke="#123331" stroke-width="10"/>
+      <path d="M32 60 L50 78 L86 36" fill="none" stroke="#123331" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+    <text x="256" y="435" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-weight="800" font-size="68" letter-spacing="-1">
+      <tspan fill="#FFFFFF">fish</tspan><tspan fill="#7FE0C4">stop</tspan>
+    </text>
+  </g>
 </svg>

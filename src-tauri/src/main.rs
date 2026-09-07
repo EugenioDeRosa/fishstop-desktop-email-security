@@ -50,7 +50,20 @@ const IDENTITY_MODEL_REVISION: &str = "d421f57d5b1d36b375408588669e9340f9b11a89"
 const KEYRING_SERVICE: &str = "it.fishstop.desktop";
 const STATIC_ENGINE_TIMEOUT: Duration = Duration::from_secs(180);
 const IDENTITY_ENGINE_TIMEOUT: Duration = Duration::from_secs(180);
-const AI_ENGINE_TIMEOUT: Duration = Duration::from_secs(600);
+const AI_ENGINE_TIMEOUT: Duration = Duration::from_secs(660);
+const CPU_OLLAMA_REQUEST_TIMEOUT_SECONDS: u64 = 600;
+#[cfg(target_os = "windows")]
+const ACCELERATED_OLLAMA_REQUEST_TIMEOUT_SECONDS: u64 = 240;
+#[cfg(not(target_os = "windows"))]
+const ACCELERATED_OLLAMA_REQUEST_TIMEOUT_SECONDS: u64 = 90;
+
+fn ollama_request_timeout_seconds(gpu_accelerated: bool) -> u64 {
+    if gpu_accelerated {
+        ACCELERATED_OLLAMA_REQUEST_TIMEOUT_SECONDS
+    } else {
+        CPU_OLLAMA_REQUEST_TIMEOUT_SECONDS
+    }
+}
 
 #[derive(Clone, Default, Deserialize, Serialize)]
 struct ReputationCredentials {
@@ -1122,6 +1135,7 @@ fn analyze_ai_with_engine(
     command: &str,
     report: serde_json::Value,
     ollama_model: &str,
+    gpu_accelerated: bool,
 ) -> Result<serde_json::Value, String> {
     if command != "phi4" {
         return Err("Unsupported AI engine.".to_string());
@@ -1136,11 +1150,13 @@ fn analyze_ai_with_engine(
         engine
             .arg(command)
             .arg(&temporary_report)
-            .env("OLLAMA_MODEL", ollama_model);
+            .env("OLLAMA_MODEL", ollama_model)
+            .env(
+                "OLLAMA_REQUEST_TIMEOUT",
+                ollama_request_timeout_seconds(gpu_accelerated).to_string(),
+            );
         #[cfg(target_os = "windows")]
-        engine
-            .env("OLLAMA_REQUEST_TIMEOUT", "240")
-            .env("OLLAMA_SINGLE_PASS", "1");
+        engine.env("OLLAMA_SINGLE_PASS", "1");
         run_command_with_timeout(engine, AI_ENGINE_TIMEOUT, "the AI engine")
     });
     let _ = fs::remove_file(&temporary_report);
@@ -1190,8 +1206,13 @@ async fn analyze_phi4(
 ) -> Result<serde_json::Value, String> {
     let runtime = Arc::clone(&runtime);
     tauri::async_runtime::spawn_blocking(move || {
-        let selected_model = ollama_runtime::prepare_model(&app, &runtime)?;
-        analyze_ai_with_engine("phi4", report, selected_model)
+        let prepared_model = ollama_runtime::prepare_model(&app, &runtime)?;
+        analyze_ai_with_engine(
+            "phi4",
+            report,
+            prepared_model.name,
+            prepared_model.gpu_accelerated,
+        )
     })
     .await
     .map_err(|error| format!("Phi-4 analysis interrupted: {error}"))?
@@ -1436,5 +1457,15 @@ mod tests {
         assert_eq!(user.sub, "microsoft:user-id");
         assert_eq!(user.email, "ada@example.com");
         assert_eq!(user.provider, "microsoft");
+    }
+
+    #[test]
+    fn cpu_ollama_requests_get_a_ten_minute_budget_and_process_grace() {
+        assert_eq!(
+            ollama_request_timeout_seconds(false),
+            CPU_OLLAMA_REQUEST_TIMEOUT_SECONDS
+        );
+        assert_eq!(CPU_OLLAMA_REQUEST_TIMEOUT_SECONDS, 10 * 60);
+        assert!(AI_ENGINE_TIMEOUT > Duration::from_secs(CPU_OLLAMA_REQUEST_TIMEOUT_SECONDS));
     }
 }

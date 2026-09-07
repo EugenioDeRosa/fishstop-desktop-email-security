@@ -22,6 +22,11 @@ pub struct OllamaRuntime {
     child: Option<Child>,
 }
 
+pub struct PreparedModel {
+    pub name: &'static str,
+    pub gpu_accelerated: bool,
+}
+
 impl Drop for OllamaRuntime {
     fn drop(&mut self) {
         if let Some(child) = self.child.as_mut() {
@@ -384,9 +389,16 @@ fn ensure_server(
 pub fn prepare_model(
     app: &AppHandle,
     runtime: &Arc<Mutex<OllamaRuntime>>,
-) -> Result<&'static str, String> {
-    ensure_server(app, runtime)?;
-    Ok(recommended_model())
+) -> Result<PreparedModel, String> {
+    let (endpoint, _) = ensure_server(app, runtime)?;
+    let (_, loaded_on_gpu) = loaded_model(&endpoint);
+    Ok(PreparedModel {
+        name: recommended_model(),
+        // Ollama may not report VRAM until the first model load. Apple Silicon
+        // is known to use Metal, while every uncertain case receives the safer
+        // CPU timeout for its first analysis.
+        gpu_accelerated: loaded_on_gpu || cfg!(all(target_os = "macos", target_arch = "aarch64")),
+    })
 }
 
 pub fn status(app: &AppHandle, _runtime: &Arc<Mutex<OllamaRuntime>>) -> OllamaRuntimeStatus {

@@ -359,6 +359,10 @@ def extract_links(
             if not _EMAIL_RE.fullmatch(address):
                 return
             host = address.rsplit("@", 1)[-1].lower()
+            # The final portion of an email address is a top-level domain, not
+            # a downloadable filename. In particular, ``.com`` is also a DOS
+            # executable extension and must never make a mailto action risky.
+            download_filename, download_extension = "", ""
         elif scheme not in _WEB_SCHEMES or not host:
             return
         seen.add(dedupe_key)
@@ -386,7 +390,8 @@ def extract_links(
             None,
         )
         direct_download_is_dangerous = (
-            download_extension in _DANGEROUS_DOWNLOAD_EXTENSIONS
+            scheme in _WEB_SCHEMES
+            and download_extension in _DANGEROUS_DOWNLOAD_EXTENSIONS
         )
         if dangerous_redirect_download and not direct_download_is_dangerous:
             download_filename = str(dangerous_redirect_download.get("filename") or "")
@@ -447,7 +452,8 @@ def extract_links(
                 else "path"
             ),
             "dangerous_download": bool(
-                direct_download_is_dangerous or dangerous_redirect_download
+                scheme in _WEB_SCHEMES
+                and (direct_download_is_dangerous or dangerous_redirect_download)
             ),
             **intelligence,
         })

@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from html.parser import HTMLParser
 import ipaddress
 import re
 import socket
+import unicodedata
 from urllib.parse import urljoin, urlparse
 
 import requests
@@ -27,6 +29,32 @@ _TRAVEL_CONTEXT_RE = re.compile(
 )
 _MAX_ALIAS_REDIRECTS = 3
 _REDIRECT_STATUSES = {301, 302, 303, 307, 308}
+_MAX_OFFICIAL_PAGE_BYTES = 512 * 1024
+_DMARC_PASS_STATUSES = {"pass", "bestguesspass"}
+_LEGAL_ENTITY_SUFFIXES = {
+    "ag", "corp", "corporation", "gmbh", "inc", "incorporated", "limited",
+    "llc", "llp", "ltd", "plc", "sa", "spa", "srl",
+}
+
+
+class _LinkDomainParser(HTMLParser):
+    def __init__(self, base_url: str) -> None:
+        super().__init__(convert_charrefs=True)
+        self.base_url = base_url
+        self.domains: set[str] = set()
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.lower() not in {"a", "area"}:
+            return
+        href = next((value for key, value in attrs if key.lower() == "href"), None)
+        if not href:
+            return
+        target = urlparse(urljoin(self.base_url, href))
+        if target.scheme not in {"http", "https"} or not target.hostname:
+            return
+        domain = registered_domain(target.hostname)
+        if domain:
+            self.domains.add(domain)
 
 
 def _official_domain(url: str) -> str:
@@ -41,6 +69,23 @@ def _same_organisation_label(left: str, right: str) -> bool:
     left_label = registrable_label(left)
     right_label = registrable_label(right)
     return len(left_label) >= 4 and left_label == right_label
+
+
+def _normalised_brand_key(value: str) -> str:
+    normalised = unicodedata.normalize("NFKD", str(value or "")).casefold()
+    words = re.findall(r"[^\W_]+", normalised, flags=re.UNICODE)
+    while words and words[-1] in _LEGAL_ENTITY_SUFFIXES:
+        words.pop()
+    return "".join(words)
+
+
+def _domain_names_brand(domain: str, brand: str) -> bool:
+    """Require the complete registrable label to name the claimed organisation."""
+    return bool(
+        (brand_key := _normalised_brand_key(brand))
+        and len(brand_key) >= 4
+        and _normalised_brand_key(registrable_label(domain)) == brand_key
+    )
 
 
 def _resolves_only_to_public_addresses(host: str) -> bool:
@@ -103,6 +148,69 @@ def _redirects_to_official_domain(candidate_domain: str, official_domain: str) -
     finally:
         session.close()
     return False
+
+
+@lru_cache(maxsize=128)
+def _linked_domains_from_official_site(website: str) -> frozenset[str]:
+    """Return public domains linked by an official site, using a bounded fetch.
+
+    This is used only to corroborate an already DMARC-aligned sender whose full
+    registrable label names the organisation. A generic third-party link is
+    therefore never enough to make an email domain trusted.
+    """
+    parsed = urlparse(website)
+    host = (parsed.hostname or "").lower().rstrip(".")
+    if parsed.scheme != "https" or not host or not _resolves_only_to_public_addresses(host):
+        return frozenset()
+
+    session = requests.Session()
+    session.trust_env = False
+    current_url = website
+    try:
+        for _ in range(_MAX_ALIAS_REDIRECTS + 1):
+            current = urlparse(current_url)
+            current_host = (current.hostname or "").lower().rstrip(".")
+            if current.scheme != "https" or not current_host or not _resolves_only_to_public_addresses(current_host):
+                return frozenset()
+            response = session.get(
+                current_url,
+                allow_redirects=False,
+                stream=True,
+                timeout=(2, 4),
+                headers={"User-Agent": WIKIDATA_HEADERS["User-Agent"]},
+            )
+            if response.status_code in _REDIRECT_STATUSES:
+                location = response.headers.get("Location")
+                response.close()
+                if not location:
+                    return frozenset()
+                current_url = urljoin(current_url, location)
+                continue
+            if response.status_code != 200:
+                response.close()
+                return frozenset()
+            content_type = str(response.headers.get("Content-Type") or "").lower()
+            if "html" not in content_type:
+                response.close()
+                return frozenset()
+            chunks: list[bytes] = []
+            size = 0
+            for chunk in response.iter_content(16384):
+                if not chunk:
+                    continue
+                size += len(chunk)
+                if size > _MAX_OFFICIAL_PAGE_BYTES:
+                    break
+                chunks.append(chunk)
+            response.close()
+            parser = _LinkDomainParser(current_url)
+            parser.feed(b"".join(chunks).decode(response.encoding or "utf-8", errors="replace"))
+            return frozenset(parser.domains)
+    except (requests.RequestException, UnicodeError, ValueError):
+        return frozenset()
+    finally:
+        session.close()
+    return frozenset()
 
 
 def _normalized_evidence(value: object) -> str:
@@ -194,8 +302,8 @@ def _entity_is_brand_candidate(entity: dict) -> bool:
     )
 
 
-def _official_site(name: str) -> tuple[str, str]:
-    """Return a Wikidata P856 URL. Only the extracted organisation name is sent."""
+def _official_sites(name: str) -> tuple[list[str], str]:
+    """Return every current Wikidata P856 URL for the selected organisation."""
     search = requests.get(
         WIKIDATA_API,
         params={"action": "wbsearchentities", "search": name, "language": "en", "format": "json", "limit": 1},
@@ -205,15 +313,55 @@ def _official_site(name: str) -> tuple[str, str]:
     result = (search.get("search") or [{}])[0]
     entity_id = str(result.get("id") or "")
     if not entity_id:
-        return "", "No public organisation record was found."
+        return [], "No public organisation record was found."
     entity = requests.get(ENTITY_DATA_URL.format(entity_id=entity_id), timeout=4, headers=WIKIDATA_HEADERS).json()
     claims = ((entity.get("entities") or {}).get(entity_id) or {}).get("claims") or {}
-    statements = claims.get("P856") or []
+    statements = sorted(
+        claims.get("P856") or [],
+        key=lambda item: {"preferred": 0, "normal": 1, "deprecated": 2}.get(
+            str(item.get("rank") or "normal"), 1
+        ),
+    )
+    websites: list[str] = []
     for statement in statements:
+        if str(statement.get("rank") or "normal") == "deprecated":
+            continue
         value = (((statement.get("mainsnak") or {}).get("datavalue") or {}).get("value"))
-        if isinstance(value, str) and _official_domain(value):
-            return value, "Official website resolved from Wikidata."
-    return "", "The public organisation record has no official website field."
+        if isinstance(value, str) and _official_domain(value) and value not in websites:
+            websites.append(value)
+    if websites:
+        return websites, "Official website data resolved from Wikidata."
+    return [], "The public organisation record has no official website field."
+
+
+def _official_site(name: str) -> tuple[str, str]:
+    """Backward-compatible single-site view for internal callers."""
+    websites, message = _official_sites(name)
+    return (websites[0] if websites else ""), message
+
+
+def _auth_result(report: dict, name: str) -> dict:
+    return (
+        (report.get("effective_auth_results") or {}).get(name)
+        or (report.get("auth_results") or {}).get(name)
+        or (report.get("arc_auth_results") or {}).get(name)
+        or {}
+    )
+
+
+def _identity_domain(value: object) -> str:
+    raw = str(value or "").strip().strip("<>\"'")
+    if "@" in raw:
+        raw = raw.rsplit("@", 1)[-1]
+    return registered_domain(raw)
+
+
+def _dmarc_aligns_from(report: dict, from_domain: str) -> bool:
+    result = _auth_result(report, "DMARC")
+    if str(result.get("status") or "").lower() not in _DMARC_PASS_STATUSES:
+        return False
+    authenticated_domain = _identity_domain(result.get("identity"))
+    return bool(authenticated_domain and authenticated_domain == registered_domain(from_domain))
 
 
 def assess_brand_coherence(report: dict, entities: list[dict]) -> list[dict]:
@@ -225,12 +373,32 @@ def assess_brand_coherence(report: dict, entities: list[dict]) -> list[dict]:
         if not name or not _entity_is_brand_candidate(entity):
             continue
         try:
-            website, message = _official_site(name)
+            websites, message = _official_sites(name)
         except (requests.RequestException, ValueError, KeyError, TypeError):
-            website, message = "", "Official-domain lookup is currently unavailable."
-        resolution_source = "wikidata" if website else ""
+            websites, message = [], "Official-domain lookup is currently unavailable."
+        resolution_source = "wikidata" if websites else ""
+        official_domains = list(dict.fromkeys(filter(None, (_official_domain(site) for site in websites))))
+        official = official_domains[0] if official_domains else ""
         associated_domains: set[str] = set()
-        official = _official_domain(website)
+
+        from_domain = next(
+            (item["domain"] for item in contacts if item["source"] == "From"),
+            "",
+        )
+        if (
+            websites
+            and from_domain
+            and from_domain not in official_domains
+            and _dmarc_aligns_from(report, from_domain)
+            and _domain_names_brand(from_domain, name)
+        ):
+            linked_domains: set[str] = set()
+            for site in websites:
+                linked_domains.update(_linked_domains_from_official_site(site))
+            if from_domain in linked_domains:
+                associated_domains.add(from_domain)
+
+        accepted_domains = set(official_domains) | associated_domains
         comparisons = []
         for contact in contacts:
             domain = contact["domain"]
@@ -238,23 +406,37 @@ def assess_brand_coherence(report: dict, entities: list[dict]) -> list[dict]:
                 official
                 and _redirects_to_official_domain(domain, official)
             )
+            is_reply_destination = contact["source"] == "Reply-To"
             comparisons.append({
                 **contact,
+                "role": "reply_destination" if is_reply_destination else "sender_identity",
+                "is_external": bool(accepted_domains and domain not in accepted_domains),
+                "mismatch_eligible": not is_reply_destination,
                 "matches_official": bool(
                     official
-                    and (domain == official or domain in associated_domains or redirects_to_official)
+                    and (domain in accepted_domains or redirects_to_official)
                 ),
                 "redirects_to_official": bool(
                     redirects_to_official or (domain != official and domain in associated_domains)
                 ),
             })
-        mismatches = [item for item in comparisons if official and not item["matches_official"]]
+        mismatches = [
+            item for item in comparisons
+            if official and item["mismatch_eligible"] and not item["matches_official"]
+        ]
+        external_reply_domains = sorted({
+            item["domain"] for item in comparisons
+            if item["role"] == "reply_destination" and item["is_external"]
+        })
         results.append({
             "brand": name,
             "entity_types": entity.get("entity_types") or [entity.get("entity_type")],
-            "official_website": website,
+            "official_website": websites[0] if websites else "",
+            "official_websites": websites,
             "official_domain": official,
+            "official_domains": official_domains,
             "associated_domains": sorted(associated_domains),
+            "external_reply_domains": external_reply_domains,
             "resolution_source": resolution_source,
             "contacts": comparisons,
             "mismatches": mismatches,

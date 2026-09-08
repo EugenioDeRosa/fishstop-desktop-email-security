@@ -34,6 +34,7 @@ from fishstop_engine.domain_utils import registered_domain, same_registered_doma
 from .archive_analysis import ArchiveAnalysisBudget
 from .attachment      import analyze_attachment
 from .body_context    import select_body_for_ai
+from .html_deception  import analyze_html_copy_deception
 from .html_form_analysis import analyze_html_forms
 from .html_utils      import (
     recover_mislabelled_utf7_html,
@@ -80,6 +81,56 @@ GENERIC_REPLY_LOCAL_PARTS = {
     "reply",
     "replies",
 }
+
+RAW_EML_PREVIEW_MAX_CHARS = 750_000
+
+
+def _redacted_eml_preview(raw_bytes: bytes) -> str:
+    """Serialize an inspectable EML source without attachment payloads.
+
+    The preview keeps the message headers, MIME structure and text bodies. Any
+    named or explicitly attached leaf part is replaced with a readable marker,
+    preventing large Base64/binary blocks from overwhelming the Technical tab.
+    A separate parse is used so redaction can never affect the analysis itself.
+    """
+    preview_message = email.message_from_bytes(raw_bytes, policy=policy.default)
+    for part in preview_message.walk():
+        filename = str(part.get_filename() or "").strip()
+        disposition = str(part.get_content_disposition() or "").lower()
+        if disposition != "attachment" and not filename:
+            continue
+        try:
+            decoded_payload = part.get_payload(decode=True)
+        except Exception:
+            decoded_payload = None
+        size_label = (
+            f"{len(decoded_payload) / 1_000_000:.2f} MB"
+            if isinstance(decoded_payload, bytes)
+            else "size unavailable"
+        )
+        safe_filename = re.sub(r"[\r\n\t]+", " ", filename).strip()[:160]
+        marker = (
+            "[FishStop attachment payload omitted"
+            f"; filename={safe_filename or 'unnamed'}"
+            f"; content-type={part.get_content_type()}"
+            f"; decoded-size={size_label}]"
+        )
+        part.set_payload(marker)
+        while part.get("Content-Transfer-Encoding") is not None:
+            del part["Content-Transfer-Encoding"]
+        part["Content-Transfer-Encoding"] = "8bit"
+        part["X-FishStop-Attachment-Payload"] = "omitted from Technical preview"
+
+    rendered = preview_message.as_string(
+        policy=policy.default.clone(linesep="\n", max_line_length=0)
+    )
+    if len(rendered) <= RAW_EML_PREVIEW_MAX_CHARS:
+        return rendered
+    return (
+        rendered[:RAW_EML_PREVIEW_MAX_CHARS]
+        + "\n\n[FishStop raw EML preview truncated at "
+        + f"{RAW_EML_PREVIEW_MAX_CHARS} characters]"
+    )
 
 BULK_OR_CRM_HEADERS = {
     "List-Unsubscribe",
@@ -585,6 +636,15 @@ class EmlSOCAnalyzer:
         _validate_mime_structure(msg)
         report: dict = {}
         report["raw_eml_bytes"] = raw_bytes
+        try:
+            report["raw_eml_preview"] = _redacted_eml_preview(raw_bytes)
+        except Exception as exc:
+            # Source rendering is an investigation aid and must never prevent
+            # the underlying security analysis of an unusual but parseable EML.
+            report["raw_eml_preview"] = ""
+            report["raw_eml_preview_error"] = (
+                f"Raw EML preview could not be generated: {type(exc).__name__}"
+            )
 
         # ── 1. Campi envelope ──────────────────────────────────────────────
         report["delivered_to"] = self._header(msg, "Delivered-To")
@@ -815,6 +875,7 @@ class EmlSOCAnalyzer:
             combined_html,
             from_domain=_extract_domain(from_addr or ""),
         )
+        report["html_copy_deception"] = analyze_html_copy_deception(combined_html)
         report["body_clean"] = body_clean
 
         report["body_source"] = (
@@ -963,6 +1024,8 @@ class EmlSOCAnalyzer:
 
         alerts: list[dict] = []
         for link in report.get("links", []):
+            if str(link.get("scheme") or "").lower() == "mailto":
+                continue
             if link.get("actionable") is False:
                 continue
             host = registered_domain(str(link.get("host") or ""))
@@ -1176,6 +1239,26 @@ class EmlSOCAnalyzer:
                 detail += f" Sensitive fields: {sensitive}."
             flag(level, "HTML Form", detail)
 
+        copy_deception = report.get("html_copy_deception") or {}
+        for finding in (copy_deception.get("findings") or [])[:5]:
+            severity = str(finding.get("severity") or "medium").lower()
+            if severity not in {"high", "medium"}:
+                continue
+            paths = ", ".join(
+                f"`{path}`" for path in (finding.get("dangerous_paths") or [])[:3]
+            )
+            detail = str(
+                finding.get("message")
+                or "The HTML contains a potentially deceptive copy/paste surface."
+            )
+            if paths:
+                detail += f" Detected path: {paths}."
+            flag(
+                "HIGH" if severity == "high" else "MEDIUM",
+                "HTML copy deception",
+                detail,
+            )
+
         # Display Name Spoofing
         dns_val = report.get("display_name_spoofing")
         if dns_val:
@@ -1258,6 +1341,10 @@ class EmlSOCAnalyzer:
                 str(alert.get("message") or "Financial document delivery requires review."),
             )
         for lnk in report.get("links", []):
+            # Defense in depth for reports produced by older link parsers:
+            # email actions are never downloadable resources.
+            if str(lnk.get("scheme") or "").lower() == "mailto":
+                continue
             # Signature redirects are retained for transparency, but a
             # resolved, non-actionable signature link is not a risk signal.
             if (

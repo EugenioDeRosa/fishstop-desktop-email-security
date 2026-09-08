@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 ENGINE_ENTRYPOINT = ROOT / "src-python" / "main.py"
 BINARIES_DIRECTORY = ROOT / "src-tauri" / "binaries"
 BUILD_DIRECTORY = ROOT / "build" / "sidecar"
+IDENTITY_ONNX_DIRECTORY = ROOT / "build" / "identity-model" / "int8"
 
 
 def main() -> None:
@@ -24,30 +25,45 @@ def main() -> None:
     executable_name = "fishstop-engine.exe" if is_windows else "fishstop-engine"
     destination = BINARIES_DIRECTORY / f"fishstop-engine-{target}{'.exe' if is_windows else ''}"
 
-    subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "PyInstaller",
-            "--noconfirm",
-            "--clean",
-            "--onefile",
-            "--name",
-            "fishstop-engine",
-            "--paths",
-            str(ROOT / "src-python"),
-            "--collect-submodules",
-            "fishstop_engine",
-            "--workpath",
-            str(BUILD_DIRECTORY / "work"),
-            "--distpath",
-            str(BUILD_DIRECTORY / "dist"),
-            "--specpath",
-            str(BUILD_DIRECTORY / "spec"),
-            str(ENGINE_ENTRYPOINT),
-        ],
-        check=True,
-    )
+    pyinstaller_args = [
+        sys.executable,
+        "-m",
+        "PyInstaller",
+        "--noconfirm",
+        "--clean",
+        "--onefile",
+        "--name",
+        "fishstop-engine",
+        "--paths",
+        str(ROOT / "src-python"),
+        "--collect-submodules",
+        "fishstop_engine",
+        "--workpath",
+        str(BUILD_DIRECTORY / "work"),
+        "--distpath",
+        str(BUILD_DIRECTORY / "dist"),
+        "--specpath",
+        str(BUILD_DIRECTORY / "spec"),
+    ]
+    if IDENTITY_ONNX_DIRECTORY.is_dir() and any(IDENTITY_ONNX_DIRECTORY.glob("*.onnx")):
+        pyinstaller_args.extend([
+            "--add-data",
+            f"{IDENTITY_ONNX_DIRECTORY}{os.pathsep}identity-model",
+            # The packaged application always uses the generated ONNX model.
+            # Keeping the training-only stacks out avoids a large one-file
+            # extraction cost every time the sidecar starts.
+            "--exclude-module",
+            "torch",
+            "--exclude-module",
+            "optimum",
+        ])
+    else:
+        print(
+            "Identity ONNX artifact not found; the sidecar will retain the "
+            "PyTorch fallback. Run scripts/export_identity_onnx.py first."
+        )
+    pyinstaller_args.append(str(ENGINE_ENTRYPOINT))
+    subprocess.run(pyinstaller_args, check=True)
 
     BINARIES_DIRECTORY.mkdir(parents=True, exist_ok=True)
     built_binary = BUILD_DIRECTORY / "dist" / executable_name

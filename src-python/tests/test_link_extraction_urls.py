@@ -63,6 +63,46 @@ class LinkExtractionUrlTests(unittest.TestCase):
     def test_incomplete_url_is_ignored(self):
         self.assertEqual([], extract_links("Broken link https://", ""))
 
+    def test_mailto_dot_com_is_never_treated_as_executable_download(self):
+        links = extract_links(
+            "",
+            '<a href="mailto:contabilidad@bucoclinics.com">Write to accounting</a>',
+        )
+
+        self.assertEqual(1, len(links))
+        link = links[0]
+        self.assertEqual("mailto", link["scheme"])
+        self.assertEqual("bucoclinics.com", link["host"])
+        self.assertEqual("", link["download_filename"])
+        self.assertEqual("", link["download_extension"])
+        self.assertFalse(link["dangerous_download"])
+
+    def test_real_http_dot_com_file_remains_a_dangerous_download(self):
+        link = self.one_link("Download https://files.example/program.com")
+
+        self.assertEqual("program.com", link["download_filename"])
+        self.assertEqual("com", link["download_extension"])
+        self.assertTrue(link["dangerous_download"])
+
+    def test_mailto_dot_com_does_not_emit_high_soc_flag(self):
+        raw = (
+            "From: sender@example.com\r\n"
+            "To: recipient@example.net\r\n"
+            "Subject: Contact\r\n"
+            "Content-Type: text/html; charset=utf-8\r\n"
+            "\r\n"
+            '<a href="mailto:info@example.com">Email us</a>\r\n'
+        ).encode("utf-8")
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "mailto.eml"
+            path.write_bytes(raw)
+            report = EmlSOCAnalyzer().analyze(str(path))
+
+        self.assertFalse(any(
+            flag["level"] == "HIGH" and flag["field"] == "Link"
+            for flag in report["flags"]
+        ))
+
     def test_dangerous_nested_download_emits_high_soc_flag(self):
         url = (
             "https://safe.example?"

@@ -414,8 +414,6 @@ def _empty_uri_evidence() -> dict:
 
 def _uri_evidence_from_action_urls(action_urls: list[dict], url_count: int | None = None) -> dict:
     evidence = _empty_uri_evidence()
-    evidence["url_count"] = len(action_urls) if url_count is None else int(url_count)
-    evidence["uri_action_url_count"] = len(action_urls)
     seen_details: set[str] = set()
     seen_signatures: set[str] = set()
 
@@ -431,7 +429,15 @@ def _uri_evidence_from_action_urls(action_urls: list[dict], url_count: int | Non
             if target not in evidence["urls"]:
                 evidence["urls"].append(target)
         has_public_landing = any(_is_public_site_landing(target) for target in targets)
-        signature = "|".join([url] + nested_urls)
+        # The same action is observed once by the raw syntax scan and once by
+        # pypdf.  Include its object reference so those observations collapse,
+        # while two distinct annotations pointing to the same URL remain two
+        # actions.
+        signature = "|".join([
+            str(item.get("object") or "unknown-object"),
+            url,
+            *nested_urls,
+        ])
         if signature in seen_signatures:
             continue
         seen_signatures.add(signature)
@@ -454,6 +460,8 @@ def _uri_evidence_from_action_urls(action_urls: list[dict], url_count: int | Non
     evidence["samples"] = evidence["samples"][:5]
     evidence["signatures"] = sorted(seen_signatures)[:50]
     evidence["urls"] = evidence["urls"][:25]
+    evidence["url_count"] = len(evidence["urls"])
+    evidence["uri_action_url_count"] = len(evidence["signatures"])
     return evidence
 
 
@@ -464,14 +472,24 @@ def _merge_uri_evidence(*items: dict) -> dict:
     for item in items:
         if not item:
             continue
-        merged["url_count"] += int(item.get("url_count") or 0)
-        merged["uri_action_url_count"] += int(item.get("uri_action_url_count") or 0)
         signatures = set(item.get("signatures") or [])
         duplicate = bool(signatures and signatures <= seen_signatures)
         if not duplicate:
-            merged["nested_redirect_count"] += int(item.get("nested_redirect_count") or 0)
-            merged["tracked_redirect_count"] += int(item.get("tracked_redirect_count") or 0)
-            merged["public_site_landing_count"] += int(item.get("public_site_landing_count") or 0)
+            # Both scanners inspect the same document. Maxima retain findings
+            # available to only one scanner without adding the same action
+            # twice when their evidence overlaps.
+            merged["nested_redirect_count"] = max(
+                merged["nested_redirect_count"],
+                int(item.get("nested_redirect_count") or 0),
+            )
+            merged["tracked_redirect_count"] = max(
+                merged["tracked_redirect_count"],
+                int(item.get("tracked_redirect_count") or 0),
+            )
+            merged["public_site_landing_count"] = max(
+                merged["public_site_landing_count"],
+                int(item.get("public_site_landing_count") or 0),
+            )
         seen_signatures.update(signatures)
         for sample in item.get("samples") or []:
             if sample not in seen_samples:
@@ -483,6 +501,8 @@ def _merge_uri_evidence(*items: dict) -> dict:
     merged["samples"] = merged["samples"][:5]
     merged["signatures"] = sorted(seen_signatures)[:50]
     merged["urls"] = merged["urls"][:25]
+    merged["url_count"] = len(merged["urls"])
+    merged["uri_action_url_count"] = len(merged["signatures"])
     return merged
 
 
@@ -503,9 +523,24 @@ def _extract_pdf_uri_evidence(text: str) -> dict:
     return _uri_evidence_from_action_urls(action_urls, url_count=len(all_urls))
 
 
+def _pdf_syntax_without_stream_data(raw: bytes) -> bytes:
+    """Remove stream payloads before scanning PDF names.
+
+    Compressed stream bytes are arbitrary binary data.  Interpreting them as
+    PDF syntax creates false names such as ``#fb`` and, more seriously, can
+    invent active-feature tokens that do not exist in the object structure.
+    """
+    return re.sub(
+        rb"(?s)\bstream\r?\n.*?\bendstream\b",
+        b"stream\nendstream",
+        raw,
+    )
+
+
 def _static_pdf_indicators(raw: bytes) -> tuple[Counter, dict]:
     counter: Counter = Counter()
-    raw_text = raw.decode("latin-1", errors="ignore")
+    syntax_raw = _pdf_syntax_without_stream_data(raw)
+    raw_text = syntax_raw.decode("latin-1", errors="ignore")
     suspicious_name_escapes = len(PDF_HEX_ESCAPE_RE.findall(raw_text))
     text = _decode_pdf_name_escapes(raw_text)
     names = PDF_NAME_RE.findall(text)
@@ -516,7 +551,7 @@ def _static_pdf_indicators(raw: bytes) -> tuple[Counter, dict]:
         if key:
             _add_indicator(counter, key, count)
 
-    uri_count = len(URL_RE.findall(raw))
+    uri_count = len(URL_RE.findall(syntax_raw))
     uri_evidence = _extract_pdf_uri_evidence(text)
     if uri_evidence["nested_redirect_count"]:
         _add_indicator(counter, "uri_nested_redirect", uri_evidence["nested_redirect_count"])
@@ -571,15 +606,23 @@ def _scan_pypdf_object(obj, counter: Counter, stats: dict, seen: set[int], depth
         return
 
     if isinstance(obj, dict):
+        # Count each feature once per PDF dictionary.  For example a URI
+        # action normally contains both ``/S /URI`` and ``/URI (url)``; those
+        # describe one action, not two independent URI actions.
+        local_indicators: set[str] = set()
         for raw_key, raw_value in obj.items():
             key = _decode_pdf_name_escapes(_safe_pdf_str(raw_key))
-            indicator_key = PDF_NAME_TO_KEY.get(key)
-            if indicator_key:
-                _add_indicator(counter, indicator_key)
             value_name = _decode_pdf_name_escapes(_safe_pdf_str(raw_value))
-            value_indicator_key = PDF_NAME_TO_KEY.get(value_name)
-            if value_indicator_key:
-                _add_indicator(counter, value_indicator_key)
+            for name in (key, value_name):
+                indicator_key = PDF_NAME_TO_KEY.get(name)
+                if indicator_key:
+                    local_indicators.add(indicator_key)
+        for indicator_key in local_indicators:
+            _add_indicator(counter, indicator_key)
+
+        for raw_key, raw_value in obj.items():
+            key = _decode_pdf_name_escapes(_safe_pdf_str(raw_key))
+            value_name = _decode_pdf_name_escapes(_safe_pdf_str(raw_value))
             if key == "/URI":
                 urls = PDF_URL_TEXT_RE.findall(value_name)
                 if not urls and value_name.lower().startswith(("http://", "https://")):
@@ -737,11 +780,27 @@ def analyze_pdf_security(raw: bytes) -> dict:
 
     static_counter, static_stats = _static_pdf_indicators(raw)
     structural_counter, structural_stats = _pypdf_structural_scan(raw)
-    total_counter = static_counter + structural_counter
+    # Prefer counts from the parsed reachable object graph. Raw syntax remains
+    # a fallback for malformed or orphaned constructs that pypdf cannot expose,
+    # but the same feature is never added twice merely because two scanners saw
+    # it.
+    total_counter = Counter(static_counter)
+    for key, count in structural_counter.items():
+        total_counter[key] = count
+    if structural_stats.get("parser_available") and not structural_stats.get("parser_error"):
+        field_count = int(structural_stats.get("field_count") or 0)
+        if field_count:
+            total_counter["acroform"] = field_count
+        else:
+            total_counter.pop("acroform", None)
     uri_evidence = _merge_uri_evidence(
         static_stats.get("uri_evidence") or {},
         structural_stats.get("uri_evidence") or {},
     )
+    if uri_evidence["uri_action_url_count"]:
+        total_counter["uri"] = uri_evidence["uri_action_url_count"]
+    else:
+        total_counter.pop("uri", None)
     for key, evidence_key in (
         ("uri_nested_redirect", "nested_redirect_count"),
         ("uri_tracked_redirect", "tracked_redirect_count"),

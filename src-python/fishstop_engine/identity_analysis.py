@@ -89,7 +89,7 @@ def _is_low_quality_entity(raw_value: object, name: str, text: str, start: int, 
     # '##esco' in 'Bradesco' and labels inside email/URL hosts are not claims.
     if before.isalnum() or after.isalnum():
         return True
-    if before in ".@_-" or after in ".@_-":
+    if (before and before in ".@_-") or (after and after in ".@_-"):
         return True
     return False
 

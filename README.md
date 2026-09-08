@@ -23,6 +23,8 @@ Apri **Settings → Qwen locale**:
 
 La selezione manuale è disabilitata: FishStop usa `qwen3:4b-q4_K_M` sui Mac Apple Silicon e `qwen3:4b-instruct-2507-q4_K_M` sui runtime CPU Windows e Linux.
 
+L'analisi semantica usa per impostazione predefinita la modalità `balanced`: una passata primaria e, solo quando rimangono ambiguità rilevanti, un unico audit locale aggiuntivo. Per confronti di qualità si può impostare `FISHSTOP_ANALYSIS_MODE=fast|balanced|thorough`; `fast` disabilita l'audit e `thorough` conserva i controlli specializzati separati.
+
 ## Avvio in sviluppo
 
 Prerequisiti: Node.js LTS, Rust e Python 3.
@@ -42,11 +44,12 @@ Il pacchetto include il motore Python come sidecar e il runtime Ollama richiesto
 
 ```bash
 .venv/bin/pip install -r src-python/requirements.txt pyinstaller
+.venv/bin/python scripts/export_identity_onnx.py
 FISHSTOP_TARGET_TRIPLE=$(rustc --print host-tuple) .venv/bin/python scripts/build_sidecar.py
 npm run tauri build
 ```
 
-Il sidecar evita di richiedere Python all'utente finale. Qwen viene scaricato localmente solo quando l'utente lo installa dalle impostazioni.
+L'export genera in `build/identity-model/int8` il NER ONNX quantizzato per l'architettura di build; il sidecar lo include automaticamente e mantiene un fallback PyTorch per lo sviluppo senza artefatto. Il sidecar evita di richiedere Python all'utente finale. Qwen viene scaricato localmente solo quando l'utente lo installa dalle impostazioni.
 
 ## Accesso e dati locali
 

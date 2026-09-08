@@ -4,7 +4,11 @@ import unittest
 import zipfile
 from pathlib import Path
 
-from fishstop_engine.analyzer.attachment import analyze_attachment
+from fishstop_engine.analyzer.attachment import (
+    _static_pdf_indicators,
+    analyze_attachment,
+    analyze_pdf_security,
+)
 from fishstop_engine.analyzer.soc_analyzer import EmlSOCAnalyzer
 
 
@@ -82,6 +86,50 @@ class AttachmentRiskTests(unittest.TestCase):
         self.assertEqual("clean", result["attachment_security"]["risk_level"])
         self.assertEqual([], result["attachment_security"]["findings"])
         self.assertIsNone(result["anomaly"])
+
+    def test_decoded_attachment_size_is_reported_in_bytes(self):
+        payload = b"small test payload"
+        result = analyze_attachment(
+            "document.txt",
+            "text/plain",
+            "8bit",
+            payload,
+        )
+
+        self.assertEqual(result["size_bytes"], len(payload))
+
+    def test_binary_stream_bytes_are_not_interpreted_as_pdf_names(self):
+        raw = (
+            b"%PDF-1.4\n1 0 obj\n<</Length 24>>\nstream\n"
+            b"binary#fb/JavaScript data\nendstream\nendobj\n%%EOF"
+        )
+        indicators, stats = _static_pdf_indicators(raw)
+
+        self.assertEqual(stats["suspicious_name_escapes"], 0)
+        self.assertNotIn("javascript", indicators)
+
+    def test_pdf_features_are_not_double_counted_and_empty_form_is_ignored(self):
+        from pypdf import PdfWriter
+        from pypdf.generic import ArrayObject, DictionaryObject, NameObject
+
+        writer = PdfWriter()
+        writer.add_blank_page(width=100, height=100)
+        writer.add_uri(0, "https://example.com", (0, 0, 50, 20))
+        writer.root_object[NameObject("/AcroForm")] = DictionaryObject({
+            NameObject("/Fields"): ArrayObject(),
+        })
+        output = io.BytesIO()
+        writer.write(output)
+
+        security = analyze_pdf_security(output.getvalue())
+        indicator_counts = {
+            item["key"]: item["count"] for item in security["indicators"]
+        }
+
+        self.assertEqual(indicator_counts["uri"], 1)
+        self.assertNotIn("acroform", indicator_counts)
+        self.assertEqual(security["field_count"], 0)
+        self.assertEqual(security["uri_evidence"]["uri_action_url_count"], 1)
 
     def test_archive_uses_the_same_dangerous_extension_policy(self):
         buffer = io.BytesIO()

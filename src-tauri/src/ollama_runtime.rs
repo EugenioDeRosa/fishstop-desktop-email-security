@@ -401,6 +401,29 @@ pub fn prepare_model(
     })
 }
 
+pub fn warm_default_model(
+    app: &AppHandle,
+    runtime: &Arc<Mutex<OllamaRuntime>>,
+) -> Result<(), String> {
+    let (endpoint, _) = ensure_server(app, runtime)?;
+    Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(600))
+        .build()
+        .map_err(|error| format!("Could not prepare the local AI warm-up: {error}"))?
+        .post(format!("{endpoint}/api/generate"))
+        .json(&serde_json::json!({
+            "model": recommended_model(),
+            "prompt": "",
+            "stream": false,
+            "keep_alive": "5m"
+        }))
+        .send()
+        .and_then(|response| response.error_for_status())
+        .map_err(|error| format!("Could not preload Qwen: {error}"))?;
+    Ok(())
+}
+
 pub fn status(app: &AppHandle, _runtime: &Arc<Mutex<OllamaRuntime>>) -> OllamaRuntimeStatus {
     let (platform, architecture, cpu, memory_bytes, accelerator, selection_reason) =
         machine_profile();

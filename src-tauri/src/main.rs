@@ -1155,8 +1155,6 @@ fn analyze_ai_with_engine(
                 "OLLAMA_REQUEST_TIMEOUT",
                 ollama_request_timeout_seconds(gpu_accelerated).to_string(),
             );
-        #[cfg(target_os = "windows")]
-        engine.env("OLLAMA_SINGLE_PASS", "1");
         run_command_with_timeout(engine, AI_ENGINE_TIMEOUT, "the AI engine")
     });
     let _ = fs::remove_file(&temporary_report);
@@ -1216,6 +1214,19 @@ async fn analyze_phi4(
     })
     .await
     .map_err(|error| format!("Phi-4 analysis interrupted: {error}"))?
+}
+
+#[tauri::command]
+async fn warm_ollama_model(
+    app: tauri::AppHandle,
+    runtime: tauri::State<'_, Arc<Mutex<OllamaRuntime>>>,
+) -> Result<(), String> {
+    let runtime = Arc::clone(&runtime);
+    tauri::async_runtime::spawn_blocking(move || {
+        ollama_runtime::warm_default_model(&app, &runtime)
+    })
+    .await
+    .map_err(|error| format!("Qwen warm-up interrupted: {error}"))?
 }
 
 #[derive(Deserialize)]
@@ -1380,6 +1391,18 @@ fn main() {
         .manage(Arc::new(Mutex::new(IdentityWorker::default())))
         .manage(Arc::new(Mutex::new(OllamaRuntime::default())))
         .manage(Arc::new(Mutex::new(ReputationCredentialCache::default())))
+        .setup(|_app| {
+            // Windows keeps the executable icon and the live window/taskbar
+            // icon separately. Reapply Tauri's bundled icon to the main
+            // window so both surfaces always use the same FishStop artwork.
+            #[cfg(target_os = "windows")]
+            if let (Some(window), Some(icon)) =
+                (_app.get_webview_window("main"), _app.default_window_icon())
+            {
+                window.set_icon(icon.clone())?;
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             sign_in_with_google,
             sign_in_with_microsoft,
@@ -1392,6 +1415,7 @@ fn main() {
             analyze_eml_contents,
             analyze_identity,
             analyze_phi4,
+            warm_ollama_model,
             ollama_runtime_status,
             install_default_ollama_model,
             remove_default_ollama_model,

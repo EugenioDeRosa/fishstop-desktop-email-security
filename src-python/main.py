@@ -25,6 +25,74 @@ IDENTITY_MODEL_ID = "Davlan/distilbert-base-multilingual-cased-ner-hrl"
 IDENTITY_MODEL_REVISION = "d421f57d5b1d36b375408588669e9340f9b11a89"
 
 
+def _identity_onnx_directory() -> Path | None:
+    configured = os.getenv("FISHSTOP_IDENTITY_ONNX_PATH", "").strip()
+    candidates = [Path(configured).expanduser()] if configured else []
+    bundled_root = Path(getattr(sys, "_MEIPASS", ENGINE_ROOT))
+    candidates.extend([
+        bundled_root / "identity-model",
+        ENGINE_ROOT.parent / "build" / "identity-model" / "int8",
+    ])
+    for candidate in candidates:
+        if candidate.is_dir() and any(candidate.glob("*.onnx")):
+            return candidate.resolve()
+    return None
+
+
+def _load_identity_runtime() -> dict[str, Any]:
+    from transformers import AutoTokenizer
+    from transformers.utils import logging as transformers_logging
+
+    def load_tokenizer(model_path, **kwargs):
+        previous_verbosity = transformers_logging.get_verbosity()
+        transformers_logging.set_verbosity_error()
+        try:
+            return AutoTokenizer.from_pretrained(
+                model_path,
+                use_fast=True,
+                **kwargs,
+            )
+        finally:
+            transformers_logging.set_verbosity(previous_verbosity)
+
+    onnx_directory = _identity_onnx_directory()
+    if onnx_directory is not None:
+        try:
+            from fishstop_engine.onnx_token_pipeline import OnnxTokenClassificationPipeline
+
+            tokenizer = load_tokenizer(onnx_directory)
+            return {
+                "pipeline": OnnxTokenClassificationPipeline(onnx_directory, tokenizer),
+                "backend": "onnxruntime-int8",
+            }
+        except (ImportError, KeyError, OSError, RuntimeError, ValueError):
+            # A missing or incompatible generated artifact must not disable the
+            # identity safety check. Source builds retain the PyTorch fallback.
+            pass
+
+    from transformers import AutoModelForTokenClassification, pipeline
+
+    tokenizer = load_tokenizer(
+        IDENTITY_MODEL_ID,
+        revision=IDENTITY_MODEL_REVISION,
+    )
+    model = AutoModelForTokenClassification.from_pretrained(
+        IDENTITY_MODEL_ID,
+        revision=IDENTITY_MODEL_REVISION,
+    )
+    model.eval()
+    return {
+        "pipeline": pipeline(
+            "token-classification",
+            model=model,
+            tokenizer=tokenizer,
+            aggregation_strategy="simple",
+            device=-1,
+        ),
+        "backend": "pytorch",
+    }
+
+
 def _json_safe(value: Any) -> Any:
     """Remove binary-only fields while preserving the full report structure."""
     if isinstance(value, bytes):
@@ -98,7 +166,6 @@ def analyze_identity(report_path: str) -> dict[str, Any]:
     """Run local multilingual organisation extraction for impersonation evidence."""
     global _IDENTITY_RUNTIME
     try:
-        from transformers import AutoModelForTokenClassification, AutoTokenizer, pipeline
         from fishstop_engine.brand_intelligence import assess_brand_coherence
         from fishstop_engine.identity_analysis import extract_organisations
     except ImportError as error:
@@ -108,19 +175,17 @@ def analyze_identity(report_path: str) -> dict[str, Any]:
 
     report = json.loads(Path(report_path).read_text(encoding="utf-8"))
     if _IDENTITY_RUNTIME is None:
-        tokenizer = AutoTokenizer.from_pretrained(IDENTITY_MODEL_ID, revision=IDENTITY_MODEL_REVISION)
-        model = AutoModelForTokenClassification.from_pretrained(IDENTITY_MODEL_ID, revision=IDENTITY_MODEL_REVISION)
-        model.eval()
-        _IDENTITY_RUNTIME = {
-            "pipeline": pipeline(
-                "token-classification", model=model, tokenizer=tokenizer,
-                aggregation_strategy="simple", device=-1,
-            ),
-        }
+        try:
+            _IDENTITY_RUNTIME = _load_identity_runtime()
+        except ImportError as error:
+            raise RuntimeError(
+                "Identity analysis requires the configured local AI dependencies."
+            ) from error
     result = extract_organisations(report, _IDENTITY_RUNTIME["pipeline"])
     if result.get("status") == "ok":
         result["coherence"] = assess_brand_coherence(report, result.get("entities") or [])
     result["model"] = f"{IDENTITY_MODEL_ID}@{IDENTITY_MODEL_REVISION}"
+    result["backend"] = _IDENTITY_RUNTIME.get("backend", "pytorch")
     return result
 
 
@@ -140,6 +205,7 @@ def analyze_phi4(report_path: str) -> dict[str, Any]:
         "status": "ok", "analysis": last_event.get("analysis"),
         "backend": last_event.get("backend"), "model": last_event.get("model"),
         "analyzed_sections": last_event.get("analyzed_sections"),
+        "performance": last_event.get("performance"),
     })
 
 
@@ -184,7 +250,11 @@ def health_check(component: str | None = None) -> None:
     if component not in (None, "identity"):
         raise ValueError(f"Unsupported health-check component: {component}")
     if component == "identity":
-        required = ("huggingface_hub", "torch", "transformers")
+        required = (
+            ("huggingface_hub", "transformers", "onnxruntime")
+            if _identity_onnx_directory() is not None
+            else ("huggingface_hub", "torch", "transformers")
+        )
         missing = [name for name in required if importlib.util.find_spec(name) is None]
         if missing:
             raise RuntimeError(f"Missing identity dependencies: {', '.join(missing)}")

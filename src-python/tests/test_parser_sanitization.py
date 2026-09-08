@@ -5,7 +5,10 @@ from email import policy
 from email.parser import BytesParser
 from pathlib import Path
 
-from fishstop_engine.analyzer.soc_analyzer import EmlSOCAnalyzer
+from fishstop_engine.analyzer.soc_analyzer import (
+    EmlSOCAnalyzer,
+    _redacted_eml_preview,
+)
 from fishstop_engine.parser import _sanitize_eml_bytes
 
 
@@ -75,6 +78,35 @@ class EmlSanitizationTests(unittest.TestCase):
             b"From: sender@example.com\r\nSubject: Test\r\n\r\n",
             _sanitize_eml_bytes(b"From: sender@example.com\r\nSubject: Test\r\n"),
         )
+
+    def test_raw_preview_keeps_message_source_and_omits_attachment_payload(self):
+        raw = (
+            b"From: sender@example.com\r\n"
+            b"To: recipient@example.net\r\n"
+            b"Subject: Source preview\r\n"
+            b"MIME-Version: 1.0\r\n"
+            b"Content-Type: multipart/mixed; boundary=fishstop\r\n"
+            b"\r\n"
+            b"--fishstop\r\n"
+            b"Content-Type: text/plain; charset=utf-8\r\n\r\n"
+            b"Visible message body.\r\n"
+            b"--fishstop\r\n"
+            b"Content-Type: application/pdf\r\n"
+            b"Content-Disposition: attachment; filename=document.pdf\r\n"
+            b"Content-Transfer-Encoding: base64\r\n\r\n"
+            b"U0VDUkVUX0JJTkFSWV9QQVlMT0FE\r\n"
+            b"--fishstop--\r\n"
+        )
+
+        preview = _redacted_eml_preview(raw)
+
+        self.assertIn("Subject: Source preview", preview)
+        self.assertIn("Visible message body.", preview)
+        self.assertIn("filename=document.pdf", preview)
+        self.assertIn("decoded-size=0.00 MB", preview)
+        self.assertIn("X-FishStop-Attachment-Payload: omitted", preview)
+        self.assertNotIn("U0VDUkVUX0JJTkFSWV9QQVlMT0FE", preview)
+        self.assertNotIn("SECRET_BINARY_PAYLOAD", preview)
 
 
 if __name__ == "__main__":

@@ -22,3 +22,19 @@ __pycache__/
 
 # Email e storico locale potenzialmente sensibili
 data/raw/
+
+# Materiale locale della tesi: non fa parte del software pubblicato
+/*.docx
+/.codex_docx_work/
+/.docx-qa-*/
+/deliverables/
+/rendered_chapter*/
+/tmp/
+/build_thesis_outline.py
+/draft_section_*.py
+/replace_chapter*.py
+/section_*.txt
+/scripts/finalize_thesis_corrections.py
+/scripts/remove_repetitions.py
+/scripts/revise_thesis_bibliography.py
+/scripts/update_manual_toc_pages.py

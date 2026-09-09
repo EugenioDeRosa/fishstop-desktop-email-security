@@ -303,3 +303,55 @@ def merge_auth_results(
         proto: _select_worst_auth_result(items)
         for proto, items in grouped.items()
     }
+
+
+def select_effective_auth_results(
+    authentication_headers: List[str],
+    arc_authentication_headers: List[str],
+    received_spf_headers: List[str],
+) -> Dict[str, Dict[str, Any]]:
+    """Select the result at the latest available authentication boundary.
+
+    Header order is significant: a receiving service prepends its own
+    ``Authentication-Results`` field, while ARC instances describe earlier
+    stages of the route.  Combining every stage and choosing the most adverse
+    status turns an historical ``none`` into a false failure even when the
+    final receiver recorded ``pass``.  Prefer the first direct result for each
+    protocol, then the highest ARC instance, and use Received-SPF only as an
+    SPF fallback.
+
+    This establishes precedence, not cryptographic trust in arbitrary header
+    text; the UI continues to present the raw evidence for inspection.
+    """
+    selected: Dict[str, Dict[str, Any]] = {}
+
+    def add_missing(parsed: Dict[str, Dict[str, Any]], source: str) -> None:
+        for proto, result in (parsed or {}).items():
+            key = proto.upper()
+            if key in selected:
+                continue
+            enriched = dict(result)
+            enriched["source"] = source
+            selected[key] = enriched
+
+    # RFC 5322 preserves field order. The first direct Authentication-Results
+    # header is the one closest to the recipient represented by this export.
+    for raw in authentication_headers or []:
+        add_missing(parse_auth_results(str(raw)), "Authentication-Results")
+
+    def arc_instance(raw: str) -> int:
+        match = re.search(r"(?:^|;)\s*i\s*=\s*(\d+)\b", str(raw), re.IGNORECASE)
+        return int(match.group(1)) if match else 0
+
+    # ARC sets grow monotonically; the highest instance is the newest sealed
+    # account of the preceding route and is only a fallback for missing direct
+    # receiver results.
+    for raw in sorted(
+        (str(value) for value in (arc_authentication_headers or [])),
+        key=arc_instance,
+        reverse=True,
+    ):
+        add_missing(parse_auth_results(raw), "ARC-Authentication-Results")
+
+    add_missing(parse_received_spf_results(received_spf_headers), "Received-SPF")
+    return selected

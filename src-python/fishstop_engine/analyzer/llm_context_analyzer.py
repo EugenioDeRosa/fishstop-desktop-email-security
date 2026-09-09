@@ -464,6 +464,63 @@ def _auth_status(soc: dict, name: str) -> str:
     return str(result.get("status") or "unknown").lower()
 
 
+def _strongly_authenticated_sender(soc: dict) -> bool:
+    """Return whether the final receiver authenticated the visible sender."""
+    spf = _auth_status(soc, "SPF")
+    dkim = _auth_status(soc, "DKIM")
+    dmarc = _auth_status(soc, "DMARC")
+    return dmarc in {"pass", "bestguesspass"} or (
+        spf == "pass" and dkim == "pass"
+    )
+
+
+def _requested_links_match_verified_organisation(soc: dict) -> bool:
+    """Use Brand Intelligence evidence without embedding provider domains."""
+    if not _strongly_authenticated_sender(soc):
+        return False
+    links = _actionable_links(soc)
+    if not links:
+        return False
+    sender_domain = registered_domain(_sender_domain(soc))
+    for coherence in ((soc.get("identity_analysis") or {}).get("coherence") or []):
+        accepted = {
+            registered_domain(domain)
+            for domain in (
+                list(coherence.get("official_domains") or [])
+                + list(coherence.get("associated_domains") or [])
+                + list(coherence.get("trusted_action_domains") or [])
+            )
+            if registered_domain(domain)
+        }
+        if coherence.get("official_domain"):
+            accepted.add(registered_domain(coherence.get("official_domain")))
+        if (
+            str(coherence.get("status") or "").lower() != "aligned"
+            or not sender_domain
+            or sender_domain not in accepted
+        ):
+            continue
+        link_domains = {
+            registered_domain(link.get("host") or "")
+            for link in links
+            if registered_domain(link.get("host") or "")
+        }
+        if link_domains and link_domains.issubset(accepted):
+            return True
+    return False
+
+
+def _deterministic_identity_deception(soc: dict, semantic: dict) -> bool:
+    """Require non-LLM identity evidence before escalating a security lure."""
+    if soc.get("display_name_spoofing"):
+        return True
+    if soc.get("reply_to_mismatch") and not soc.get("reply_to_mismatch_legitimate"):
+        return True
+    if _claimed_brand_domain_mismatch(soc, semantic):
+        return True
+    return _sensitive_link_domain_mismatch(soc, semantic)
+
+
 _DMARC_PASS_STATUSES = {"pass", "bestguesspass"}
 _DMARC_FAILURE_STATUSES = {
     "fail", "softfail", "temperror", "permerror", "policy", "reject", "quarantine",
@@ -694,9 +751,26 @@ def _technical_context_lines(soc: dict, body_for_llm: str = "", link_reputation:
             f"domain={domain} status={vt_status} detections={rep.get('detection_ratio', '0 / 0')}"
         )
 
+    otx = soc.get("otx_intelligence") or {}
+    for match in (otx.get("matches") or [])[:5]:
+        lines.append(
+            "OTX synchronized Pulse match (supporting intelligence, not standalone proof): "
+            f"type={match.get('indicator_type') or '-'} "
+            f"indicator={_clip(match.get('indicator', ''), 180)} "
+            f"source={match.get('source') or '-'} "
+            f"confidence={match.get('confidence') or 'supporting'} "
+            f"pulse_count={match.get('pulse_count') or '-'}"
+        )
+    if otx.get("status") == "no_match":
+        lines.append(
+            "No match was found in the synchronized 365-day OTX database; this is neutral evidence "
+            "and must not be described as proof that the message is safe"
+        )
+
     auth_only_fields = {"SPF", "DKIM", "DMARC", "Return-Path"}
     fields_already_summarized = {
         "PDF Content", "PDF Attachment", "MIME structure", "MIME alternatives",
+        "OTX Threat Intelligence",
     }
     for flag in (soc.get("flags") or []):
         if flag.get("level") not in {"HIGH", "MEDIUM"}:
@@ -1835,6 +1909,7 @@ def _correlate_semantic_with_message_structure(soc: dict, semantic: dict) -> dic
 
 def _content_risk(soc: dict, semantic: dict) -> tuple[str, list[str]]:
     reasons = []
+    verified_organisation_action = _requested_links_match_verified_organisation(soc)
     risky_channel = semantic["action_channel"] in {
         "supplied_link", "external_form", "supplied_attachment", "email_reply",
     } or semantic["asks_to_click_link"] or semantic["asks_to_open_attachment"]
@@ -1842,10 +1917,14 @@ def _content_risk(soc: dict, semantic: dict) -> tuple[str, list[str]]:
         semantic["requested_action"] == "provide_credentials" or risky_channel
     ) and semantic["action_channel"] != "normal_known_procedure"
     sensitive_request = semantic["asks_for_sensitive_information"] or semantic["asks_for_payment"]
-    settings_via_supplied_channel = semantic["asks_to_change_account_settings"] and risky_channel
+    settings_via_supplied_channel = (
+        semantic["asks_to_change_account_settings"]
+        and risky_channel
+        and not verified_organisation_action
+    )
     verification_via_supplied_channel = (
         semantic["requested_action"] == "verify_account" or semantic["asks_to_verify_account"]
-    ) and risky_channel
+    ) and risky_channel and not verified_organisation_action
     reward_via_supplied_channel = (
         semantic["requested_action"] == "claim_reward" or semantic["asks_to_claim_reward"]
     ) and risky_channel
@@ -1863,6 +1942,7 @@ def _content_risk(soc: dict, semantic: dict) -> tuple[str, list[str]]:
         and semantic.get("requested_external_action")
         and semantic.get("identity_deception")
         and bool(semantic.get("security_lure_evidence"))
+        and _deterministic_identity_deception(soc, semantic)
     )
 
     if any(
@@ -1905,6 +1985,7 @@ def _content_risk(soc: dict, semantic: dict) -> tuple[str, list[str]]:
     deceptive_supplied_action = (
         semantic["impersonation_or_deception"]
         and risky_channel
+        and _deterministic_identity_deception(soc, semantic)
         and semantic.get("requested_action") in {
             "visit_link", "verify_account", "provide_credentials",
             "change_account_settings", "open_attachment", "claim_reward",

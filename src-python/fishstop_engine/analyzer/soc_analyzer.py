@@ -45,10 +45,10 @@ from .html_utils      import (
 from .link_extractor  import extract_links
 from .lookalike       import check_lookalike_domains
 from .received_parser import (
-    merge_auth_results,
     parse_auth_results,
     parse_received_hop,
     parse_received_spf_results,
+    select_effective_auth_results,
 )
 
 
@@ -738,15 +738,17 @@ class EmlSOCAnalyzer:
         report["received_spf_results"] = parse_received_spf_results(received_spf_headers)
 
         # ── 7. Authentication-Results ─────────────────────────────────────
-        auth_raw     = "\n".join(self._headers(msg, "Authentication-Results"))
-        arc_auth_raw = "\n".join(self._headers(msg, "ARC-Authentication-Results"))
+        auth_headers = self._headers(msg, "Authentication-Results")
+        arc_auth_headers = self._headers(msg, "ARC-Authentication-Results")
+        auth_raw     = "\n".join(auth_headers)
+        arc_auth_raw = "\n".join(arc_auth_headers)
         report["authentication_results_raw"] = auth_raw
         report["auth_results"]     = parse_auth_results(auth_raw)
         report["arc_auth_results"] = parse_auth_results(arc_auth_raw)
-        report["effective_auth_results"] = merge_auth_results(
-            ("Authentication-Results", report["auth_results"]),
-            ("ARC-Authentication-Results", report["arc_auth_results"]),
-            ("Received-SPF", report["received_spf_results"]),
+        report["effective_auth_results"] = select_effective_auth_results(
+            auth_headers,
+            arc_auth_headers,
+            received_spf_headers,
         )
 
         # ── 8. Firma DKIM ─────────────────────────────────────────────────

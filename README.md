@@ -10,6 +10,8 @@ FishStop è un'app desktop Tauri per analizzare localmente email `.eml` sospette
 - Usa un modello NER locale per estrarre organizzazioni e confrontarne l'identità con i domini osservati.
 - Usa in locale un modello Qwen approvato, scelto automaticamente in base alla piattaforma. Il corpo dell'email non viene inviato a servizi AI hosted.
 - Può usare VirusTotal e AbuseIPDB, se configurati: vengono inviati solo indicatori tecnici, mai il file `.eml` o il suo contenuto.
+- Può sincronizzare i Pulse sottoscritti e i Pulse pubblici recenti con tag `phishing` su AlienVault OTX: i feed vengono scaricati in background e URL, domini, IP e hash vengono poi confrontati localmente, senza chiamate OTX durante l'analisi.
+- Dalla sezione `Analyse from inbox`, subito sotto `Analyse`, può collegare in sola lettura la casella Gmail o Outlook associata al login, vedere gli ultimi 10 messaggi e scaricare il MIME/EML soltanto quando viene scelto `Analyse`. Il refresh token resta nel portachiavi di sistema e l'email viene elaborata dalla pipeline locale esistente.
 
 ## Qwen locale
 
@@ -53,4 +55,6 @@ L'export genera in `build/identity-model/int8` il NER ONNX quantizzato per l'arc
 
 ## Accesso e dati locali
 
-Gli accessi Google e Microsoft usano OAuth Authorization Code con PKCE e callback loopback locale. Microsoft usa un client desktop pubblico e non richiede un client secret; nel portale Entra deve essere registrato `http://localhost` come URI di reindirizzamento per applicazioni mobili e desktop. Non vengono salvati password o token OAuth. Le chiavi API di reputazione sono conservate nel portachiavi di sistema; cronologia e preferenze restano sul dispositivo e sono separate per provider e account.
+Gli accessi Google e Microsoft usano OAuth Authorization Code con PKCE e callback loopback locale. Microsoft usa un client desktop pubblico e non richiede un client secret; nel portale Entra deve essere registrato `http://localhost` come URI di reindirizzamento per applicazioni mobili e desktop. Non vengono salvate password. I token temporanei del login non vengono conservati; quando l'utente collega volontariamente la casella, il solo refresh token necessario a mantenere l'accesso in lettura viene custodito nel portachiavi di sistema e rimosso da FishStop con `Disconnect`. Anche le chiavi API di reputazione sono conservate nel portachiavi; cronologia, preferenze e cache OTX restano sul dispositivo e sono separate per provider e account. Dopo l'accesso FishStop aggiorna in background la cache OTX quando è assente, incompleta o più vecchia di 24 ore, quindi ripete il controllo ogni 24 ore finché l'app rimane aperta. Se il servizio è lento o non disponibile, conserva l'ultima copia valida e l'analisi non attende la rete.
+
+Per abilitare la casella, nel progetto OAuth Google devono essere attivate Gmail API e la scope `gmail.readonly`; nell'app Microsoft Entra deve essere consentita la permission delegata `Mail.Read`. Google può richiedere la verifica della consent screen prima della distribuzione pubblica perché l'accesso Gmail è una scope restricted.

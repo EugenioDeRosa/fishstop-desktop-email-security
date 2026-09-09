@@ -252,6 +252,24 @@ def _contact_domains(report: dict) -> list[dict]:
     return values
 
 
+def _selected_action_domains(report: dict) -> set[str]:
+    """Return actionable web domains from the message turn under analysis."""
+    domains: set[str] = set()
+    for link in report.get("links") or []:
+        if link.get("actionable") is False or not _is_selected_turn_link(report, link):
+            continue
+        if str(link.get("scheme") or "").lower() not in {"http", "https"}:
+            continue
+        if str(link.get("role") or "body_action").lower() in {
+            "signature", "unsubscribe", "navigation",
+        }:
+            continue
+        domain = registered_domain(str(link.get("host") or ""))
+        if domain:
+            domains.add(domain)
+    return domains
+
+
 def _entity_is_only_postal_address_context(entity: dict) -> bool:
     """Do not resolve a city in an address as a company brand claim."""
     occurrences = entity.get("occurrences") or []
@@ -380,23 +398,46 @@ def assess_brand_coherence(report: dict, entities: list[dict]) -> list[dict]:
         official_domains = list(dict.fromkeys(filter(None, (_official_domain(site) for site in websites))))
         official = official_domains[0] if official_domains else ""
         associated_domains: set[str] = set()
+        trusted_action_domains: set[str] = set()
 
         from_domain = next(
             (item["domain"] for item in contacts if item["source"] == "From"),
             "",
         )
-        if (
-            websites
-            and from_domain
-            and from_domain not in official_domains
-            and _dmarc_aligns_from(report, from_domain)
-            and _domain_names_brand(from_domain, name)
-        ):
-            linked_domains: set[str] = set()
+        sender_dmarc_aligned = bool(
+            from_domain and _dmarc_aligns_from(report, from_domain)
+        )
+        linked_domains: set[str] = set()
+        if websites and sender_dmarc_aligned:
             for site in websites:
                 linked_domains.update(_linked_domains_from_official_site(site))
+
+        if (
+            from_domain
+            and from_domain not in official_domains
+            and sender_dmarc_aligned
+            and _domain_names_brand(from_domain, name)
+        ):
             if from_domain in linked_domains:
                 associated_domains.add(from_domain)
+
+        # A strongly authenticated official sender may legitimately direct a
+        # recipient to a different service domain owned by the same
+        # organisation. Corroborate only domains present in the current action
+        # and linked from the public official website; never infer ownership
+        # from brand spelling or a local allowlist.
+        sender_is_official = bool(
+            sender_dmarc_aligned
+            and from_domain
+            and (
+                from_domain in official_domains
+                or from_domain in associated_domains
+            )
+        )
+        if sender_is_official:
+            trusted_action_domains.update(
+                _selected_action_domains(report) & linked_domains
+            )
 
         accepted_domains = set(official_domains) | associated_domains
         comparisons = []
@@ -436,6 +477,7 @@ def assess_brand_coherence(report: dict, entities: list[dict]) -> list[dict]:
             "official_domain": official,
             "official_domains": official_domains,
             "associated_domains": sorted(associated_domains),
+            "trusted_action_domains": sorted(trusted_action_domains),
             "external_reply_domains": external_reply_domains,
             "resolution_source": resolution_source,
             "contacts": comparisons,

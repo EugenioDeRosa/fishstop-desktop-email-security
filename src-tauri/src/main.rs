@@ -7,7 +7,7 @@ use std::{
     fs,
     io::{BufRead, BufReader, BufWriter, Read, Write},
     net::TcpListener,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Child, ChildStdin, Command, Output, Stdio},
     sync::{
         mpsc::{self, Receiver, RecvTimeoutError},
@@ -21,13 +21,16 @@ use aes_gcm::{
     aead::{Aead, KeyInit, Payload},
     Aes256Gcm, Nonce,
 };
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use base64::{
+    engine::general_purpose::{URL_SAFE, URL_SAFE_NO_PAD},
+    Engine as _,
+};
 use keyring::v1::Entry;
 use ollama_runtime::OllamaRuntime;
 use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use url::Url;
 
 // Un Client ID di un'app desktop è pubblico per definizione. Non inserire mai qui
@@ -38,6 +41,9 @@ const GOOGLE_CLIENT_SECRET_RESOURCE: &str = "google-oauth-client-secret";
 const AUTHORIZATION_ENDPOINT: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_ENDPOINT: &str = "https://oauth2.googleapis.com/token";
 const USERINFO_ENDPOINT: &str = "https://openidconnect.googleapis.com/v1/userinfo";
+const GMAIL_API_ROOT: &str = "https://gmail.googleapis.com/gmail/v1/users/me";
+const GOOGLE_MAILBOX_SCOPES: &str =
+    "openid email profile https://www.googleapis.com/auth/gmail.readonly";
 const MICROSOFT_CLIENT_ID: &str = "88f66c62-5edc-41a8-bbe8-eccb8f5815a2";
 const MICROSOFT_AUTHORIZATION_ENDPOINT: &str =
     "https://login.microsoftonline.com/common/oauth2/v2.0/authorize";
@@ -45,12 +51,20 @@ const MICROSOFT_TOKEN_ENDPOINT: &str = "https://login.microsoftonline.com/common
 const MICROSOFT_PROFILE_ENDPOINT: &str =
     "https://graph.microsoft.com/v1.0/me?$select=id,displayName,mail,userPrincipalName";
 const MICROSOFT_SCOPES: &str = "openid profile email User.Read";
+const MICROSOFT_MAILBOX_SCOPES: &str = "openid profile email offline_access User.Read Mail.Read";
+const MICROSOFT_GRAPH_ROOT: &str = "https://graph.microsoft.com/v1.0";
 const IDENTITY_MODEL_ID: &str = "Davlan/distilbert-base-multilingual-cased-ner-hrl";
 const IDENTITY_MODEL_REVISION: &str = "d421f57d5b1d36b375408588669e9340f9b11a89";
 const KEYRING_SERVICE: &str = "it.fishstop.desktop";
+// Covers the MIME expansion of a typical provider's 25 MB attachment limit while
+// keeping a hard boundary before handing untrusted input to the local pipeline.
+const MAX_EML_BYTES: usize = 40 * 1024 * 1024;
 const STATIC_ENGINE_TIMEOUT: Duration = Duration::from_secs(180);
 const IDENTITY_ENGINE_TIMEOUT: Duration = Duration::from_secs(180);
 const AI_ENGINE_TIMEOUT: Duration = Duration::from_secs(660);
+// Allow the Python synchronizer's 20-minute soft budget to publish its
+// checkpoint and close the database cleanly before the process is stopped.
+const OTX_SYNC_TIMEOUT: Duration = Duration::from_secs(21 * 60);
 const CPU_OLLAMA_REQUEST_TIMEOUT_SECONDS: u64 = 600;
 #[cfg(target_os = "windows")]
 const ACCELERATED_OLLAMA_REQUEST_TIMEOUT_SECONDS: u64 = 240;
@@ -70,7 +84,15 @@ struct ReputationCredentials {
     virustotal: String,
     abuseipdb: String,
     #[serde(default)]
+    otx: String,
+    #[serde(default)]
     history_key: String,
+    #[serde(default)]
+    mailbox_provider: String,
+    #[serde(default)]
+    mailbox_refresh_token: String,
+    #[serde(default)]
+    mailbox_email: String,
 }
 
 #[derive(Default)]
@@ -89,6 +111,35 @@ struct EncryptedHistory {
 struct ReputationKeyStatus {
     virustotal: bool,
     abuseipdb: bool,
+    otx: bool,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+struct OtxCacheStatus {
+    configured: bool,
+    status: String,
+    synced_at: String,
+    pulse_count: u64,
+    subscribed_pulse_count: u64,
+    public_phishing_pulse_count: u64,
+    indicator_count: u64,
+    skipped_pulse_count: u64,
+    truncated: bool,
+    limit_reason: String,
+    stale: bool,
+    lookback_days: u64,
+    database_bytes: u64,
+    message: String,
+}
+
+#[derive(Clone, Serialize)]
+struct OtxSyncProgress {
+    user_sub: String,
+    phase: String,
+    processed: u64,
+    total: Option<u64>,
+    percentage: Option<u8>,
+    message: String,
 }
 
 fn reputation_key_entry(user_sub: &str) -> Result<Entry, String> {
@@ -130,6 +181,31 @@ fn history_file(app: &tauri::AppHandle, user_sub: &str) -> Result<PathBuf, Strin
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     Ok(directory.join(format!("{identifier}.json.enc")))
+}
+
+fn otx_cache_file(app: &tauri::AppHandle, user_sub: &str) -> Result<PathBuf, String> {
+    if user_sub.trim().is_empty() {
+        return Err("A signed-in user is required to access OTX intelligence.".to_string());
+    }
+    let directory = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("Could not locate FishStop data: {error}"))?
+        .join("otx");
+    fs::create_dir_all(&directory)
+        .map_err(|error| format!("Could not prepare OTX cache storage: {error}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))
+            .map_err(|error| format!("Could not secure OTX cache storage: {error}"))?;
+    }
+    let digest = Sha256::digest(user_sub.as_bytes());
+    let identifier = digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    Ok(directory.join(format!("{identifier}.sqlite3")))
 }
 
 fn history_cipher(key: &[u8; 32]) -> Result<Aes256Gcm, String> {
@@ -329,6 +405,7 @@ fn reputation_key_status(
     Ok(ReputationKeyStatus {
         virustotal: !credentials.virustotal.trim().is_empty(),
         abuseipdb: !credentials.abuseipdb.trim().is_empty(),
+        otx: !credentials.otx.trim().is_empty(),
     })
 }
 
@@ -337,6 +414,7 @@ fn save_reputation_keys(
     user_sub: String,
     virustotal: String,
     abuseipdb: String,
+    otx: Option<String>,
     cache: tauri::State<'_, Arc<Mutex<ReputationCredentialCache>>>,
 ) -> Result<(), String> {
     let mut credentials = load_reputation_credentials(&user_sub, &cache)?;
@@ -346,12 +424,235 @@ fn save_reputation_keys(
     if !abuseipdb.trim().is_empty() {
         credentials.abuseipdb = abuseipdb.trim().to_string();
     }
+    if let Some(otx) = otx {
+        if !otx.trim().is_empty() {
+            credentials.otx = otx.trim().to_string();
+        }
+    }
     save_secure_material(&user_sub, credentials, &cache)
+}
+
+fn read_otx_cache_status(path: &Path, configured: bool) -> Result<OtxCacheStatus, String> {
+    if !path.is_file() {
+        return Ok(OtxCacheStatus {
+            configured,
+            status: if configured { "not_synced" } else { "disabled" }.to_string(),
+            synced_at: String::new(),
+            pulse_count: 0,
+            subscribed_pulse_count: 0,
+            public_phishing_pulse_count: 0,
+            indicator_count: 0,
+            skipped_pulse_count: 0,
+            truncated: false,
+            limit_reason: String::new(),
+            stale: false,
+            lookback_days: 365,
+            database_bytes: 0,
+            message: if configured {
+                "OTX is configured. Synchronize Pulses to enable local matching."
+            } else {
+                "Add an OTX API key to enable local Pulse intelligence."
+            }
+            .to_string(),
+        });
+    }
+    let metadata = path.metadata()
+        .map_err(|error| format!("Could not inspect the OTX database: {error}"))?;
+    let output = engine_command().and_then(|mut command| {
+        command.arg("otx-status").arg(path);
+        run_command_with_timeout(command, Duration::from_secs(20), "OTX database inspection")
+    })?;
+    let response: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .map_err(|_| "The local OTX database returned an invalid status.".to_string())?;
+    if !output.status.success()
+        || response.get("ok").and_then(|value| value.as_bool()) != Some(true)
+    {
+        return Err(response.get("error").and_then(|value| value.as_str())
+            .unwrap_or("The local OTX database is invalid.").to_string());
+    }
+    let payload = response.get("result").cloned().unwrap_or_default();
+    let stale = metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.elapsed().ok())
+        .map(|elapsed| elapsed > Duration::from_secs(24 * 60 * 60))
+        .unwrap_or(true);
+    Ok(OtxCacheStatus {
+        configured,
+        status: if stale { "stale" } else { "ready" }.to_string(),
+        synced_at: payload
+            .get("synced_at")
+            .and_then(|value| value.as_str())
+            .unwrap_or("")
+            .to_string(),
+        pulse_count: payload
+            .get("pulse_count")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0),
+        subscribed_pulse_count: payload
+            .get("subscribed_pulse_count")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0),
+        public_phishing_pulse_count: payload
+            .get("public_phishing_pulse_count")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0),
+        indicator_count: payload
+            .get("indicator_count")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0),
+        skipped_pulse_count: payload
+            .get("skipped_pulse_count")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0),
+        truncated: payload
+            .get("truncated")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false),
+        limit_reason: payload
+            .get("limit_reason")
+            .and_then(|value| value.as_str())
+            .unwrap_or("")
+            .to_string(),
+        stale,
+        lookback_days: payload
+            .get("lookback_days")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(365),
+        database_bytes: payload
+            .get("database_bytes")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(metadata.len()),
+        message: if stale {
+            "The previous local OTX cache is available while a refresh is pending."
+        } else {
+            "OTX Pulse intelligence is ready for local matching."
+        }
+        .to_string(),
+    })
+}
+
+#[tauri::command]
+fn clear_otx_intelligence(
+    app: tauri::AppHandle,
+    user_sub: String,
+    cache: tauri::State<'_, Arc<Mutex<ReputationCredentialCache>>>,
+) -> Result<OtxCacheStatus, String> {
+    let configured = !load_reputation_credentials(&user_sub, &cache)?.otx.trim().is_empty();
+    let path = otx_cache_file(&app, &user_sub)?;
+    let legacy_json = path.with_extension("json");
+    for candidate in [
+        path.clone(),
+        PathBuf::from(format!("{}-wal", path.display())),
+        PathBuf::from(format!("{}-shm", path.display())),
+        legacy_json,
+    ] {
+        if candidate.is_file() {
+            fs::remove_file(&candidate)
+                .map_err(|error| format!("Could not delete the local OTX database: {error}"))?;
+        }
+    }
+    read_otx_cache_status(&path, configured)
+}
+
+#[tauri::command]
+fn otx_cache_status(
+    app: tauri::AppHandle,
+    user_sub: String,
+    cache: tauri::State<'_, Arc<Mutex<ReputationCredentialCache>>>,
+) -> Result<OtxCacheStatus, String> {
+    let credentials = load_reputation_credentials(&user_sub, &cache)?;
+    let path = otx_cache_file(&app, &user_sub)?;
+    read_otx_cache_status(&path, !credentials.otx.trim().is_empty())
+}
+
+#[tauri::command]
+async fn sync_otx_intelligence(
+    app: tauri::AppHandle,
+    user_sub: String,
+    force: bool,
+    cache: tauri::State<'_, Arc<Mutex<ReputationCredentialCache>>>,
+) -> Result<OtxCacheStatus, String> {
+    let credentials = load_reputation_credentials(&user_sub, &cache)?;
+    if credentials.otx.trim().is_empty() {
+        return Err("Add an OTX API key in Settings before synchronizing.".to_string());
+    }
+    let path = otx_cache_file(&app, &user_sub)?;
+    if !force {
+        let current = read_otx_cache_status(&path, true)?;
+        if current.status == "ready" {
+            return Ok(current);
+        }
+    }
+    let api_key = credentials.otx;
+    let sync_path = path.clone();
+    let progress_app = app.clone();
+    let progress_user = user_sub.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let output = engine_command().and_then(|mut command| {
+            command
+                .arg("otx-sync")
+                .arg(&sync_path)
+                .env("OTX_API_KEY", api_key)
+                .env("FISHSTOP_OTX_PROGRESS", "1");
+            run_otx_sync_with_progress(
+                command,
+                OTX_SYNC_TIMEOUT,
+                &progress_app,
+                &progress_user,
+            )
+        })?;
+        let response: serde_json::Value =
+            serde_json::from_slice(&output.stdout).map_err(|error| {
+                let details = String::from_utf8_lossy(&output.stderr);
+                if details.trim().is_empty() {
+                    format!("OTX synchronization returned an invalid response ({error}).")
+                } else {
+                    format!(
+                        "OTX synchronization returned an invalid response: {}",
+                        details.trim()
+                    )
+                }
+            })?;
+        if !output.status.success()
+            || response.get("ok").and_then(|value| value.as_bool()) != Some(true)
+        {
+            return Err(response
+                .get("error")
+                .and_then(|value| value.as_str())
+                .unwrap_or("OTX synchronization failed. The previous local cache was kept.")
+                .to_string());
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|error| format!("OTX synchronization was interrupted: {error}"))??;
+    read_otx_cache_status(&path, true)
 }
 
 #[derive(Debug, Deserialize)]
 struct TokenResponse {
     access_token: String,
+    #[serde(default)]
+    refresh_token: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct MailboxStatus {
+    connected: bool,
+    provider: String,
+    email: String,
+}
+
+#[derive(Debug, Serialize)]
+struct MailboxMessage {
+    id: String,
+    subject: String,
+    sender: String,
+    received_at: String,
+    snippet: String,
+    has_attachments: bool,
+    is_read: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -564,7 +865,9 @@ fn wait_for_callback(
         }
     }
 
-    Err("Timed out: complete Google sign-in within two minutes.".to_string())
+    Err(format!(
+        "Timed out: complete {provider} sign-in within two minutes."
+    ))
 }
 
 fn google_token_form<'a>(
@@ -749,6 +1052,575 @@ async fn sign_in_with_microsoft() -> Result<AuthUser, String> {
         .map_err(|error| format!("Microsoft sign-in interrupted: {error}"))?
 }
 
+fn mailbox_http_client() -> Result<reqwest::blocking::Client, String> {
+    reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|error| format!("Could not prepare the secure mailbox connection: {error}"))
+}
+
+fn save_mailbox_connection(
+    user_sub: &str,
+    provider: &str,
+    email: &str,
+    refresh_token: String,
+    cache: &Arc<Mutex<ReputationCredentialCache>>,
+) -> Result<MailboxStatus, String> {
+    if refresh_token.trim().is_empty() {
+        return Err("The provider did not return a reusable mailbox authorization. Revoke FishStop access and try again.".to_string());
+    }
+    let mut credentials = load_reputation_credentials(user_sub, cache)?;
+    credentials.mailbox_provider = provider.to_string();
+    credentials.mailbox_refresh_token = refresh_token;
+    credentials.mailbox_email = email.to_string();
+    save_secure_material(user_sub, credentials, cache)?;
+    Ok(MailboxStatus {
+        connected: true,
+        provider: provider.to_string(),
+        email: email.to_string(),
+    })
+}
+
+fn connect_google_mailbox(
+    user_sub: &str,
+    cache: &Arc<Mutex<ReputationCredentialCache>>,
+) -> Result<MailboxStatus, String> {
+    let client_secret = google_client_secret()?;
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .map_err(|error| format!("Could not start the local callback: {error}"))?;
+    let port = listener
+        .local_addr()
+        .map_err(|error| format!("Could not read the local port: {error}"))?
+        .port();
+    let redirect_uri = format!("http://127.0.0.1:{port}");
+    let state = random_url_safe(32);
+    let code_verifier = random_url_safe(64);
+    let code_challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(code_verifier.as_bytes()));
+    let authorization_url = format!(
+        "{AUTHORIZATION_ENDPOINT}?client_id={}&redirect_uri={}&response_type=code&scope={}&state={}&code_challenge={}&code_challenge_method=S256&access_type=offline&include_granted_scopes=true&prompt={}",
+        encode(GOOGLE_CLIENT_ID),
+        encode(&redirect_uri),
+        encode(GOOGLE_MAILBOX_SCOPES),
+        encode(&state),
+        encode(&code_challenge),
+        encode("consent select_account"),
+    );
+    launch_browser(&authorization_url)?;
+    let code = wait_for_callback(listener, &state, "Google")?;
+    let client = mailbox_http_client()?;
+    let response = client
+        .post(TOKEN_ENDPOINT)
+        .form(&google_token_form(
+            &code,
+            &code_verifier,
+            &redirect_uri,
+            &client_secret,
+        ))
+        .send()
+        .map_err(|error| format!("Google did not respond: {error}"))?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "Google denied mailbox access ({}).",
+            response.status()
+        ));
+    }
+    let token: TokenResponse = response
+        .json()
+        .map_err(|error| format!("Invalid Google authorization response: {error}"))?;
+    let profile: GoogleProfile = client
+        .get(USERINFO_ENDPOINT)
+        .bearer_auth(&token.access_token)
+        .send()
+        .map_err(|error| format!("Could not verify the Google mailbox: {error}"))?
+        .error_for_status()
+        .map_err(|error| format!("Google denied profile access: {error}"))?
+        .json()
+        .map_err(|error| format!("Invalid Google profile: {error}"))?;
+    if profile.sub != user_sub {
+        return Err("Connect the same Google account currently signed in to FishStop.".to_string());
+    }
+    save_mailbox_connection(
+        user_sub,
+        "google",
+        &profile.email,
+        token.refresh_token.unwrap_or_default(),
+        cache,
+    )
+}
+
+fn connect_microsoft_mailbox(
+    user_sub: &str,
+    cache: &Arc<Mutex<ReputationCredentialCache>>,
+) -> Result<MailboxStatus, String> {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .map_err(|error| format!("Could not start the local callback: {error}"))?;
+    let port = listener
+        .local_addr()
+        .map_err(|error| format!("Could not read the local port: {error}"))?
+        .port();
+    let redirect_uri = format!("http://localhost:{port}");
+    let state = random_url_safe(32);
+    let code_verifier = random_url_safe(64);
+    let code_challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(code_verifier.as_bytes()));
+    let authorization_url = format!(
+        "{MICROSOFT_AUTHORIZATION_ENDPOINT}?client_id={}&redirect_uri={}&response_type=code&response_mode=query&scope={}&state={}&code_challenge={}&code_challenge_method=S256&prompt=select_account",
+        encode(MICROSOFT_CLIENT_ID),
+        encode(&redirect_uri),
+        encode(MICROSOFT_MAILBOX_SCOPES),
+        encode(&state),
+        encode(&code_challenge),
+    );
+    launch_browser(&authorization_url)?;
+    let code = wait_for_callback(listener, &state, "Microsoft")?;
+    let client = mailbox_http_client()?;
+    let form = [
+        ("client_id", MICROSOFT_CLIENT_ID),
+        ("code", code.as_str()),
+        ("code_verifier", code_verifier.as_str()),
+        ("grant_type", "authorization_code"),
+        ("redirect_uri", redirect_uri.as_str()),
+        ("scope", MICROSOFT_MAILBOX_SCOPES),
+    ];
+    let response = client
+        .post(MICROSOFT_TOKEN_ENDPOINT)
+        .form(&form)
+        .send()
+        .map_err(|error| format!("Microsoft did not respond: {error}"))?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "Microsoft denied mailbox access ({}).",
+            response.status()
+        ));
+    }
+    let token: TokenResponse = response
+        .json()
+        .map_err(|error| format!("Invalid Microsoft authorization response: {error}"))?;
+    let profile: MicrosoftProfile = client
+        .get(MICROSOFT_PROFILE_ENDPOINT)
+        .bearer_auth(&token.access_token)
+        .send()
+        .map_err(|error| format!("Could not verify the Outlook mailbox: {error}"))?
+        .error_for_status()
+        .map_err(|error| format!("Microsoft denied profile access: {error}"))?
+        .json()
+        .map_err(|error| format!("Invalid Microsoft profile: {error}"))?;
+    if format!("microsoft:{}", profile.id) != user_sub {
+        return Err(
+            "Connect the same Microsoft account currently signed in to FishStop.".to_string(),
+        );
+    }
+    let email = profile
+        .mail
+        .filter(|value| !value.trim().is_empty())
+        .or(profile.user_principal_name)
+        .ok_or_else(|| "Microsoft did not return the mailbox address.".to_string())?;
+    save_mailbox_connection(
+        user_sub,
+        "microsoft",
+        &email,
+        token.refresh_token.unwrap_or_default(),
+        cache,
+    )
+}
+
+#[tauri::command]
+fn mailbox_status(
+    user_sub: String,
+    provider: String,
+    cache: tauri::State<'_, Arc<Mutex<ReputationCredentialCache>>>,
+) -> Result<MailboxStatus, String> {
+    if provider != "google" && provider != "microsoft" {
+        return Err("Unsupported mailbox provider.".to_string());
+    }
+    let credentials = load_reputation_credentials(&user_sub, &cache)?;
+    let connected = credentials.mailbox_provider == provider
+        && !credentials.mailbox_refresh_token.trim().is_empty();
+    Ok(MailboxStatus {
+        connected,
+        provider,
+        email: if connected {
+            credentials.mailbox_email
+        } else {
+            String::new()
+        },
+    })
+}
+
+#[tauri::command]
+async fn connect_mailbox(
+    user_sub: String,
+    provider: String,
+    cache: tauri::State<'_, Arc<Mutex<ReputationCredentialCache>>>,
+) -> Result<MailboxStatus, String> {
+    let cache = Arc::clone(&cache);
+    tauri::async_runtime::spawn_blocking(move || match provider.as_str() {
+        "google" => connect_google_mailbox(&user_sub, &cache),
+        "microsoft" => connect_microsoft_mailbox(&user_sub, &cache),
+        _ => Err("Unsupported mailbox provider.".to_string()),
+    })
+    .await
+    .map_err(|error| format!("Mailbox connection interrupted: {error}"))?
+}
+
+#[tauri::command]
+fn disconnect_mailbox(
+    user_sub: String,
+    cache: tauri::State<'_, Arc<Mutex<ReputationCredentialCache>>>,
+) -> Result<(), String> {
+    let mut credentials = load_reputation_credentials(&user_sub, &cache)?;
+    credentials.mailbox_provider.clear();
+    credentials.mailbox_refresh_token.clear();
+    credentials.mailbox_email.clear();
+    save_secure_material(&user_sub, credentials, &cache)
+}
+
+fn mailbox_access_token(
+    user_sub: &str,
+    provider: &str,
+    cache: &Arc<Mutex<ReputationCredentialCache>>,
+) -> Result<String, String> {
+    let mut credentials = load_reputation_credentials(user_sub, cache)?;
+    if credentials.mailbox_provider != provider || credentials.mailbox_refresh_token.is_empty() {
+        return Err("Connect the mailbox before loading messages.".to_string());
+    }
+    let client = mailbox_http_client()?;
+    let response = if provider == "google" {
+        let client_secret = google_client_secret()?;
+        client
+            .post(TOKEN_ENDPOINT)
+            .form(&[
+                ("client_id", GOOGLE_CLIENT_ID),
+                ("client_secret", client_secret.as_str()),
+                ("refresh_token", credentials.mailbox_refresh_token.as_str()),
+                ("grant_type", "refresh_token"),
+            ])
+            .send()
+    } else if provider == "microsoft" {
+        client
+            .post(MICROSOFT_TOKEN_ENDPOINT)
+            .form(&[
+                ("client_id", MICROSOFT_CLIENT_ID),
+                ("refresh_token", credentials.mailbox_refresh_token.as_str()),
+                ("grant_type", "refresh_token"),
+                ("scope", MICROSOFT_MAILBOX_SCOPES),
+            ])
+            .send()
+    } else {
+        return Err("Unsupported mailbox provider.".to_string());
+    }
+    .map_err(|error| format!("Could not refresh mailbox access: {error}"))?;
+    if !response.status().is_success() {
+        return Err("Mailbox authorization expired. Disconnect and connect it again.".to_string());
+    }
+    let token = response
+        .json::<TokenResponse>()
+        .map_err(|error| format!("Invalid mailbox token response: {error}"))?;
+    if let Some(refresh_token) = token.refresh_token.filter(|value| !value.trim().is_empty()) {
+        credentials.mailbox_refresh_token = refresh_token;
+        save_secure_material(user_sub, credentials, cache)?;
+    }
+    Ok(token.access_token)
+}
+
+#[derive(Deserialize)]
+struct GoogleMessageReference {
+    id: String,
+}
+
+#[derive(Deserialize)]
+struct GoogleMessageList {
+    #[serde(default)]
+    messages: Vec<GoogleMessageReference>,
+}
+
+#[derive(Deserialize)]
+struct GoogleHeader {
+    name: String,
+    value: String,
+}
+
+#[derive(Default, Deserialize)]
+struct GooglePayload {
+    #[serde(default)]
+    headers: Vec<GoogleHeader>,
+    #[serde(default)]
+    parts: Vec<serde_json::Value>,
+    #[serde(default)]
+    filename: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GoogleMessageMetadata {
+    id: String,
+    #[serde(default)]
+    snippet: String,
+    #[serde(default)]
+    label_ids: Vec<String>,
+    #[serde(default)]
+    payload: GooglePayload,
+}
+
+fn google_header(payload: &GooglePayload, name: &str) -> String {
+    payload
+        .headers
+        .iter()
+        .find(|header| header.name.eq_ignore_ascii_case(name))
+        .map(|header| header.value.clone())
+        .unwrap_or_default()
+}
+
+fn google_part_has_attachment(part: &serde_json::Value) -> bool {
+    part.get("filename")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|filename| !filename.is_empty())
+        || part
+            .get("parts")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|parts| parts.iter().any(google_part_has_attachment))
+}
+
+fn list_google_messages(access_token: &str, limit: usize) -> Result<Vec<MailboxMessage>, String> {
+    let client = mailbox_http_client()?;
+    let list: GoogleMessageList = client
+        .get(format!("{GMAIL_API_ROOT}/messages"))
+        .bearer_auth(access_token)
+        .query(&[("labelIds", "INBOX"), ("maxResults", &limit.to_string())])
+        .send()
+        .map_err(|error| format!("Could not load Gmail messages: {error}"))?
+        .error_for_status()
+        .map_err(|error| format!("Gmail denied message access: {error}"))?
+        .json()
+        .map_err(|error| format!("Invalid Gmail message list: {error}"))?;
+    list.messages
+        .into_iter()
+        .map(|message| {
+            let metadata: GoogleMessageMetadata = client
+                .get(format!("{GMAIL_API_ROOT}/messages/{}", encode(&message.id)))
+                .bearer_auth(access_token)
+                .query(&[
+                    ("format", "metadata"),
+                    ("metadataHeaders", "Subject"),
+                    ("metadataHeaders", "From"),
+                    ("metadataHeaders", "Date"),
+                ])
+                .send()
+                .map_err(|error| format!("Could not load Gmail metadata: {error}"))?
+                .error_for_status()
+                .map_err(|error| format!("Gmail denied message metadata access: {error}"))?
+                .json()
+                .map_err(|error| format!("Invalid Gmail message metadata: {error}"))?;
+            let has_attachments = !metadata.payload.filename.is_empty()
+                || metadata
+                    .payload
+                    .parts
+                    .iter()
+                    .any(google_part_has_attachment);
+            Ok(MailboxMessage {
+                id: metadata.id,
+                subject: google_header(&metadata.payload, "Subject"),
+                sender: google_header(&metadata.payload, "From"),
+                received_at: google_header(&metadata.payload, "Date"),
+                snippet: metadata.snippet,
+                has_attachments,
+                is_read: !metadata.label_ids.iter().any(|label| label == "UNREAD"),
+            })
+        })
+        .collect()
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MicrosoftEmailAddress {
+    name: Option<String>,
+    address: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MicrosoftRecipient {
+    email_address: MicrosoftEmailAddress,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MicrosoftMailboxMessage {
+    id: String,
+    subject: Option<String>,
+    from: Option<MicrosoftRecipient>,
+    received_date_time: Option<String>,
+    body_preview: Option<String>,
+    has_attachments: Option<bool>,
+    is_read: Option<bool>,
+}
+
+#[derive(Deserialize)]
+struct MicrosoftMessageList {
+    #[serde(default)]
+    value: Vec<MicrosoftMailboxMessage>,
+}
+
+fn list_microsoft_messages(
+    access_token: &str,
+    limit: usize,
+) -> Result<Vec<MailboxMessage>, String> {
+    let client = mailbox_http_client()?;
+    let response: MicrosoftMessageList = client
+        .get(format!(
+            "{MICROSOFT_GRAPH_ROOT}/me/mailFolders/inbox/messages"
+        ))
+        .bearer_auth(access_token)
+        .query(&[
+            ("$top", limit.to_string()),
+            ("$orderby", "receivedDateTime desc".to_string()),
+            (
+                "$select",
+                "id,subject,from,receivedDateTime,bodyPreview,hasAttachments,isRead".to_string(),
+            ),
+        ])
+        .send()
+        .map_err(|error| format!("Could not load Outlook messages: {error}"))?
+        .error_for_status()
+        .map_err(|error| format!("Microsoft denied mailbox access: {error}"))?
+        .json()
+        .map_err(|error| format!("Invalid Outlook message list: {error}"))?;
+    Ok(response
+        .value
+        .into_iter()
+        .map(|message| {
+            let sender = message
+                .from
+                .map(|sender| {
+                    let name = sender.email_address.name.unwrap_or_default();
+                    let address = sender.email_address.address.unwrap_or_default();
+                    if name.is_empty() {
+                        address
+                    } else if address.is_empty() {
+                        name
+                    } else {
+                        format!("{name} <{address}>")
+                    }
+                })
+                .unwrap_or_default();
+            MailboxMessage {
+                id: message.id,
+                subject: message.subject.unwrap_or_default(),
+                sender,
+                received_at: message.received_date_time.unwrap_or_default(),
+                snippet: message.body_preview.unwrap_or_default(),
+                has_attachments: message.has_attachments.unwrap_or(false),
+                is_read: message.is_read.unwrap_or(false),
+            }
+        })
+        .collect())
+}
+
+fn download_google_message(access_token: &str, message_id: &str) -> Result<Vec<u8>, String> {
+    let payload: serde_json::Value = mailbox_http_client()?
+        .get(format!("{GMAIL_API_ROOT}/messages/{}", encode(message_id)))
+        .bearer_auth(access_token)
+        .query(&[("format", "raw")])
+        .send()
+        .map_err(|error| format!("Could not download the Gmail message: {error}"))?
+        .error_for_status()
+        .map_err(|error| format!("Gmail denied message download: {error}"))?
+        .json()
+        .map_err(|error| format!("Invalid Gmail message response: {error}"))?;
+    let raw = payload
+        .get("raw")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "Gmail did not return the raw message.".to_string())?;
+    let contents = URL_SAFE_NO_PAD
+        .decode(raw)
+        .or_else(|_| URL_SAFE.decode(raw))
+        .map_err(|_| "Gmail returned an invalid raw message.".to_string())?;
+    if contents.len() > MAX_EML_BYTES {
+        return Err("The selected email exceeds the supported 40 MB limit.".to_string());
+    }
+    Ok(contents)
+}
+
+fn download_microsoft_message(access_token: &str, message_id: &str) -> Result<Vec<u8>, String> {
+    let response = mailbox_http_client()?
+        .get(format!(
+            "{MICROSOFT_GRAPH_ROOT}/me/messages/{}/$value",
+            encode(message_id)
+        ))
+        .bearer_auth(access_token)
+        .send()
+        .map_err(|error| format!("Could not download the Outlook message: {error}"))?
+        .error_for_status()
+        .map_err(|error| format!("Microsoft denied message download: {error}"))?;
+    if response
+        .content_length()
+        .map(|size| size > MAX_EML_BYTES as u64)
+        .unwrap_or(false)
+    {
+        return Err("The selected email exceeds the supported 40 MB limit.".to_string());
+    }
+    let contents = response
+        .bytes()
+        .map(|bytes| bytes.to_vec())
+        .map_err(|error| format!("Could not read the Outlook MIME message: {error}"))?;
+    if contents.len() > MAX_EML_BYTES {
+        return Err("The selected email exceeds the supported 40 MB limit.".to_string());
+    }
+    Ok(contents)
+}
+
+#[tauri::command]
+async fn list_recent_mailbox_messages(
+    user_sub: String,
+    provider: String,
+    limit: usize,
+    cache: tauri::State<'_, Arc<Mutex<ReputationCredentialCache>>>,
+) -> Result<Vec<MailboxMessage>, String> {
+    let cache = Arc::clone(&cache);
+    tauri::async_runtime::spawn_blocking(move || {
+        let limit = limit.clamp(1, 20);
+        let token = mailbox_access_token(&user_sub, &provider, &cache)?;
+        match provider.as_str() {
+            "google" => list_google_messages(&token, limit),
+            "microsoft" => list_microsoft_messages(&token, limit),
+            _ => Err("Unsupported mailbox provider.".to_string()),
+        }
+    })
+    .await
+    .map_err(|error| format!("Mailbox loading interrupted: {error}"))?
+}
+
+#[tauri::command]
+async fn analyze_mailbox_message(
+    app: tauri::AppHandle,
+    user_sub: String,
+    provider: String,
+    message_id: String,
+    cache: tauri::State<'_, Arc<Mutex<ReputationCredentialCache>>>,
+) -> Result<serde_json::Value, String> {
+    if message_id.trim().is_empty() || message_id.len() > 2048 {
+        return Err("Invalid mailbox message identifier.".to_string());
+    }
+    let otx_cache_path = otx_cache_file(&app, &user_sub)?;
+    let cache = Arc::clone(&cache);
+    tauri::async_runtime::spawn_blocking(move || {
+        let token = mailbox_access_token(&user_sub, &provider, &cache)?;
+        let contents = match provider.as_str() {
+            "google" => download_google_message(&token, &message_id),
+            "microsoft" => download_microsoft_message(&token, &message_id),
+            _ => Err("Unsupported mailbox provider.".to_string()),
+        }?;
+        analyze_eml_contents_with_engine(
+            "inbox-message.eml".to_string(),
+            contents,
+            user_sub,
+            cache,
+            otx_cache_path,
+        )
+    })
+    .await
+    .map_err(|error| format!("Mailbox analysis interrupted: {error}"))?
+}
+
 fn development_engine_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
@@ -894,6 +1766,87 @@ fn run_command_with_timeout(
     })
 }
 
+fn run_otx_sync_with_progress(
+    mut command: Command,
+    timeout: Duration,
+    app: &tauri::AppHandle,
+    user_sub: &str,
+) -> Result<Output, String> {
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("Could not start OTX synchronization: {error}"))?;
+    let mut stdout = child.stdout.take()
+        .ok_or_else(|| "OTX synchronization has no stdout pipe".to_string())?;
+    let stderr = child.stderr.take()
+        .ok_or_else(|| "OTX synchronization has no stderr pipe".to_string())?;
+    let stdout_reader = thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stdout.read_to_end(&mut bytes).map(|_| bytes)
+    });
+    let event_app = app.clone();
+    let event_user = user_sub.to_string();
+    let stderr_reader = thread::spawn(move || -> std::io::Result<Vec<u8>> {
+        let mut reader = BufReader::new(stderr);
+        let mut captured = Vec::new();
+        loop {
+            let mut line = String::new();
+            if reader.read_line(&mut line)? == 0 {
+                break;
+            }
+            let payload = serde_json::from_str::<serde_json::Value>(line.trim()).ok();
+            let is_progress = payload.as_ref()
+                .and_then(|value| value.get("type"))
+                .and_then(|value| value.as_str()) == Some("otx-progress");
+            if let Some(value) = payload.filter(|_| is_progress) {
+                let progress = OtxSyncProgress {
+                    user_sub: event_user.clone(),
+                    phase: value.get("phase").and_then(|item| item.as_str()).unwrap_or("downloading").to_string(),
+                    processed: value.get("processed").and_then(|item| item.as_u64()).unwrap_or(0),
+                    total: value.get("total").and_then(|item| item.as_u64()),
+                    percentage: value.get("percentage").and_then(|item| item.as_u64()).map(|item| item.min(100) as u8),
+                    message: value.get("message").and_then(|item| item.as_str()).unwrap_or("Synchronizing OTX Pulses…").to_string(),
+                };
+                let _ = event_app.emit("otx-sync-progress", progress);
+            } else {
+                captured.extend_from_slice(line.as_bytes());
+            }
+        }
+        Ok(captured)
+    });
+    let started_at = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if started_at.elapsed() < timeout => thread::sleep(Duration::from_millis(25)),
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = stdout_reader.join();
+                let _ = stderr_reader.join();
+                return Err(format!(
+                    "OTX synchronization exceeded the {} second safety timeout and was stopped.",
+                    timeout.as_secs()
+                ));
+            }
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = stdout_reader.join();
+                let _ = stderr_reader.join();
+                return Err(format!("Could not monitor OTX synchronization: {error}"));
+            }
+        }
+    };
+    let stdout = stdout_reader.join()
+        .map_err(|_| "Could not collect OTX synchronization output".to_string())?
+        .map_err(|error| format!("Could not read OTX synchronization output: {error}"))?;
+    let stderr = stderr_reader.join()
+        .map_err(|_| "Could not collect OTX synchronization errors".to_string())?
+        .map_err(|error| format!("Could not read OTX synchronization errors: {error}"))?;
+    Ok(Output { status, stdout, stderr })
+}
+
 #[derive(Default)]
 struct IdentityWorker {
     child: Option<Child>,
@@ -1022,12 +1975,14 @@ impl Drop for IdentityWorker {
 fn run_eml_engine(
     temporary_eml: PathBuf,
     credentials: ReputationCredentials,
+    otx_cache_path: PathBuf,
 ) -> Result<serde_json::Value, String> {
     let output = engine_command().and_then(|mut command| {
         command
             .arg(&temporary_eml)
             .env("VIRUSTOTAL_API_KEY", credentials.virustotal)
-            .env("ABUSEIPDB_API_KEY", credentials.abuseipdb);
+            .env("ABUSEIPDB_API_KEY", credentials.abuseipdb)
+            .env("FISHSTOP_OTX_CACHE_PATH", otx_cache_path);
         run_command_with_timeout(command, STATIC_ENGINE_TIMEOUT, "the FishStop engine")
     });
     let _ = fs::remove_file(&temporary_eml);
@@ -1060,6 +2015,7 @@ fn analyze_eml_with_engine(
     path: String,
     user_sub: String,
     cache: Arc<Mutex<ReputationCredentialCache>>,
+    otx_cache_path: PathBuf,
 ) -> Result<serde_json::Value, String> {
     let source = PathBuf::from(path);
     if !source.is_file()
@@ -1075,14 +2031,14 @@ fn analyze_eml_with_engine(
         .metadata()
         .map_err(|error| format!("Could not read the selected EML file: {error}"))?
         .len();
-    if size > 10 * 1024 * 1024 {
-        return Err("The EML file exceeds the supported 10 MB limit.".to_string());
+    if size > MAX_EML_BYTES as u64 {
+        return Err("The EML file exceeds the supported 40 MB limit.".to_string());
     }
     let credentials = load_reputation_credentials(&user_sub, &cache)?;
     let temporary_eml = std::env::temp_dir().join(format!("fishstop-{}.eml", random_url_safe(16)));
     fs::copy(&source, &temporary_eml)
         .map_err(|error| format!("Could not prepare the file for analysis: {error}"))?;
-    run_eml_engine(temporary_eml, credentials)
+    run_eml_engine(temporary_eml, credentials, otx_cache_path)
 }
 
 fn analyze_eml_contents_with_engine(
@@ -1090,42 +2046,49 @@ fn analyze_eml_contents_with_engine(
     contents: Vec<u8>,
     user_sub: String,
     cache: Arc<Mutex<ReputationCredentialCache>>,
+    otx_cache_path: PathBuf,
 ) -> Result<serde_json::Value, String> {
     if !file_name.to_lowercase().ends_with(".eml") {
         return Err("FishStop supports .eml files only.".to_string());
     }
-    if contents.len() > 10 * 1024 * 1024 {
-        return Err("The EML file exceeds the supported 10 MB limit.".to_string());
+    if contents.len() > MAX_EML_BYTES {
+        return Err("The EML file exceeds the supported 40 MB limit.".to_string());
     }
     let credentials = load_reputation_credentials(&user_sub, &cache)?;
     let temporary_eml = std::env::temp_dir().join(format!("fishstop-{}.eml", random_url_safe(16)));
     fs::write(&temporary_eml, contents)
         .map_err(|error| format!("Could not prepare the file for analysis: {error}"))?;
-    run_eml_engine(temporary_eml, credentials)
+    run_eml_engine(temporary_eml, credentials, otx_cache_path)
 }
 
 #[tauri::command]
 async fn analyze_eml(
+    app: tauri::AppHandle,
     path: String,
     user_sub: String,
     cache: tauri::State<'_, Arc<Mutex<ReputationCredentialCache>>>,
 ) -> Result<serde_json::Value, String> {
+    let otx_cache_path = otx_cache_file(&app, &user_sub)?;
     let cache = Arc::clone(&cache);
-    tauri::async_runtime::spawn_blocking(move || analyze_eml_with_engine(path, user_sub, cache))
-        .await
-        .map_err(|error| format!("Analysis interrupted: {error}"))?
+    tauri::async_runtime::spawn_blocking(move || {
+        analyze_eml_with_engine(path, user_sub, cache, otx_cache_path)
+    })
+    .await
+    .map_err(|error| format!("Analysis interrupted: {error}"))?
 }
 
 #[tauri::command]
 async fn analyze_eml_contents(
+    app: tauri::AppHandle,
     file_name: String,
     contents: Vec<u8>,
     user_sub: String,
     cache: tauri::State<'_, Arc<Mutex<ReputationCredentialCache>>>,
 ) -> Result<serde_json::Value, String> {
+    let otx_cache_path = otx_cache_file(&app, &user_sub)?;
     let cache = Arc::clone(&cache);
     tauri::async_runtime::spawn_blocking(move || {
-        analyze_eml_contents_with_engine(file_name, contents, user_sub, cache)
+        analyze_eml_contents_with_engine(file_name, contents, user_sub, cache, otx_cache_path)
     })
     .await
     .map_err(|error| format!("Analysis interrupted: {error}"))?
@@ -1222,11 +2185,9 @@ async fn warm_ollama_model(
     runtime: tauri::State<'_, Arc<Mutex<OllamaRuntime>>>,
 ) -> Result<(), String> {
     let runtime = Arc::clone(&runtime);
-    tauri::async_runtime::spawn_blocking(move || {
-        ollama_runtime::warm_default_model(&app, &runtime)
-    })
-    .await
-    .map_err(|error| format!("Qwen warm-up interrupted: {error}"))?
+    tauri::async_runtime::spawn_blocking(move || ollama_runtime::warm_default_model(&app, &runtime))
+        .await
+        .map_err(|error| format!("Qwen warm-up interrupted: {error}"))?
 }
 
 #[derive(Deserialize)]
@@ -1406,8 +2367,16 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             sign_in_with_google,
             sign_in_with_microsoft,
+            mailbox_status,
+            connect_mailbox,
+            disconnect_mailbox,
+            list_recent_mailbox_messages,
+            analyze_mailbox_message,
             reputation_key_status,
             save_reputation_keys,
+            otx_cache_status,
+            sync_otx_intelligence,
+            clear_otx_intelligence,
             load_analysis_history,
             save_analysis_history,
             clear_analysis_history,
@@ -1469,6 +2438,48 @@ mod tests {
     }
 
     #[test]
+    fn mailbox_authorization_requests_read_only_and_offline_access() {
+        assert!(GOOGLE_MAILBOX_SCOPES.contains("gmail.readonly"));
+        assert!(!GOOGLE_MAILBOX_SCOPES.contains("gmail.modify"));
+        assert!(MICROSOFT_MAILBOX_SCOPES
+            .split_whitespace()
+            .any(|scope| scope == "Mail.Read"));
+        assert!(MICROSOFT_MAILBOX_SCOPES
+            .split_whitespace()
+            .any(|scope| scope == "offline_access"));
+        assert!(!MICROSOFT_MAILBOX_SCOPES.contains("Mail.ReadWrite"));
+    }
+
+    #[test]
+    fn gmail_metadata_headers_are_case_insensitive() {
+        let payload = GooglePayload {
+            headers: vec![GoogleHeader {
+                name: "subject".to_string(),
+                value: "Suspicious request".to_string(),
+            }],
+            ..GooglePayload::default()
+        };
+        assert_eq!(google_header(&payload, "Subject"), "Suspicious request");
+    }
+
+    #[test]
+    fn gmail_attachment_detection_descends_into_nested_mime_parts() {
+        let part = serde_json::json!({
+            "filename": "",
+            "parts": [{
+                "filename": "",
+                "parts": [{ "filename": "invoice.pdf" }]
+            }]
+        });
+
+        assert!(google_part_has_attachment(&part));
+        assert!(!google_part_has_attachment(&serde_json::json!({
+            "filename": "",
+            "parts": [{ "filename": "" }]
+        })));
+    }
+
+    #[test]
     fn microsoft_profile_falls_back_to_the_user_principal_name() {
         let user = microsoft_user(MicrosoftProfile {
             id: "user-id".to_string(),
@@ -1491,5 +2502,10 @@ mod tests {
         );
         assert_eq!(CPU_OLLAMA_REQUEST_TIMEOUT_SECONDS, 10 * 60);
         assert!(AI_ENGINE_TIMEOUT > Duration::from_secs(CPU_OLLAMA_REQUEST_TIMEOUT_SECONDS));
+    }
+
+    #[test]
+    fn otx_refresh_allows_twenty_minute_budget_and_process_grace() {
+        assert_eq!(OTX_SYNC_TIMEOUT, Duration::from_secs(21 * 60));
     }
 }

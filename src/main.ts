@@ -9,10 +9,15 @@ import { animate } from "motion/mini";
 import "./styles.css";
 
 type AuthUser = { sub: string; name?: string; email: string; picture?: string; provider?: "google" | "microsoft" };
-type Section = "dashboard" | "analyse" | "history" | "statistics" | "settings";
+type MailboxStatus = { connected: boolean; provider: "google" | "microsoft"; email: string };
+type MailboxMessage = { id: string; subject: string; sender: string; received_at: string; snippet: string; has_attachments: boolean; is_read: boolean };
+type Section = "dashboard" | "analyse" | "inbox" | "history" | "statistics" | "settings";
 type SocFlag = { level: "HIGH" | "MEDIUM" | "LOW" | "INFO"; field: string; message: string };
 type AuthResult = { status?: string; identity?: string; source?: string; raw?: string; all_results?: AuthResult[] };
 type ReceivedHop = { from_host?: string; by_host?: string; sender_ip?: string; all_ips?: string[]; received_at?: string; raw?: string };
+type OtxPulseSummary = { id?: string; name?: string; author?: string; modified?: string; tags?: string[]; tlp?: string };
+type OtxMatch = { indicator?: string; indicator_type?: string; source?: string; confidence?: "strong" | "supporting"; pulse_count?: number; pulses?: OtxPulseSummary[] };
+type OtxIntelligence = { status?: "match" | "no_match" | "unavailable"; synced_at?: string; pulse_count?: number; subscribed_pulse_count?: number; public_phishing_pulse_count?: number; indicator_count?: number; skipped_pulse_count?: number; lookback_days?: number; truncated?: boolean; matches?: OtxMatch[]; message?: string };
 type AnalysisReport = {
   subject?: string; from_?: string; from_registered_domain?: string; reply_to?: string; return_path?: string; flags?: SocFlag[];
   delivered_to?: string; to?: string; date?: string; message_id?: string; errors_to?: string; importance?: string;
@@ -31,6 +36,7 @@ type AnalysisReport = {
   hop_reputation?: Record<string, ReputationResult>;
   domain_reputation?: Record<string, { infrastructure?: ReputationResult; virustotal?: ReputationResult & { registrar?: string; creation_date?: string | number }; rdap?: ReputationResult & { registration_date?: string; registrar?: string } }>;
   geolocation_results?: Record<string, ReputationResult>;
+  otx_intelligence?: OtxIntelligence;
   attachments?: Array<{
     filename?: string;
     content_type?: string;
@@ -58,14 +64,14 @@ type AnalysisReport = {
   auth_results?: Record<string, AuthResult>; arc_auth_results?: Record<string, AuthResult>;
   effective_auth_results?: Record<string, AuthResult>;
   received_hops?: ReceivedHop[];
-  identity_analysis?: { status?: string; model?: string; backend?: string; message?: string; segments_analyzed?: number; entities?: Array<{ name?: string; confidence?: number; entity_type?: string; entity_types?: string[]; occurrences?: Array<{ source?: string; evidence?: string }> }>; coherence?: Array<{ brand?: string; official_website?: string; official_websites?: string[]; official_domain?: string; official_domains?: string[]; associated_domains?: string[]; external_reply_domains?: string[]; resolution_source?: string; status?: string; message?: string; mismatches?: Array<{ source?: string; domain?: string }> }> };
+  identity_analysis?: { status?: string; model?: string; backend?: string; message?: string; segments_analyzed?: number; entities?: Array<{ name?: string; confidence?: number; entity_type?: string; entity_types?: string[]; occurrences?: Array<{ source?: string; evidence?: string }> }>; coherence?: Array<{ brand?: string; official_website?: string; official_websites?: string[]; official_domain?: string; official_domains?: string[]; associated_domains?: string[]; trusted_action_domains?: string[]; external_reply_domains?: string[]; resolution_source?: string; status?: string; message?: string; mismatches?: Array<{ source?: string; domain?: string }> }> };
   phi4_analysis?: { status?: string; model?: string; duration_ms?: number; performance?: { analysis_mode?: string; llm_calls?: number; wall_duration_ms?: number; load_duration_ms?: number; prompt_tokens?: number; generated_tokens?: number; calls?: Array<{ stage?: string; wall_duration_ms?: number; load_duration_ms?: number; prompt_eval_count?: number; prompt_eval_duration_ms?: number; eval_count?: number; eval_duration_ms?: number }> }; analysis?: { final_verdict?: string; content_summary?: string; semantic_reason?: string; explanation?: string; confidence?: number; requested_action?: string; action_channel?: string; intent_evidence?: string; intent_signals?: string[]; signal_evidence?: string; content_risk?: string; identity_risk?: string; technical_risk?: string; ambiguity?: string; claimed_brand?: string; payment_destination_change?: boolean; semantic_extraction?: { asks_for_credentials?: boolean; asks_for_payment?: boolean; asks_for_sensitive_information?: boolean; asks_to_change_account_settings?: boolean; asks_to_verify_account?: boolean; asks_to_open_attachment?: boolean; requested_external_action?: boolean; security_alert?: boolean; impersonation_or_deception?: boolean; identity_deception?: boolean }; corroboration?: { supports_decision?: boolean; details?: string[]; caveats?: string[] } }; message?: string };
   ai_content_summary?: { status?: string; summary?: string; model?: string; backend?: string; message?: string };
   ai_summary?: { status?: string; summary?: string; model?: string; backend?: string; message?: string };
 };
 type ReputationResult = { status?: string; message?: string; detection_ratio?: string; malicious?: number; suspicious?: number; total_engines?: number; threat_label?: string; file_type?: string; file_name?: string; last_analysis?: string | number; permalink?: string; abuseConfidenceScore?: number; totalReports?: number; country?: string; country_code?: string; city?: string; region?: string; isp?: string; org?: string; asn?: string; timezone?: string; lat?: number; lon?: number; is_proxy?: boolean; is_hosting?: boolean; resolved_ip?: string; resolved_domain?: string; used_parent_fallback?: string; url?: string; title?: string; crowdsourced_context_summary?: string };
 type AnalysisRecord = { id: string; analyzedAt: string; report: AnalysisReport; analysisDurationMs?: number };
-type ActiveAnalysis = { userSub: string; fileName: string; status: "processing" | "complete" | "error"; report?: AnalysisReport; recordId?: string | null; error?: string };
+type ActiveAnalysis = { userSub: string; fileName: string; source?: "file" | "inbox"; status: "processing" | "complete" | "error"; report?: AnalysisReport; recordId?: string | null; error?: string };
 type StatisticsPeriod = "today" | "week" | "month" | "3m" | "6m" | "9m" | "12m" | "all";
 type CopyEvent = { copiedAt: string };
 
@@ -75,6 +81,8 @@ const REPUTATION_KEYS_PREFIX = "fishstop.reputation-keys.";
 const INDICATOR_COPY_STORAGE_PREFIX = "fishstop.indicator-copies.";
 const STATISTICS_PERIOD_PREFIX = "fishstop.statistics-period.";
 const DEFAULT_OLLAMA_MODEL = "qwen3:4b-q4_K_M";
+const OTX_LOOKBACK_DAYS = 365;
+const OTX_BACKGROUND_SYNC_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const analysisHistoryCache = new Map<string, AnalysisRecord[]>();
 const analysisHistoryReady = new Set<string>();
 const analysisHistoryRequests = new Map<string, Promise<void>>();
@@ -92,7 +100,9 @@ const root: HTMLDivElement = app;
 
 type ProtectionTone = "checking" | "ok" | "warning" | "error";
 type LocalEngineStatus = { static_engine: boolean; python_runtime: boolean; identity_dependencies: boolean };
-type ReputationKeyStatus = { virustotal: boolean; abuseipdb: boolean };
+type ReputationKeyStatus = { virustotal: boolean; abuseipdb: boolean; otx: boolean };
+type OtxCacheStatus = { configured: boolean; status: "disabled" | "not_synced" | "ready" | "stale"; synced_at: string; pulse_count: number; subscribed_pulse_count: number; public_phishing_pulse_count: number; indicator_count: number; skipped_pulse_count: number; truncated: boolean; limit_reason: string; stale: boolean; lookback_days: number; database_bytes: number; message: string };
+type OtxSyncProgress = { user_sub: string; phase: string; processed: number; total?: number; percentage?: number; message: string };
 type HuggingFaceModelInfo = { repository: string; runtime_revision: string; latest_commit?: string; updated_at?: string };
 type OllamaRuntimeStatus = {
   runtime_ready: boolean; model_ready: boolean; managed: boolean; model: string;
@@ -103,6 +113,10 @@ type OllamaModelProgress = { status: string; total?: number; completed?: number 
 type ManagedModelOperation = { phase: "installing" | "removing"; status: string; total?: number; completed?: number };
 let managedModelOperation: ManagedModelOperation | null = null;
 let ollamaRuntimeSnapshot: OllamaRuntimeStatus | null = null;
+const otxAutoSyncAttempted = new Set<string>();
+const otxMaintenanceInProgress = new Set<string>();
+let otxBackgroundSyncTimer: number | null = null;
+let otxBackgroundSyncUserSub: string | null = null;
 
 function escapeHtml(value: string): string {
   return value.replace(/[&<>'"]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[character] || character));
@@ -117,7 +131,7 @@ function legacyReputationKeys(user: AuthUser): { virustotal: string; abuseipdb: 
 }
 // The settings shell is rendered before the asynchronous native-keychain lookup.
 // `refreshReputationSettings` fills in availability without exposing secret values.
-function reputationKeys(_user: AuthUser): { virustotal: string; abuseipdb: string } { return { virustotal: "", abuseipdb: "" }; }
+function reputationKeys(_user: AuthUser): { virustotal: string; abuseipdb: string; otx: string } { return { virustotal: "", abuseipdb: "", otx: "" }; }
 function maskedSecret(value: string): string {
   return value.length <= 8 ? "••••••••" : `${value.slice(0, 4)}••••••${value.slice(-4)}`;
 }
@@ -141,24 +155,198 @@ async function refreshReputationSettings(user: AuthUser): Promise<void> {
   try {
     const keys = await invoke<ReputationKeyStatus>("reputation_key_status", { userSub: user.sub });
     if (!card.isConnected) return;
-    const configured = Number(keys.virustotal) + Number(keys.abuseipdb);
-    (["virustotal", "abuseipdb"] as const).forEach((provider) => {
+    const configured = Number(keys.virustotal) + Number(keys.abuseipdb) + Number(keys.otx);
+    (["virustotal", "abuseipdb", "otx"] as const).forEach((provider) => {
       const ready = keys[provider];
-      const row = card.querySelector<HTMLElement>(`li:nth-child(${provider === "virustotal" ? 1 : 2})`);
+      const row = card.querySelector<HTMLElement>(`li[data-reputation-provider="${provider}"]`);
       if (!row) return;
-      row.className = `credential-${ready ? "ready" : "missing"}`;
-      const icon = row.querySelector("i"); if (icon) icon.textContent = ready ? "✓" : "—";
-      const detail = row.querySelector("small"); if (detail) detail.textContent = ready ? "Stored in the system keychain" : "Key not configured";
-      const status = row.querySelector("b"); if (status) status.textContent = ready ? "Ready" : "Required";
+      row.className = ready ? "ready" : "missing";
+      const icon = row.querySelector(":scope > i"); if (icon) icon.textContent = ready ? "✓" : "—";
+      const detail = row.querySelector(".credential-static-copy small"); if (detail) detail.textContent = ready ? "Stored in the system keychain" : "Key not configured";
+      const status = row.querySelector(":scope > b"); if (status) status.textContent = ready ? "Ready" : "Required";
+      const input = row.querySelector<HTMLInputElement>("input");
+      if (input) input.placeholder = ready ? "Enter a new key or leave unchanged" : `Enter the ${provider === "otx" ? "OTX" : provider === "virustotal" ? "VirusTotal" : "AbuseIPDB"} token`;
     });
     const edit = card.querySelector<HTMLButtonElement>("#edit-reputation-keys");
     if (edit) edit.textContent = configured ? "Edit keys" : "Configure keys";
-    const form = card.querySelector<HTMLFormElement>("#reputation-settings");
-    if (form && configured) form.setAttribute("hidden", "");
   } catch (error) {
     const status = card.querySelector<HTMLElement>("#settings-status");
     if (status) status.textContent = `Secure storage unavailable: ${String(error)}`;
   }
+}
+
+function renderOtxStatus(status: OtxCacheStatus): void {
+  const panel = document.querySelector<HTMLElement>(".otx-sync-panel");
+  const detail = document.querySelector<HTMLElement>("#otx-sync-status");
+  const button = document.querySelector<HTMLButtonElement>("#sync-otx-intelligence");
+  const deleteButton = document.querySelector<HTMLButtonElement>("#clear-otx-intelligence");
+  const progressPanel = document.querySelector<HTMLElement>("#otx-sync-progress");
+  if (!panel || !detail || !button) return;
+  const currentUser = storedUser();
+  const busy = Boolean(currentUser && otxMaintenanceInProgress.has(currentUser.sub));
+  panel.dataset.status = status.status;
+  if (!busy && progressPanel) progressPanel.hidden = true;
+  if (deleteButton) deleteButton.disabled = busy || status.database_bytes <= 0;
+  if (busy) {
+    button.disabled = true;
+    button.textContent = "Synchronizing…";
+  }
+  if (!status.configured) {
+    detail.textContent = status.database_bytes > 0
+      ? `${status.pulse_count.toLocaleString()} Pulses · ${(status.database_bytes / 1_048_576).toFixed(1)} MB local database · add a key to refresh`
+      : "Add an OTX API key to enable automatic intelligence synchronization.";
+    button.disabled = true;
+    button.textContent = busy ? "Synchronizing…" : "Sync unavailable";
+    return;
+  }
+  button.disabled = busy;
+  button.textContent = busy ? "Synchronizing…" : status.status === "not_synced" ? "Sync now" : "Refresh Pulses";
+  if (!status.synced_at) {
+    detail.textContent = status.message;
+    return;
+  }
+  const sources = status.public_phishing_pulse_count
+    ? `${status.pulse_count.toLocaleString()} unique Pulses · ${status.subscribed_pulse_count.toLocaleString()} subscribed · ${status.public_phishing_pulse_count.toLocaleString()} public phishing`
+    : `${status.pulse_count.toLocaleString()} Pulses`;
+  const databaseSize = status.database_bytes >= 1_048_576
+    ? `${(status.database_bytes / 1_048_576).toFixed(1)} MB`
+    : `${Math.max(0, status.database_bytes / 1024).toFixed(0)} KB`;
+  const counts = `${sources} · ${status.indicator_count.toLocaleString()} local indicators · ${status.lookback_days || 365}-day window · ${databaseSize}`;
+  const freshness = status.stale ? "Update recommended" : `Updated ${formatAnalysisDate(status.synced_at)}`;
+  const skipped = status.skipped_pulse_count
+    ? ` · ${status.skipped_pulse_count.toLocaleString()} temporarily unavailable skipped`
+    : "";
+  const limitLabels: Record<string, string> = {
+    time: "20m refresh budget reached; download will resume",
+    database: "250 MB database target reached",
+    indicators: "1,000,000-indicator target reached",
+    pages: "Discovery page budget reached; download will resume",
+    partial: "Some public Pulse pages were temporarily unavailable; download will resume",
+  };
+  const coverage = status.truncated
+    ? ` · ${limitLabels[status.limit_reason] || "Public enrichment is bounded per refresh; previous intelligence retained"}`
+    : "";
+  detail.textContent = `${freshness} · ${counts}${skipped}${coverage}`;
+}
+
+async function refreshOtxStatus(user: AuthUser): Promise<OtxCacheStatus | null> {
+  try {
+    const status = await invoke<OtxCacheStatus>("otx_cache_status", { userSub: user.sub });
+    renderOtxStatus(status);
+    return status;
+  } catch (error) {
+    const detail = document.querySelector<HTMLElement>("#otx-sync-status");
+    if (detail) detail.textContent = `Local OTX status unavailable: ${String(error)}`;
+    return null;
+  }
+}
+
+async function runOtxSync(user: AuthUser, force: boolean): Promise<void> {
+  if (otxMaintenanceInProgress.has(user.sub)) return;
+  otxMaintenanceInProgress.add(user.sub);
+  const button = document.querySelector<HTMLButtonElement>("#sync-otx-intelligence");
+  const deleteButton = document.querySelector<HTMLButtonElement>("#clear-otx-intelligence");
+  const deleteWasDisabled = deleteButton?.disabled ?? true;
+  const detail = document.querySelector<HTMLElement>("#otx-sync-status");
+  const progressPanel = document.querySelector<HTMLElement>("#otx-sync-progress");
+  const progressLabel = document.querySelector<HTMLElement>("#otx-sync-progress-label");
+  const progressValue = document.querySelector<HTMLElement>("#otx-sync-progress-value");
+  const progressTrack = document.querySelector<HTMLElement>("#otx-sync-progress-track");
+  const progressFill = document.querySelector<HTMLElement>("#otx-sync-progress-fill");
+  let unlistenProgress: (() => void) | undefined;
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Synchronizing…";
+  }
+  if (deleteButton) deleteButton.disabled = true;
+  if (detail) detail.textContent = "Downloading subscribed Pulses in the background…";
+  if (progressPanel) progressPanel.hidden = false;
+  if (progressLabel) progressLabel.textContent = "Preparing the local database…";
+  if (progressValue) progressValue.textContent = "0%";
+  if (progressFill) progressFill.style.width = "0%";
+  progressTrack?.setAttribute("aria-valuenow", "0");
+  try {
+    unlistenProgress = await listen<OtxSyncProgress>("otx-sync-progress", (event) => {
+      if (event.payload.user_sub !== user.sub) return;
+      const livePanel = document.querySelector<HTMLElement>("#otx-sync-progress");
+      const liveLabel = document.querySelector<HTMLElement>("#otx-sync-progress-label");
+      const liveValue = document.querySelector<HTMLElement>("#otx-sync-progress-value");
+      const liveTrack = document.querySelector<HTMLElement>("#otx-sync-progress-track");
+      const liveFill = document.querySelector<HTMLElement>("#otx-sync-progress-fill");
+      if (livePanel) livePanel.hidden = false;
+      if (liveLabel) liveLabel.textContent = event.payload.message;
+      const percentage = event.payload.percentage;
+      if (typeof percentage === "number" && Number.isFinite(percentage)) {
+        const bounded = Math.max(0, Math.min(100, Math.round(percentage)));
+        livePanel?.classList.remove("is-indeterminate");
+        if (liveValue) liveValue.textContent = `${bounded}%`;
+        if (liveFill) liveFill.style.width = `${bounded}%`;
+        liveTrack?.setAttribute("aria-valuenow", String(bounded));
+      } else {
+        livePanel?.classList.add("is-indeterminate");
+        if (liveValue) liveValue.textContent = "…";
+        if (liveFill) liveFill.style.width = "32%";
+        liveTrack?.removeAttribute("aria-valuenow");
+      }
+    });
+  } catch { /* Synchronization still works if progress events are unavailable. */ }
+  try {
+    const result = await invoke<OtxCacheStatus>("sync_otx_intelligence", { userSub: user.sub, force });
+    unlistenProgress?.();
+    otxMaintenanceInProgress.delete(user.sub);
+    if (storedUser()?.sub === user.sub) renderOtxStatus(result);
+  } catch (error) {
+    unlistenProgress?.();
+    otxMaintenanceInProgress.delete(user.sub);
+    if (storedUser()?.sub !== user.sub) return;
+    if (detail) detail.textContent = `${String(error)} Previous local intelligence remains available.`;
+    if (button) {
+      button.disabled = false;
+      button.textContent = "Retry sync";
+    }
+    if (deleteButton) deleteButton.disabled = deleteWasDisabled;
+    if (progressPanel) progressPanel.hidden = true;
+  }
+}
+
+async function maybeAutoSyncOtx(user: AuthUser, scheduled = false): Promise<void> {
+  const shouldAutoSync = scheduled || !otxAutoSyncAttempted.has(user.sub);
+  if (!scheduled && shouldAutoSync) otxAutoSyncAttempted.add(user.sub);
+  if (!shouldAutoSync) {
+    // Settings markup is rebuilt whenever the user returns to this section.
+    if (document.querySelector(".otx-sync-panel")) await refreshOtxStatus(user);
+    return;
+  }
+  const status = await refreshOtxStatus(user);
+  const resumable = Boolean(status?.truncated && ["time", "pages", "partial"].includes(status.limit_reason));
+  const needsRefresh = Boolean(status && (
+    status.status !== "ready"
+    || status.lookback_days < OTX_LOOKBACK_DAYS
+    || resumable
+  ));
+  if (shouldAutoSync && status?.configured && needsRefresh) await runOtxSync(user, status.status === "ready");
+}
+
+function stopOtxBackgroundSync(): void {
+  if (otxBackgroundSyncTimer !== null) window.clearInterval(otxBackgroundSyncTimer);
+  otxBackgroundSyncTimer = null;
+  otxBackgroundSyncUserSub = null;
+}
+
+function ensureOtxBackgroundSync(user: AuthUser): void {
+  if (otxBackgroundSyncUserSub !== user.sub || otxBackgroundSyncTimer === null) {
+    stopOtxBackgroundSync();
+    otxBackgroundSyncUserSub = user.sub;
+    otxBackgroundSyncTimer = window.setInterval(() => {
+      const currentUser = storedUser();
+      if (!currentUser || currentUser.sub !== user.sub) {
+        stopOtxBackgroundSync();
+        return;
+      }
+      void maybeAutoSyncOtx(currentUser, true);
+    }, OTX_BACKGROUND_SYNC_INTERVAL_MS);
+  }
+  void maybeAutoSyncOtx(user);
 }
 function setProtectionStatus(element: HTMLElement, tone: ProtectionTone, message: string): void {
   element.className = `top-status top-status-${tone}`;
@@ -176,10 +364,16 @@ async function resolveProtectionStatus(user: AuthUser): Promise<ProtectionStatus
     if (!engine.static_engine || !engine.python_runtime) return { userSub: user.sub, tone: "error", message: "Analysis engine unavailable" };
     if (!engine.identity_dependencies) return { userSub: user.sub, tone: "error", message: "Identity intelligence unavailable" };
     if (!runtime.runtime_ready || !runtime.model_ready) return { userSub: user.sub, tone: "error", message: runtime.runtime_ready ? "AI model unavailable" : "AI unavailable" };
-    const configuredKeys = Number(keys.virustotal) + Number(keys.abuseipdb);
-    if (configuredKeys < 2) {
-      const missing = 2 - configuredKeys;
-      return { userSub: user.sub, tone: "warning", message: `${missing} API key${missing === 1 ? "" : "s"} to configure` };
+    const missingKeys = [
+      !keys.virustotal && "VirusTotal",
+      !keys.abuseipdb && "AbuseIPDB",
+      !keys.otx && "OTX",
+    ].filter((provider): provider is string => Boolean(provider));
+    if (missingKeys.length) {
+      const message = missingKeys.length === 1
+        ? `${missingKeys[0]} API key to configure`
+        : `${missingKeys.length} API keys to configure`;
+      return { userSub: user.sub, tone: "warning", message };
     }
     return { userSub: user.sub, tone: "ok", message: "Protection active" };
   } catch {
@@ -377,7 +571,7 @@ function animateEntrance(elements: Iterable<Element>, options: { distance?: numb
 function animateSectionEntry(section: Section): void {
   const content = document.querySelector<HTMLElement>(".content");
   if (!content) return;
-  const hasCompletedReport = section === "analyse" && Boolean(content.querySelector(".analysis-report"));
+  const hasCompletedReport = (section === "analyse" || section === "inbox") && Boolean(content.querySelector(".analysis-report"));
   const primaryElements = Array.from(content.children).filter((element) => !(hasCompletedReport && element.id === "analysis-result"));
   animateEntrance(primaryElements, { distance: 6, step: 0.045, duration: 0.25 });
   const detailSelector = section === "history"
@@ -714,7 +908,12 @@ function isAuthenticatedFirstPartyLink(report: AnalysisReport, link: NonNullable
   if (!linkDomain) return false;
   const trustedDomains = new Set([
     normalizedDomain(report.from_registered_domain),
-    ...(report.identity_analysis?.coherence || []).map((item) => normalizedDomain(item.official_domain)),
+    ...(report.identity_analysis?.coherence || []).flatMap((item) => [
+      item.official_domain,
+      ...(item.official_domains || []),
+      ...(item.associated_domains || []),
+      ...(item.trusted_action_domains || []),
+    ].map(normalizedDomain)),
   ].filter(Boolean));
   const lookalikeDomains = new Set(
     (report.lookalike_alerts || [])
@@ -1008,6 +1207,81 @@ function reputationCheckTone(result?: ReputationResult): CheckTone | undefined {
   return undefined;
 }
 
+function normalizedOtxUrl(value?: string): string {
+  try {
+    const parsed = new URL(String(value || ""));
+    if (!["http:", "https:"].includes(parsed.protocol)) return String(value || "").trim();
+    parsed.hash = "";
+    if (!parsed.pathname) parsed.pathname = "/";
+    return parsed.toString();
+  } catch {
+    return String(value || "").trim();
+  }
+}
+
+function otxMatchesForLink(report: AnalysisReport, link: NonNullable<AnalysisReport["links"]>[number]): OtxMatch[] {
+  const url = normalizedOtxUrl(link.url);
+  const host = normalizedDomain(link.host);
+  const registered = normalizedDomain(link.registered_domain);
+  return (report.otx_intelligence?.matches || []).filter((match) => {
+    const indicator = String(match.indicator || "").trim();
+    if (match.indicator_type === "url") return normalizedOtxUrl(indicator) === url;
+    if (match.indicator_type === "hostname") return normalizedDomain(indicator) === host;
+    if (match.indicator_type === "domain") {
+      const domain = normalizedDomain(indicator);
+      return domain === host || Boolean(registered && domain === registered);
+    }
+    return false;
+  });
+}
+
+function otxMatchesForAttachment(report: AnalysisReport, hash?: string): OtxMatch[] {
+  const normalizedHash = String(hash || "").trim().toLowerCase();
+  return (report.otx_intelligence?.matches || []).filter((match) =>
+    match.indicator_type === "sha256"
+    && String(match.indicator || "").trim().toLowerCase() === normalizedHash,
+  );
+}
+
+function otxMatchesForIp(report: AnalysisReport, ip: string): OtxMatch[] {
+  const normalizedIp = ip.trim().toLowerCase();
+  return (report.otx_intelligence?.matches || []).filter((match) =>
+    ["ipv4", "ipv6"].includes(match.indicator_type || "")
+    && String(match.indicator || "").trim().toLowerCase() === normalizedIp,
+  );
+}
+
+function senderIdentityDomains(report: AnalysisReport): Set<string> {
+  const domains = new Set<string>();
+  [report.from_, report.return_path, report.reply_to].forEach((value) => {
+    const match = /@([\w.-]+)/.exec(String(value || ""));
+    if (match?.[1]) domains.add(normalizedDomain(match[1]));
+  });
+  if (report.from_registered_domain) domains.add(normalizedDomain(report.from_registered_domain));
+  return domains;
+}
+
+function otxSenderMatches(report: AnalysisReport): OtxMatch[] {
+  const domains = senderIdentityDomains(report);
+  return (report.otx_intelligence?.matches || []).filter((match) =>
+    ["domain", "hostname"].includes(match.indicator_type || "")
+    && domains.has(normalizedDomain(match.indicator)),
+  );
+}
+
+function otxInlineEvidence(matches: OtxMatch[]): string {
+  if (!matches.length) return "";
+  const strong = matches.some((match) => match.confidence === "strong");
+  const pulseNames = [...new Set(matches.flatMap((match) =>
+    (match.pulses || []).map((pulse) => pulse.name || "Unnamed Pulse"),
+  ))];
+  const pulseCount = Math.max(0, ...matches.map((match) => Number(match.pulse_count || 0)));
+  const detail = pulseNames.length
+    ? pulseNames.slice(0, 2).join("; ")
+    : `${pulseCount || matches.length} synchronized Pulse${(pulseCount || matches.length) === 1 ? "" : "s"}`;
+  return `<em class="inline-otx inline-otx-${strong ? "strong" : "supporting"}"><b>OTX ${strong ? "exact match" : "infrastructure match"}</b>${escapeHtml(detail)}</em>`;
+}
+
 function hopCheckTone(results: ReputationResult[]): CheckTone {
   const tones = results.map(reputationCheckTone).filter((tone): tone is CheckTone => Boolean(tone));
   if (tones.includes("fail")) return "fail";
@@ -1096,9 +1370,15 @@ function reportMarkup(report: AnalysisReport): string {
     const structuralWarning = Boolean(link.nonstandard_port || link.nested_redirect_count || link.unicode_path_or_query);
     const reputationResult = report.link_reputation?.[link.url || ""];
     const reputation = reputationCheckTone(reputationResult);
+    const otxMatches = otxMatchesForLink(report, link);
+    const otxStrong = otxMatches.some((match) => match.confidence === "strong");
     const invoiceDeliveryMismatch = Boolean(link.financial_attachment_mismatch);
-    const tone = safeSignatureTracking ? "pass" : dangerous || structuralDanger || link.display_mismatch || invoiceDeliveryMismatch ? "fail" : reputation || (structuralWarning || link.is_possible_shortener ? "warn" : "neutral");
-    const status = safeSignatureTracking ? "Signature tracking redirect" : invoiceDeliveryMismatch ? (link.dangerous_download ? "Invoice link points to a script/executable" : "Invoice delivery is unrelated to sender domain") : dangerous ? (link.is_ip ? "Direct IP" : link.dangerous_download ? "Executable or script download" : "Lookalike domain") : structuralDanger ? "Hidden destination userinfo" : link.display_mismatch ? "Destination differs from visible text" : reputation === "fail" ? "Detected by VirusTotal" : reputation === "warn" ? "Review required" : reputation === "pass" ? "VirusTotal clean" : link.nested_redirect_count ? "Nested redirect destination" : link.nonstandard_port ? "Non-standard port" : link.unicode_path_or_query ? "Unicode path or query" : link.is_possible_shortener ? "Possible URL shortener" : "Valid URL structure";
+    const tone = dangerous || structuralDanger || link.display_mismatch || invoiceDeliveryMismatch || reputation === "fail"
+      ? "fail"
+      : otxStrong || reputation === "warn" || structuralWarning || link.is_possible_shortener
+        ? "warn"
+        : safeSignatureTracking || reputation === "pass" ? "pass" : "neutral";
+    const status = invoiceDeliveryMismatch ? (link.dangerous_download ? "Invoice link points to a script/executable" : "Invoice delivery is unrelated to sender domain") : dangerous ? (link.is_ip ? "Direct IP" : link.dangerous_download ? "Executable or script download" : "Lookalike domain") : structuralDanger ? "Hidden destination userinfo" : link.display_mismatch ? "Destination differs from visible text" : reputation === "fail" ? "Detected by VirusTotal" : otxStrong ? "Matched in OTX phishing intelligence" : reputation === "warn" ? "Review required" : safeSignatureTracking ? "Signature tracking redirect" : reputation === "pass" ? "VirusTotal clean" : link.nested_redirect_count ? "Nested redirect destination" : link.nonstandard_port ? "Non-standard port" : link.unicode_path_or_query ? "Unicode path or query" : link.is_possible_shortener ? "Possible URL shortener" : "Valid URL structure";
     const host = link.host || "URL without host";
     const vtUrl = reputationResult?.permalink || `https://www.virustotal.com/gui/domain/${encodeURIComponent(host)}`;
     const whoisUrl = `https://www.whois.com/whois/${encodeURIComponent(host)}`;
@@ -1110,7 +1390,7 @@ function reportMarkup(report: AnalysisReport): string {
       ? `<a class="manual-vt-action" href="https://www.virustotal.com/gui/home/url" target="_blank" rel="noopener noreferrer" data-vt-manual-url="${escapeHtml(link.url || "")}">Copy URL &amp; open VirusTotal ↗</a>`
       : `<a href="${escapeHtml(vtUrl)}" target="_blank" rel="noopener noreferrer">${reputationResult?.permalink ? "VirusTotal report ↗" : "VirusTotal ↗"}</a>`;
     const copyAction = tone === "fail" && link.url ? `<button class="copy-evidence" type="button" data-copy-ioc="${escapeHtml(link.url)}">Copy URL</button>` : "";
-    return `<li class="static-check static-check-${tone} link-evidence"><div><strong>${escapeHtml(host)}</strong><span>${escapeHtml(status)}</span></div><small>${escapeHtml((link.url || "").replace("://", "[://]").replaceAll(".", "[.]"))}</small>${metadata ? `<em>${escapeHtml(metadata)}</em>` : ""}${notes ? `<em>${escapeHtml(notes)}</em>` : ""}${copyAction}${isWebLink ? `<p>${virusTotalAction}<a href="${escapeHtml(whoisUrl)}" target="_blank" rel="noopener noreferrer">WHOIS ↗</a></p>` : ""}</li>`;
+    return `<li class="static-check static-check-${tone} link-evidence"><div><strong>${escapeHtml(host)}</strong><span>${escapeHtml(status)}</span></div><small>${escapeHtml((link.url || "").replace("://", "[://]").replaceAll(".", "[.]"))}</small>${metadata ? `<em>${escapeHtml(metadata)}</em>` : ""}${notes ? `<em>${escapeHtml(notes)}</em>` : ""}${otxInlineEvidence(otxMatches)}${copyAction}${isWebLink ? `<p>${virusTotalAction}<a href="${escapeHtml(whoisUrl)}" target="_blank" rel="noopener noreferrer">WHOIS ↗</a></p>` : ""}</li>`;
   }).join("") || staticCheckItem("neutral", "No extracted links", "No URLs are present in the message.", "Not applicable");
   const mailtoGroups = new Map<string, { recipient: string; subjects: string[]; count: number }>();
   (report.links || []).forEach((link) => {
@@ -1136,16 +1416,18 @@ function reportMarkup(report: AnalysisReport): string {
     const caution = ["medium", "warning"].includes(attachmentRisk) || ["medium", "warning"].includes(pdfRisk) || ["medium", "warning"].includes(archiveRisk);
     const reputationResult = attachment.file_reputation;
     const reputation = reputationCheckTone(reputationResult);
+    const otxMatches = otxMatchesForAttachment(report, attachment.hash_sha256);
+    const otxStrong = otxMatches.some((match) => match.confidence === "strong");
     const attachmentSize = attachment.size_bytes ?? attachment.size;
     const detail = `${attachment.content_type || "unknown type"} · ${formatAttachmentSize(attachmentSize)} · ${attachment.magic_detected_format || "unrecognised format"}`;
     const archiveMeta = attachment.archive_security ? `${attachment.archive_security.entry_count || 0} entries${attachment.archive_security.nested_archive_count ? ` · ${attachment.archive_security.nested_archive_count} nested` : ""}${attachment.archive_security.encrypted_entry_count ? ` · ${attachment.archive_security.encrypted_entry_count} encrypted` : ""}` : "";
     const note = (dangerousType ? attachment.attachment_security?.summary : "") || attachment.anomaly || attachment.pdf_security?.summary || attachment.archive_security?.summary || (caution ? "Archive or PDF requires review" : "Local structure valid");
-    const tone = risky ? "fail" : caution ? "warn" : reputation || "pass";
-    const status = dangerousType ? "High-risk file type" : risky ? "Anomaly detected" : caution || reputation === "warn" ? "Review required" : reputation === "fail" ? "Detected by VirusTotal" : reputation === "pass" ? "VirusTotal clean" : "Passed";
+    const tone = risky || reputation === "fail" ? "fail" : caution || otxStrong || reputation === "warn" ? "warn" : reputation || "pass";
+    const status = dangerousType ? "High-risk file type" : risky ? "Anomaly detected" : reputation === "fail" ? "Detected by VirusTotal" : otxStrong ? "SHA-256 matched in OTX" : caution || reputation === "warn" ? "Review required" : reputation === "pass" ? "VirusTotal clean" : "Passed";
     const intelligence = [reputationResult?.detection_ratio && `VirusTotal: ${reputationResult.detection_ratio}`, reputationResult?.last_analysis && `Last analysis: ${reputationResult.last_analysis}`].filter(Boolean).join(" · ");
     const reportLink = reputationResult?.permalink ? `<p><a href="${escapeHtml(reputationResult.permalink)}" target="_blank" rel="noopener noreferrer">VirusTotal report ↗</a></p>` : "";
     const copyAction = tone === "fail" && attachment.hash_sha256 ? `<button class="copy-evidence" type="button" data-copy-ioc="${escapeHtml(attachment.hash_sha256)}">Copy SHA-256</button>` : "";
-    return `<li class="static-check static-check-${tone}"><strong>${escapeHtml(attachment.filename || "Unnamed attachment")}</strong><small>${escapeHtml(`${status} · ${detail} · ${note}`)}</small>${archiveMeta ? `<em>Archive inspection: ${escapeHtml(archiveMeta)}</em>` : ""}${intelligence ? `<em>${escapeHtml(intelligence)}</em>` : ""}${copyAction}${reportLink}</li>`;
+    return `<li class="static-check static-check-${tone}"><strong>${escapeHtml(attachment.filename || "Unnamed attachment")}</strong><small>${escapeHtml(`${status} · ${detail} · ${note}`)}</small>${archiveMeta ? `<em>Archive inspection: ${escapeHtml(archiveMeta)}</em>` : ""}${intelligence ? `<em>${escapeHtml(intelligence)}</em>` : ""}${otxInlineEvidence(otxMatches)}${copyAction}${reportLink}</li>`;
   }).join("") || staticCheckItem("neutral", "No attachments detected", "No MIME files are available to check.", "Not applicable");
   const lookalikes = (report.lookalike_alerts || []).map((alert) => {
     const risky = isRiskyLookalikeAlert(alert);
@@ -1257,8 +1539,24 @@ function addReputationPanel(report: AnalysisReport): void {
     const links = [vt.permalink && `<a href="${escapeHtml(vt.permalink)}" target="_blank" rel="noopener noreferrer">VirusTotal report ↗</a>`, rdap.url && `<a href="${escapeHtml(rdap.url)}" target="_blank" rel="noopener noreferrer">RDAP ↗</a>`, infrastructure.url && `<a href="${escapeHtml(infrastructure.url)}" target="_blank" rel="noopener noreferrer">AbuseIPDB ↗</a>`].filter(Boolean).join("");
     return `<li class="static-check static-check-${tone}"><strong>${escapeHtml(domain)}</strong><small>${escapeHtml(vtStatus)}${facts ? ` · ${escapeHtml(facts)}` : ""}</small>${links ? `<p>${links}</p>` : ""}</li>`;
   }).join("") || '<li class="reputation-empty">No sender domains available.</li>';
+  const otx = report.otx_intelligence;
+  const otxRows = (otx?.matches || []).map((match) => {
+    const pulses = (match.pulses || []).map((pulse) => `${pulse.name || "Unnamed Pulse"}${pulse.author ? ` · ${pulse.author}` : ""}`).join("; ");
+    const tone = match.confidence === "strong" ? "warn" : "neutral";
+    return `<li class="static-check static-check-${tone}"><strong>${escapeHtml((match.indicator_type || "indicator").toUpperCase())} · ${escapeHtml(match.indicator || "Unknown indicator")}</strong><small>${escapeHtml(match.confidence === "strong" ? "Exact high-confidence indicator match" : "Supporting infrastructure match")} · ${escapeHtml(match.source || "email evidence")}${pulses ? ` · ${escapeHtml(pulses)}` : ""}</small></li>`;
+  }).join("");
+  const otxNoMatch = otx?.truncated
+    ? "No match in the locally available OTX data. Public search coverage was limited by OTX; this is neutral evidence, not proof of safety."
+    : "No match in the synchronized 365-day database. This is neutral evidence, not proof of safety.";
+  const otxContent = otxRows || `<li class="reputation-empty">${escapeHtml(otx?.status === "no_match" ? otxNoMatch : "No synchronized OTX Pulse database was available for this analysis.")}</li>`;
+  const otxSourceCounts = Number(otx?.subscribed_pulse_count || 0) + Number(otx?.public_phishing_pulse_count || 0)
+    ? `${Number(otx?.pulse_count || 0).toLocaleString()} unique Pulses · ${Number(otx?.subscribed_pulse_count || 0).toLocaleString()} subscribed · ${Number(otx?.public_phishing_pulse_count || 0).toLocaleString()} public phishing`
+    : `${Number(otx?.pulse_count || 0).toLocaleString()} Pulses`;
+  const otxMeta = otx?.synced_at
+    ? `${otxSourceCounts} · ${Number(otx.indicator_count || 0).toLocaleString()} indicators${otx.skipped_pulse_count ? ` · ${Number(otx.skipped_pulse_count).toLocaleString()} unavailable skipped` : ""} · synchronized ${formatAnalysisDate(otx.synced_at)}`
+    : "Background synchronization is configured in Settings";
   tabs.insertAdjacentHTML("beforeend", '<button class="report-tab" data-report-tab="reputation" type="button">Reputation</button>');
-  shell.insertAdjacentHTML("beforeend", `<section class="report-panel" data-report-panel="reputation"><div class="reputation-intro"><p class="page-kicker">EXTERNAL INTELLIGENCE</p><h3>Indicator reputation</h3><p>VirusTotal receives URLs, hashes and sender domains; AbuseIPDB and ipwho.is receive public IP addresses only. RDAP receives sender domains only.</p></div><div class="reputation-grid"><section class="evidence-card"><h3>Links · VirusTotal</h3><ul>${urls}</ul></section><section class="evidence-card"><h3>Attachments · VirusTotal</h3><ul>${files}</ul></section><section class="evidence-card"><h3>Hops · AbuseIPDB and geolocation</h3><ul>${hops}</ul></section><section class="evidence-card"><h3>Sender domains · VirusTotal, RDAP and infrastructure</h3><ul>${domains}</ul></section></div></section>`);
+  shell.insertAdjacentHTML("beforeend", `<section class="report-panel" data-report-panel="reputation"><div class="reputation-intro"><p class="page-kicker">EXTERNAL INTELLIGENCE</p><h3>Indicator reputation</h3><p>VirusTotal receives URLs, hashes and sender domains; AbuseIPDB and ipwho.is receive public IP addresses only. RDAP receives sender domains only. OTX Pulses are synchronized separately, then matched locally without contacting OTX during analysis.</p></div><div class="reputation-grid"><section class="evidence-card"><h3>Links · VirusTotal</h3><ul>${urls}</ul></section><section class="evidence-card"><h3>Attachments · VirusTotal</h3><ul>${files}</ul></section><section class="evidence-card"><h3>Hops · AbuseIPDB and geolocation</h3><ul>${hops}</ul></section><section class="evidence-card"><h3>Sender domains · VirusTotal, RDAP and infrastructure</h3><ul>${domains}</ul></section><section class="evidence-card reputation-otx"><div class="evidence-card-heading"><h3>OTX · synchronized locally</h3><small>${escapeHtml(otxMeta)}</small></div><ul>${otxContent}</ul></section></div></section>`);
 }
 
 type GlobeHop = { lat: number; lon: number; ip: string; fromHost: string; byHost: string; city: string; country: string; isp: string; score?: number; reports?: number; role: "sender" | "injection" | "relay" | "recipient" };
@@ -1395,6 +1693,14 @@ function integrateReputation(report: AnalysisReport): void {
     return { title: `From (${domain})`, detail: "VirusTotal domain reputation", result, copyValue: domain };
   }));
   sender?.insertAdjacentHTML("beforeend", `<section class="evidence-card inline-reputation"><h3>Sender domain reputation</h3><ul>${domains}</ul></section>`);
+  const senderOtx = otxSenderMatches(report);
+  if (senderOtx.length) {
+    const matches = senderOtx.map((match) => {
+      const label = match.indicator_type === "domain" ? "Sender domain" : "Sender hostname";
+      return `<li class="otx-context-row"><strong>${escapeHtml(label)} · ${escapeHtml(match.indicator || "unknown indicator")}</strong>${otxInlineEvidence([match])}</li>`;
+    }).join("");
+    sender?.insertAdjacentHTML("beforeend", `<section class="evidence-card inline-reputation inline-otx-card"><h3>Sender · OTX intelligence</h3><p>Local matches from synchronized phishing Pulses.</p><ul>${matches}</ul></section>`);
+  }
   const auth = panel("auth");
   const hops = orderedReceivedHops(report.received_hops).map((hop, index) => {
     const ips = hop.all_ips || (hop.sender_ip ? [hop.sender_ip] : []);
@@ -1403,9 +1709,10 @@ function integrateReputation(report: AnalysisReport): void {
     const details = ips.map((ip) => {
       const reputation = report.hop_reputation?.[ip] || {};
       const geo = report.geolocation_results?.[ip] || {};
+      const otxMatches = otxMatchesForIp(report, ip);
       const location = [geo.city, geo.region, geo.country].filter(Boolean).join(", ") || geo.message || "Geolocation unavailable";
       const copyAction = reputationCheckTone(reputation) === "fail" ? `<button class="copy-evidence" type="button" data-copy-ioc="${escapeHtml(ip)}">Copy IP</button>` : "";
-      return `<div class="hop-ip-detail"><strong>IP ${escapeHtml(ip)}</strong><small>${escapeHtml(location)} · ISP ${escapeHtml(geo.isp || "—")}</small><b>AbuseIPDB · ${escapeHtml(String(reputation.abuseConfidenceScore ?? "—"))}/100 · ${escapeHtml(String(reputation.totalReports ?? 0))} report</b>${copyAction}</div>`;
+      return `<div class="hop-ip-detail"><strong>IP ${escapeHtml(ip)}</strong><small>${escapeHtml(location)} · ISP ${escapeHtml(geo.isp || "—")}</small><b>AbuseIPDB · ${escapeHtml(String(reputation.abuseConfidenceScore ?? "—"))}/100 · ${escapeHtml(String(reputation.totalReports ?? 0))} report</b>${otxInlineEvidence(otxMatches)}${copyAction}</div>`;
     }).join("") || `<p class="hop-empty">No public IP is available for this hop.</p>`;
     return `<details class="hop-card hop-card-${tone}"><summary><span><strong>Hop ${index + 1} · ${escapeHtml(hop.from_host || "unknown source")}</strong><small>${escapeHtml(hop.by_host || "unknown destination")} · ${escapeHtml(hop.received_at || "date unavailable")}</small></span><span class="hop-disclosure" aria-hidden="true"></span></summary><div class="hop-details">${details}${hop.raw ? `<pre>${escapeHtml(hop.raw)}</pre>` : ""}</div></details>`;
   }).join("") || "<p>No hops available.</p>";
@@ -1636,6 +1943,7 @@ function microsoftLogo(): string {
 }
 
 function renderLogin(): void {
+  stopOtxBackgroundSync();
   root.innerHTML = `<section class="shell" aria-labelledby="title"><aside class="brand-panel"><div class="brand"><span class="brand-mark" aria-hidden="true">⌁</span><span>fish<span>stop</span></span></div><div class="hero-copy"><p class="eyebrow">EMAIL DEFENSE DESK</p><h1>Every message<br><em>deserves a check.</em></h1><p class="intro">Quickly identify phishing, scams and Business Email Compromise in email files.</p></div><div class="signal"><span class="signal-dot"></span><span>Private, local protection</span></div><p class="version">FISHSTOP · DESKTOP EDITION</p></aside><section class="login-panel"><div class="login-content"><div class="steps"><span class="active"></span><span></span><span></span></div><p class="kicker">WELCOME</p><h2 id="title">Sign in to FishStop</h2><p class="subtitle">Use your Google or Microsoft account to access your personal analysis workspace.</p><div class="auth-options"><button class="provider google" id="google-login" type="button"><span class="provider-icon" aria-hidden="true">${googleLogo()}</span><span>Continue with Google</span><b aria-hidden="true">→</b></button><button class="provider microsoft" id="microsoft-login" type="button"><span class="provider-icon" aria-hidden="true">${microsoftLogo()}</span><span>Continue with Microsoft</span><b aria-hidden="true">→</b></button></div><p class="privacy">By continuing, you agree to the <a href="#">Terms of Service</a> and <a href="#">Privacy Policy</a>.</p><p class="status" role="status" aria-live="polite"></p></div><footer><span>© 2026 FishStop</span><span>Analyse. Understand. Protect.</span></footer></section></section>`;
   const status = document.querySelector<HTMLParagraphElement>(".status");
   const bindLogin = (buttonId: string, provider: string, command: string): void => {
@@ -1691,11 +1999,60 @@ function currentAnalysis(user: AuthUser): ActiveAnalysis | null {
   return activeAnalysis?.userSub === user.sub ? activeAnalysis : null;
 }
 
-function analysisPageContent(user: AuthUser): string {
-  const active = currentAnalysis(user);
+function mailboxProvider(user: AuthUser): "google" | "microsoft" {
+  return user.provider === "microsoft" ? "microsoft" : "google";
+}
+
+function mailboxProviderName(user: AuthUser): string {
+  return mailboxProvider(user) === "microsoft" ? "Outlook" : "Gmail";
+}
+
+function mailboxIntakeMarkup(user: AuthUser): string {
+  const provider = mailboxProvider(user);
+  const name = mailboxProviderName(user);
+  const logo = provider === "microsoft" ? microsoftLogo() : googleLogo();
+  return `<section class="inbox-intake" id="inbox-intake"><div class="inbox-intake-heading"><div><p class="page-kicker">READ-ONLY MAILBOX</p><h2>Recent ${name} messages</h2><p>Connect the same account used for FishStop. Only the latest 10 messages are listed; the full EML is downloaded only when you analyse one.</p></div><span class="inbox-provider">${logo}<b>${name}</b></span></div><div class="inbox-state" id="inbox-state" aria-live="polite"><span class="inbox-spinner" aria-hidden="true"></span><p>Checking mailbox connection…</p></div></section>`;
+}
+
+function mailboxMessageMarkup(message: MailboxMessage): string {
+  const subject = escapeHtml(message.subject || "No subject");
+  const sender = escapeHtml(message.sender || "Sender unavailable");
+  const snippet = escapeHtml(message.snippet || "No preview available.");
+  return `<article class="inbox-message ${message.is_read ? "" : "unread"}"><div class="inbox-message-copy"><div><strong title="${subject}">${subject}</strong>${message.has_attachments ? '<span class="inbox-attachment" title="Contains attachments">◇</span>' : ""}</div><small title="${sender}">${sender}</small><p>${snippet}</p></div><div class="inbox-message-action"><time datetime="${escapeHtml(message.received_at)}">${escapeHtml(formatAnalysisDate(message.received_at))}</time><button class="primary-action analyse-inbox-message" data-message-id="${escapeHtml(message.id)}" data-message-subject="${subject}" type="button">Analyse</button></div></article>`;
+}
+
+async function refreshMailboxPanel(user: AuthUser): Promise<void> {
+  const panel = document.querySelector<HTMLElement>("#inbox-intake");
+  const state = document.querySelector<HTMLElement>("#inbox-state");
+  if (!panel || !state) return;
+  const provider = mailboxProvider(user);
+  const name = mailboxProviderName(user);
+  try {
+    const status = await invoke<MailboxStatus>("mailbox_status", { userSub: user.sub, provider });
+    if (!panel.isConnected) return;
+    if (!status.connected) {
+      state.className = "inbox-state inbox-connect-state";
+      state.innerHTML = `<div class="inbox-connect-copy"><strong>Connect ${name}</strong><p>Read-only access. FishStop cannot send, delete or move messages.</p></div><button class="primary-action" id="connect-mailbox" type="button">Connect ${name}</button>`;
+      return;
+    }
+    state.className = "inbox-state";
+    state.innerHTML = `<span class="inbox-spinner" aria-hidden="true"></span><p>Loading the latest messages from ${escapeHtml(status.email || user.email)}…</p>`;
+    const messages = await invoke<MailboxMessage[]>("list_recent_mailbox_messages", { userSub: user.sub, provider, limit: 10 });
+    if (!panel.isConnected) return;
+    state.innerHTML = `<div class="inbox-connected-heading"><div><strong>${escapeHtml(status.email || user.email)}</strong><small>Read-only · 10 most recent Inbox messages</small></div><div><button class="soft-action" id="refresh-mailbox" type="button">Refresh</button><button class="inbox-disconnect" id="disconnect-mailbox" type="button">Disconnect</button></div></div><div class="inbox-message-list">${messages.length ? messages.map(mailboxMessageMarkup).join("") : '<p class="inbox-empty">No recent messages were returned by this inbox.</p>'}</div>`;
+  } catch (error) {
+    if (!panel.isConnected) return;
+    state.className = "inbox-state inbox-connect-state";
+    state.innerHTML = `<div class="inbox-connect-copy inbox-error"><strong>Mailbox unavailable</strong><p>${escapeHtml(String(error))}</p></div><button class="soft-action" id="refresh-mailbox" type="button">Try again</button>`;
+  }
+}
+
+function analysisPageContent(user: AuthUser, source: "file" | "inbox" = "file"): string {
+  const current = currentAnalysis(user);
+  const active = current && (current.source || "file") === source ? current : null;
   const isProcessing = active?.status === "processing";
   const hasReport = Boolean(active?.report);
-  const title = escapeHtml(active?.fileName || "Analyse a message");
+  const title = escapeHtml(active?.fileName || (source === "inbox" ? "Analyse from inbox" : "Analyse a message"));
   const status = active?.status === "error"
     ? `Analysis did not complete: ${escapeHtml(active.error || "Unknown error")}`
     : isProcessing
@@ -1708,7 +2065,10 @@ function analysisPageContent(user: AuthUser): string {
     : isProcessing
       ? analysisLoadingMarkup(active!.fileName)
       : "";
-  return `<div class="page-heading analysis-heading"><div><p class="page-kicker">NEW CHECK</p><h1 id="analysis-title">${title}</h1><p>The file stays on your device and is processed locally.</p></div><button class="change-analysis" id="change-eml" type="button" ${hasReport || active?.status === "error" ? "" : "hidden"}>Change email</button></div><section class="eml-intake" id="eml-intake" ${isProcessing || hasReport ? "hidden" : ""}><button class="drop-zone" id="eml-drop" type="button"><span class="drop-icon">↥</span><strong>Drop an .eml file here</strong><span>or select it from your computer · max 10 MB</span></button><input id="eml-input" type="file" accept=".eml,message/rfc822" hidden /><p class="upload-status" id="upload-status">${status}</p></section>${isProcessing || hasReport ? `<p class="upload-status" id="upload-status">${status}</p>` : ""}<div id="analysis-result">${result}</div>`;
+  const intake = source === "file"
+    ? `<section class="eml-intake" id="eml-intake" ${isProcessing || hasReport ? "hidden" : ""}><button class="drop-zone" id="eml-drop" type="button"><span class="drop-icon">↥</span><strong>Drop an .eml file here</strong><span>or select it from your computer · max 40 MB</span></button><input id="eml-input" type="file" accept=".eml,message/rfc822" hidden /><p class="upload-status" id="upload-status">${status}</p></section>`
+    : `${!isProcessing && !hasReport ? mailboxIntakeMarkup(user) : ""}<p class="upload-status" id="upload-status">${isProcessing || hasReport ? status : ""}</p>`;
+  return `<div class="page-heading analysis-heading"><div><p class="page-kicker">NEW CHECK</p><h1 id="analysis-title">${title}</h1><p>${source === "inbox" ? "Choose a recent message and inspect it with the local FishStop pipeline." : "The file stays on your device and is processed locally."}</p></div><button class="change-analysis" id="change-eml" type="button" ${hasReport || active?.status === "error" ? "" : "hidden"}>${source === "inbox" ? "Back to inbox" : "Change email"}</button></div>${intake}${source === "file" && (isProcessing || hasReport) ? `<p class="upload-status" id="upload-status">${status}</p>` : ""}<div id="analysis-result">${result}</div>`;
 }
 
 function contentFor(section: Section, user: AuthUser): string {
@@ -1733,13 +2093,14 @@ function contentFor(section: Section, user: AuthUser): string {
     ? reasonCounts.slice(0, 6).map(({ label, count }) => `<li><span>${escapeHtml(label)} <b>${count}</b></span><i><em style="width:${(count / reasonCounts[0].count) * 100}%"></em></i></li>`).join("")
     : `<li class="statistics-empty">No risk reasons were recorded in this period.</li>`;
   if (section === "analyse") return analysisPageContent(user);
+  if (section === "inbox") return analysisPageContent(user, "inbox");
   if (section === "history") return `<div class="page-heading"><div><p class="page-kicker">PERSONAL WORKSPACE</p><h1>Analysis history</h1><p>Analyses are stored only for this account, on this device.</p></div><div class="history-actions"><span class="period">${history.length} ANALYSES</span>${history.length ? `<button id="clear-history" type="button">Clear history</button>` : ""}</div></div>${history.length ? `<section class="history-list">${history.map((record) => { const high = verdictFlags(record.report).filter((flag) => flag.level === "HIGH").length; return `<button class="history-item" data-open-history="${record.id}" type="button"><span class="history-risk ${high ? "high" : "clear"}">${high ? `${high} HIGH` : "OK"}</span><span><strong>${escapeHtml(record.report.subject || "No subject")}</strong><small>${escapeHtml(record.report.from_ || "Sender unavailable")} · ${formatAnalysisDate(record.analyzedAt)}</small></span><b>Open →</b></button>`; }).join("")}</section>` : `<section class="empty-state"><span class="empty-icon">⌁</span><h2>No analyses yet.</h2><p>Your first EML analysis will appear here.</p><button class="soft-action" data-go="analyse" type="button">Analyse an email <span>→</span></button></section>`}`;
   if (section === "statistics") return `<div class="page-heading statistics-heading"><div><p class="page-kicker">RISK OVERVIEW</p><h1>Statistics</h1><p>Signals, investigation activity and performance for this account.</p></div><div class="statistics-filter"><span>Period</span><div class="statistics-period-menu"><button class="statistics-period-trigger" id="statistics-period-trigger" type="button" aria-haspopup="listbox" aria-controls="statistics-period-options" aria-expanded="false">${periodLabels[selectedPeriod]}<i aria-hidden="true"></i></button><div class="statistics-period-options" id="statistics-period-options" role="listbox" aria-label="Statistics period" hidden>${periodChoices}</div></div></div></div><section class="metrics stats-metrics"><article><span>Emails analysed</span><strong>${filteredHistory.length}</strong><small>${periodLabels[selectedPeriod]}</small></article><article><span>Average analysis time</span><strong>${formatDuration(averageDuration)}</strong><small>${timedAnalyses.length ? `Based on ${timedAnalyses.length} completed analyses` : "Available after new analyses"}</small></article><article><span>Indicators copied</span><strong>${filteredCopyEvents.length}</strong><small>Copied individually from the Indicators section</small></article></section><section class="stats-layout"><article class="risk-breakdown"><div><p class="page-kicker">DISTRIBUTION</p><h2>Analysis outcomes</h2></div><div class="risk-bars"><div><span>High risk <b>${highRiskCount}</b></span><i><em class="high" style="width:${filteredHistory.length ? (highRiskCount / filteredHistory.length) * 100 : 0}%"></em></i></div><div><span>To review <b>${mediumRiskCount}</b></span><i><em class="medium" style="width:${filteredHistory.length ? (mediumRiskCount / filteredHistory.length) * 100 : 0}%"></em></i></div><div><span>Likely legitimate <b>${clearCount}</b></span><i><em class="clear" style="width:${filteredHistory.length ? (clearCount / filteredHistory.length) * 100 : 0}%"></em></i></div></div></article><article class="activity-card"><div><p class="page-kicker">ACTIVITY</p><h2>Last 7 days</h2></div><div class="activity-chart">${activity.map((item) => `<div><i style="height:${Math.max(5, (item.count / maxActivity) * 100)}%" title="${item.count} analyses"></i><span>${item.label}</span></div>`).join("")}</div></article></section><section class="risk-reasons"><div><p class="page-kicker">RISK PATTERNS</p><h2>Top risk reasons</h2><p>Signals that appeared most often in the selected period.</p></div><ol>${reasonItems}</ol></section>`;
   if (section === "settings") {
     const keys = reputationKeys(user);
-    const reputationReady = Boolean(keys.virustotal || keys.abuseipdb);
-    const keyRow = (name: string, value: string) => `<li class="credential-${value ? "ready" : "missing"}"><i>${value ? "✓" : "—"}</i><div><strong>${name}</strong><small>${value ? `Stored locally · ${escapeHtml(maskedSecret(value))}` : "Key not configured"}</small></div><b>${value ? "Ready" : "Required"}</b></li>`;
-    return `<div class="page-heading"><div><p class="page-kicker">LOCAL CONFIGURATION</p><h1>Settings</h1><p>External intelligence and local analysis runtime.</p></div></div><div class="settings-grid"><section class="settings-card settings-reputation"><p class="page-kicker">EXTERNAL INTELLIGENCE</p><h2>Reputation</h2><p class="settings-note">Only technical indicators are sent to external services — never the EML file or email body.</p><ul class="credential-list">${keyRow("VirusTotal API key", keys.virustotal)}${keyRow("AbuseIPDB API key", keys.abuseipdb)}</ul><button class="soft-action edit-credentials" id="edit-reputation-keys" type="button">${reputationReady ? "Edit keys" : "Configure keys"}</button><form id="reputation-settings" ${reputationReady ? "hidden" : ""}><label>VirusTotal API key<input name="virustotal" type="password" autocomplete="new-password" placeholder="${keys.virustotal ? "Leave empty to keep the current key" : "Enter the VirusTotal token"}" /></label><label>AbuseIPDB API key<input name="abuseipdb" type="password" autocomplete="new-password" placeholder="${keys.abuseipdb ? "Leave empty to keep the current key" : "Enter the AbuseIPDB token"}" /></label><div><button class="primary-action" type="submit">Save changes</button>${reputationReady ? `<button class="cancel-credentials" id="cancel-reputation-edit" type="button">Cancel</button>` : ""}<span id="settings-status" aria-live="polite"></span></div></form></section><section class="settings-card ollama-lab"><p class="page-kicker">LOCAL AI ENVIRONMENT</p><h2>Machine and automatic model</h2><p class="settings-note">FishStop selects one approved quantized Qwen model automatically. Manual model selection is disabled.</p><div class="machine-profile" id="machine-profile" aria-live="polite"><p>Reading machine information…</p></div></section><section class="settings-card model-provenance model-provenance-card" aria-live="polite"><div><p class="page-kicker">CONTEXTUAL TEXT ANALYSIS</p><h2>Hugging Face model</h2></div><p id="bert-model-provenance">Loading model provenance…</p></section></div>`;
+    const reputationReady = Boolean(keys.virustotal || keys.abuseipdb || keys.otx);
+    const keyRow = (provider: "virustotal" | "abuseipdb" | "otx", name: string, value: string) => `<li class="${value ? "ready" : "missing"}" data-reputation-provider="${provider}"><i aria-hidden="true">${value ? "✓" : "—"}</i><div class="credential-static-copy"><strong>${name}</strong><small>${value ? `Stored locally · ${escapeHtml(maskedSecret(value))}` : "Key not configured"}</small></div><label class="credential-inline-field"><span>${name}</span><input form="reputation-settings" name="${provider}" type="password" autocomplete="new-password" aria-label="${name}" placeholder="${value ? "Enter a new key or leave unchanged" : `Enter the ${provider === "otx" ? "OTX" : provider === "virustotal" ? "VirusTotal" : "AbuseIPDB"} token`}" /></label><b>${value ? "Ready" : "Required"}</b></li>`;
+    return `<div class="page-heading"><div><p class="page-kicker">LOCAL CONFIGURATION</p><h1>Settings</h1><p>External intelligence and local analysis runtime.</p></div></div><div class="settings-grid"><section class="settings-card settings-reputation"><p class="page-kicker">EXTERNAL INTELLIGENCE</p><h2>Reputation</h2><p class="settings-note">VirusTotal and AbuseIPDB receive technical indicators only — never the EML or body. OTX incrementally synchronizes subscribed Pulses and public phishing Pulses from the last 365 days into an indexed local database, with a 20-minute refresh budget and a 300 MB hard ceiling. The refresh starts automatically after sign-in when needed and is checked every 24 hours while FishStop is open; email matching stays entirely local.</p><ul class="credential-list">${keyRow("virustotal", "VirusTotal API key", keys.virustotal)}${keyRow("abuseipdb", "AbuseIPDB API key", keys.abuseipdb)}${keyRow("otx", "AlienVault OTX API key", keys.otx)}</ul><button class="soft-action edit-credentials" id="edit-reputation-keys" type="button">${reputationReady ? "Edit keys" : "Configure keys"}</button><form id="reputation-settings" ${reputationReady ? "hidden" : ""}><label>VirusTotal API key<input name="virustotal" type="password" autocomplete="new-password" placeholder="${keys.virustotal ? "Leave empty to keep the current key" : "Enter the VirusTotal token"}" /></label><label>AbuseIPDB API key<input name="abuseipdb" type="password" autocomplete="new-password" placeholder="${keys.abuseipdb ? "Leave empty to keep the current key" : "Enter the AbuseIPDB token"}" /></label><label>AlienVault OTX API key <small>Required</small><input name="otx" type="password" autocomplete="new-password" placeholder="${keys.otx ? "Leave empty to keep the current key" : "Enter the OTX token"}" /></label><div><button class="primary-action" type="submit">Save changes</button>${reputationReady ? `<button class="cancel-credentials" id="cancel-reputation-edit" type="button">Cancel</button>` : ""}<span id="settings-status" aria-live="polite"></span></div></form><section class="otx-sync-panel" data-status="checking" aria-live="polite"><span class="otx-sync-mark" aria-hidden="true"></span><div><strong>OTX Pulse database</strong><small id="otx-sync-status">Checking the local database…</small></div><div class="otx-database-actions"><button class="soft-action" id="sync-otx-intelligence" type="button" disabled>Checking…</button><button class="danger-action" id="clear-otx-intelligence" type="button" disabled>Delete database</button></div><div class="otx-download-progress" id="otx-sync-progress" hidden><div><span id="otx-sync-progress-label">Preparing the local database…</span><strong id="otx-sync-progress-value">0%</strong></div><div class="otx-download-track" id="otx-sync-progress-track" role="progressbar" aria-label="OTX Pulse synchronization progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i id="otx-sync-progress-fill"></i></div></div></section></section><section class="settings-card ollama-lab"><p class="page-kicker">LOCAL AI ENVIRONMENT</p><h2>Machine and automatic model</h2><p class="settings-note">FishStop selects one approved quantized Qwen model automatically. Manual model selection is disabled.</p><div class="machine-profile" id="machine-profile" aria-live="polite"><p>Reading machine information…</p></div></section><section class="settings-card model-provenance model-provenance-card" aria-live="polite"><div><p class="page-kicker">CONTEXTUAL TEXT ANALYSIS</p><h2>Hugging Face model</h2></div><p id="bert-model-provenance">Loading model provenance…</p></section></div>`;
   }
   const dashboardHighRiskCount = history.filter((record) => assessment(record.report).tone === "danger").length;
   const dashboardReviewCount = history.filter((record) => assessment(record.report).tone === "review").length;
@@ -1770,15 +2131,16 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       if (storedUser()?.sub === user.sub) renderDashboard(user, section);
     });
   }
-  const labels: Record<Section, string> = { dashboard: "Dashboard", analyse: "Analyse", history: "History", statistics: "Statistics", settings: "Settings" };
-  const icons: Record<Section, string> = { dashboard: "⌂", analyse: searchIconMarkup(), history: "◴", statistics: "◔", settings: "⚙" };
+  const labels: Record<Section, string> = { dashboard: "Dashboard", analyse: "Analyse", inbox: "Analyse from inbox", history: "History", statistics: "Statistics", settings: "Settings" };
+  const icons: Record<Section, string> = { dashboard: "⌂", analyse: searchIconMarkup(), inbox: "✉", history: "◴", statistics: "◔", settings: "⚙" };
   const initial = escapeHtml((user.name || user.email).trim().charAt(0).toUpperCase());
   const safeName = escapeHtml(user.name || (user.provider === "microsoft" ? "Microsoft account" : "Google account"));
   const safeEmail = escapeHtml(user.email);
   const safePicture = user.picture ? escapeHtml(user.picture) : "";
   root.innerHTML = `<div class="app-shell ${section === "dashboard" ? "dashboard-shell" : ""}"><aside class="sidebar"><div class="sidebar-brand"><span class="brand-mark">⌁</span><span>fish<span>stop</span></span></div><nav aria-label="Primary navigation">${(Object.keys(labels) as Section[]).map((key) => `<button class="nav-item ${section === key ? "selected" : ""}" data-section="${key}" type="button"><span>${icons[key]}</span>${labels[key]}</button>`).join("")}</nav><div class="sidebar-bottom"><div class="account"><span class="avatar">${safePicture ? `<img src="${safePicture}" alt="" />` : initial}</span><div><strong>${safeName}</strong><small>${safeEmail}</small></div></div><button class="logout" id="logout" type="button">Sign out <span>↗</span></button></div></aside><main class="workspace"><header class="topbar"><div class="crumb"><span>FishStop</span><b>/</b><strong>${labels[section]}</strong></div><div class="top-status top-status-checking" data-protection-status role="status" aria-live="polite"><i aria-hidden="true"></i><span>Checking protection…</span></div></header><section class="content ${section === "dashboard" ? "dashboard-content" : ""}">${contentFor(section, user)}</section></main></div>`;
   const active = currentAnalysis(user);
-  if (section === "analyse" && active?.status === "complete" && active.report) {
+  const activeSource = active?.source || "file";
+  if (((section === "analyse" && activeSource === "file") || (section === "inbox" && activeSource === "inbox")) && active?.status === "complete" && active.report) {
     const result = document.querySelector<HTMLDivElement>("#analysis-result");
     if (result) {
       bindReportInteractions(user, active.report);
@@ -1801,6 +2163,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
     .finally(() => {
       void refreshProtectionStatus(user);
       void refreshReputationSettings(user);
+      ensureOtxBackgroundSync(user);
     });
   if (section === "history") document.querySelectorAll<HTMLElement>(".history-item").forEach((item) => {
     const record = readAnalysisHistory(user).find((entry) => entry.id === item.dataset.openHistory);
@@ -1864,6 +2227,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
     activeAnalysis = {
       userSub: user.sub,
       fileName: record.report.subject || "Saved analysis",
+      source: "file",
       status: "complete",
       report: record.report,
       recordId: record.id,
@@ -1888,28 +2252,86 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       renderDashboard(user, "history");
     }).catch(() => { /* Keep existing history visible when secure deletion fails. */ });
   });
-  document.querySelector<HTMLButtonElement>("#logout")?.addEventListener("click", () => { activeAnalysis = null; localStorage.removeItem(USER_STORAGE_KEY); renderLogin(); });
+  document.querySelector<HTMLButtonElement>("#logout")?.addEventListener("click", () => { activeAnalysis = null; stopOtxBackgroundSync(); localStorage.removeItem(USER_STORAGE_KEY); renderLogin(); });
+  const inlineCredentialForm = document.querySelector<HTMLFormElement>("#reputation-settings");
+  if (inlineCredentialForm) {
+    inlineCredentialForm.removeAttribute("hidden");
+    inlineCredentialForm.querySelectorAll(":scope > label").forEach((label) => label.remove());
+    const actions = inlineCredentialForm.querySelector<HTMLElement>(":scope > div");
+    actions?.classList.add("credential-edit-actions");
+    if (actions && !actions.querySelector("#cancel-reputation-edit")) {
+      actions.querySelector<HTMLButtonElement>('button[type="submit"]')?.insertAdjacentHTML("afterend", '<button class="cancel-credentials" id="cancel-reputation-edit" type="button">Cancel</button>');
+    }
+  }
+  document.querySelector<HTMLButtonElement>("#edit-reputation-keys")?.setAttribute("aria-expanded", "false");
   document.querySelector<HTMLButtonElement>("#edit-reputation-keys")?.addEventListener("click", () => {
-    document.querySelector<HTMLFormElement>("#reputation-settings")?.removeAttribute("hidden");
-    document.querySelector<HTMLInputElement>('#reputation-settings input')?.focus();
+    document.querySelector<HTMLFormElement>("#reputation-settings")?.classList.add("is-editing");
+    document.querySelector<HTMLElement>(".settings-reputation")?.classList.add("is-editing-credentials");
+    document.querySelector<HTMLButtonElement>("#edit-reputation-keys")?.setAttribute("aria-expanded", "true");
+    const status = document.querySelector<HTMLElement>("#settings-status");
+    if (status) status.textContent = "";
+    document.querySelector<HTMLInputElement>('.credential-inline-field input')?.focus();
   });
   document.querySelector<HTMLButtonElement>("#cancel-reputation-edit")?.addEventListener("click", () => {
-    document.querySelector<HTMLFormElement>("#reputation-settings")?.setAttribute("hidden", "");
+    const form = document.querySelector<HTMLFormElement>("#reputation-settings");
+    form?.classList.remove("is-editing");
+    document.querySelector<HTMLElement>(".settings-reputation")?.classList.remove("is-editing-credentials");
+    form?.reset();
+    document.querySelector<HTMLButtonElement>("#edit-reputation-keys")?.setAttribute("aria-expanded", "false");
+    const status = document.querySelector<HTMLElement>("#settings-status");
+    if (status) status.textContent = "";
   });
   document.querySelector<HTMLFormElement>("#reputation-settings")?.addEventListener("submit", (event) => {
     event.preventDefault();
     const formElement = event.currentTarget as HTMLFormElement;
-    const form = new FormData(formElement);
-    const virustotal = String(form.get("virustotal") || "").trim();
-    const abuseipdb = String(form.get("abuseipdb") || "").trim();
+    const inlineValue = (provider: "virustotal" | "abuseipdb" | "otx") => String(document.querySelector<HTMLInputElement>(`.credential-inline-field input[name="${provider}"]`)?.value || "").trim();
+    const virustotal = inlineValue("virustotal");
+    const abuseipdb = inlineValue("abuseipdb");
+    const otx = inlineValue("otx");
     const status = document.querySelector<HTMLElement>("#settings-status");
     if (status) status.textContent = "Saving in the system keychain…";
-    void invoke("save_reputation_keys", { userSub: user.sub, virustotal, abuseipdb }).then(async () => {
+    void invoke("save_reputation_keys", { userSub: user.sub, virustotal, abuseipdb, otx }).then(async () => {
       if (status) status.textContent = "Credentials saved securely.";
       formElement.reset();
+      formElement.classList.remove("is-editing");
+      document.querySelector<HTMLElement>(".settings-reputation")?.classList.remove("is-editing-credentials");
+      document.querySelector<HTMLButtonElement>("#edit-reputation-keys")?.setAttribute("aria-expanded", "false");
       await refreshReputationSettings(user);
       void refreshProtectionStatus(user, true);
+      if (otx) {
+        otxAutoSyncAttempted.add(user.sub);
+        await runOtxSync(user, true);
+      } else {
+        await refreshOtxStatus(user);
+      }
     }).catch((error) => { if (status) status.textContent = `Could not save credentials: ${String(error)}`; });
+  });
+  document.querySelector<HTMLButtonElement>("#sync-otx-intelligence")?.addEventListener("click", () => {
+    otxAutoSyncAttempted.add(user.sub);
+    void runOtxSync(user, true);
+  });
+  document.querySelector<HTMLButtonElement>("#clear-otx-intelligence")?.addEventListener("click", () => {
+    if (otxMaintenanceInProgress.has(user.sub)) return;
+    if (!window.confirm("Delete the local OTX Pulse database? The API key and saved email analyses will not be removed.")) return;
+    otxMaintenanceInProgress.add(user.sub);
+    const detail = document.querySelector<HTMLElement>("#otx-sync-status");
+    const deleteButton = document.querySelector<HTMLButtonElement>("#clear-otx-intelligence");
+    const syncButton = document.querySelector<HTMLButtonElement>("#sync-otx-intelligence");
+    if (detail) detail.textContent = "Deleting the local OTX database…";
+    if (deleteButton) deleteButton.disabled = true;
+    if (syncButton) syncButton.disabled = true;
+    void invoke<OtxCacheStatus>("clear_otx_intelligence", { userSub: user.sub })
+      .then((result) => {
+        otxMaintenanceInProgress.delete(user.sub);
+        if (storedUser()?.sub === user.sub) renderOtxStatus(result);
+      })
+      .catch((error) => {
+        otxMaintenanceInProgress.delete(user.sub);
+        if (storedUser()?.sub !== user.sub) return;
+        if (detail) detail.textContent = `Could not delete the OTX database: ${String(error)}`;
+        if (deleteButton) deleteButton.disabled = false;
+        if (syncButton) syncButton.disabled = false;
+      });
   });
   const ollamaLab = document.querySelector<HTMLElement>(".ollama-lab");
   const machineProfile = document.querySelector<HTMLElement>("#machine-profile");
@@ -2041,6 +2463,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
   const dropZone = document.querySelector<HTMLButtonElement>("#eml-drop"); const uploadStatus = document.querySelector<HTMLParagraphElement>("#upload-status");
   const emlInput = document.querySelector<HTMLInputElement>("#eml-input");
   const intake = document.querySelector<HTMLElement>("#eml-intake"); const changeEmail = document.querySelector<HTMLButtonElement>("#change-eml");
+  const inboxIntake = document.querySelector<HTMLElement>("#inbox-intake");
   let analysisRun = 0;
   let lastDropAt = 0;
   const acceptsDrop = () => {
@@ -2052,12 +2475,12 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
   const displayAnalysis = async (fileName: string, request: () => Promise<AnalysisReport>) => {
     if (!uploadStatus) return;
     const run = ++analysisRun;
-    const session: ActiveAnalysis = { userSub: user.sub, fileName, status: "processing" };
+    const session: ActiveAnalysis = { userSub: user.sub, fileName, source: section === "inbox" ? "inbox" : "file", status: "processing" };
     activeAnalysis = session;
     const startedAt = performance.now();
     const title = document.querySelector<HTMLHeadingElement>("#analysis-title");
     if (title) title.textContent = fileName;
-    if (intake) intake.hidden = true; if (changeEmail) changeEmail.hidden = false;
+    if (intake) intake.hidden = true; if (inboxIntake) inboxIntake.hidden = true; if (changeEmail) changeEmail.hidden = false;
     const result = document.querySelector<HTMLDivElement>("#analysis-result");
     if (result) result.innerHTML = analysisLoadingMarkup(fileName);
     uploadStatus.textContent = `Local analysis of ${fileName} in progress…`;
@@ -2093,8 +2516,8 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       }
       session.status = "complete";
       const activeSection = document.querySelector<HTMLButtonElement>("[data-section].selected")?.dataset.section;
-      if (activeAnalysis === session && activeSection === "analyse") renderDashboard(user, "analyse");
-    } catch (error) { if (run === analysisRun && activeAnalysis === session) { session.status = "error"; session.error = String(error); if (intake) intake.hidden = false; if (changeEmail) changeEmail.hidden = true; uploadStatus.textContent = `Analysis did not complete: ${String(error)}`; if (result) result.innerHTML = ""; } }
+      if (activeAnalysis === session && (activeSection === "analyse" || activeSection === "inbox")) renderDashboard(user, activeSection);
+    } catch (error) { if (run === analysisRun && activeAnalysis === session) { session.status = "error"; session.error = String(error); if (intake) intake.hidden = false; if (inboxIntake) inboxIntake.hidden = false; if (changeEmail) changeEmail.hidden = true; uploadStatus.textContent = `Analysis did not complete: ${String(error)}`; if (result) result.innerHTML = ""; } }
     finally { if (run === analysisRun) dropZone?.removeAttribute("disabled"); }
   };
   const displayFile = (path?: string) => {
@@ -2118,8 +2541,57 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       else if (uploadStatus) uploadStatus.textContent = `Could not open the file selector: ${String(error)}`;
     }
   };
+  inboxIntake?.addEventListener("click", async (event) => {
+    const button = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("button") : null;
+    if (!button || button.disabled) return;
+    const provider = mailboxProvider(user);
+    if (button.id === "connect-mailbox") {
+      button.disabled = true;
+      button.textContent = `Connecting ${mailboxProviderName(user)}…`;
+      try {
+        await invoke("connect_mailbox", { userSub: user.sub, provider });
+        await refreshMailboxPanel(user);
+      } catch (error) {
+        const state = document.querySelector<HTMLElement>("#inbox-state");
+        if (state) {
+          state.className = "inbox-state inbox-connect-state";
+          state.innerHTML = `<div class="inbox-connect-copy inbox-error"><strong>Connection failed</strong><p>${escapeHtml(String(error))}</p></div><button class="primary-action" id="connect-mailbox" type="button">Try again</button>`;
+        }
+      }
+      return;
+    }
+    if (button.id === "refresh-mailbox") {
+      button.disabled = true;
+      await refreshMailboxPanel(user);
+      return;
+    }
+    if (button.id === "disconnect-mailbox") {
+      button.disabled = true;
+      try {
+        await invoke("disconnect_mailbox", { userSub: user.sub });
+        await refreshMailboxPanel(user);
+      } catch (error) {
+        const state = document.querySelector<HTMLElement>("#inbox-state");
+        if (state) state.insertAdjacentHTML("afterbegin", `<p class="inbox-inline-error">${escapeHtml(String(error))}</p>`);
+      }
+      return;
+    }
+    if (button.classList.contains("analyse-inbox-message")) {
+      const messageId = button.dataset.messageId;
+      if (!messageId) return;
+      document.querySelectorAll<HTMLButtonElement>(".analyse-inbox-message").forEach((action) => { action.disabled = true; });
+      const subject = button.dataset.messageSubject || "Inbox message";
+      void displayAnalysis(subject, () => invoke<AnalysisReport>("analyze_mailbox_message", { userSub: user.sub, provider, messageId }));
+    }
+  });
+  if (inboxIntake) void refreshMailboxPanel(user);
   dropZone?.addEventListener("click", () => { void chooseEml(); });
-  document.querySelector<HTMLButtonElement>("#change-eml")?.addEventListener("click", () => { void chooseEml(); });
+  document.querySelector<HTMLButtonElement>("#change-eml")?.addEventListener("click", () => {
+    if (section === "inbox") {
+      activeAnalysis = null;
+      renderDashboard(user, "inbox");
+    } else void chooseEml();
+  });
   emlInput?.addEventListener("change", () => {
     void displayBrowserFile(emlInput.files?.[0]);
     emlInput.value = "";

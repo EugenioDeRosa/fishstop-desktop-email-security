@@ -17,6 +17,11 @@ if str(ENGINE_ROOT) not in sys.path:
 
 from fishstop_engine.analysis_limits import EmailAnalysisLimitError, MAX_EML_BYTES
 from fishstop_engine.analyzer import EmlSOCAnalyzer
+from fishstop_engine.otx_intelligence import (
+    apply_local_otx_intelligence,
+    otx_cache_status,
+    sync_subscribed_pulses,
+)
 from fishstop_engine.parser import _sanitize_eml_bytes
 from fishstop_engine.reputation import enrich as enrich_reputation
 
@@ -159,6 +164,7 @@ def analyze(path_value: str) -> dict[str, Any]:
         os.getenv("VIRUSTOTAL_API_KEY", ""),
         os.getenv("ABUSEIPDB_API_KEY", ""),
     )
+    apply_local_otx_intelligence(report)
     return _json_safe(report)
 
 
@@ -261,6 +267,20 @@ def health_check(component: str | None = None) -> None:
     _write_json({"ok": True, "component": component or "engine"})
 
 
+def sync_otx_database(path: str) -> dict[str, Any]:
+    def progress(payload: dict) -> None:
+        encoded = _json_bytes({"type": "otx-progress", **payload}) + b"\n"
+        stream = getattr(sys.stderr, "buffer", None)
+        if stream is not None:
+            stream.write(encoded)
+            stream.flush()
+        else:
+            sys.stderr.write(encoded.decode("utf-8"))
+            sys.stderr.flush()
+
+    return sync_subscribed_pulses(path, progress=progress)
+
+
 def main() -> None:
     if len(sys.argv) in (2, 3) and sys.argv[1] == "--health":
         health_check(sys.argv[2] if len(sys.argv) == 3 else None)
@@ -273,7 +293,9 @@ def main() -> None:
     elif len(sys.argv) == 3:
         command, value = sys.argv[1], sys.argv[2]
     else:
-        raise SystemExit("Usage: main.py [static|identity|phi4|content-summary|summary] <file>")
+        raise SystemExit(
+            "Usage: main.py [static|identity|phi4|content-summary|summary|otx-sync|otx-status] <file>"
+        )
     try:
         result = {
             "static": analyze,
@@ -281,6 +303,8 @@ def main() -> None:
             "phi4": analyze_phi4,
             "content-summary": analyze_content_summary,
             "summary": analyze_summary,
+            "otx-sync": sync_otx_database,
+            "otx-status": otx_cache_status,
         }.get(command)
         if result is None:
             raise ValueError(f"Comando sconosciuto: {command}")

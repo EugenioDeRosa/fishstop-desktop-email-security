@@ -105,6 +105,57 @@ class BalancedPipelineTests(unittest.TestCase):
         self.assertEqual(result["performance"]["llm_calls"], 1)
         self.assertEqual(result["analysis"]["final_verdict"], "legitimate")
 
+    def test_authenticated_brand_link_prevents_model_only_security_deception(self):
+        evidence = "Manage the applications connected to your account."
+        soc = {
+            "from_": "Brand Security <notice@brand.com>",
+            "from_registered_domain": "brand.com",
+            "subject": "New application connected",
+            "body_for_ai": evidence,
+            "links": [{
+                "url": "https://brand-service.net/security",
+                "host": "brand-service.net",
+                "display_text": "Manage applications",
+                "scheme": "https",
+                "role": "body_action",
+                "actionable": True,
+            }],
+            "attachments": [],
+            "effective_auth_results": {
+                "SPF": {"status": "pass"},
+                "DKIM": {"status": "pass"},
+                "DMARC": {"status": "pass", "identity": "brand.com"},
+            },
+            "identity_analysis": {
+                "coherence": [{
+                    "status": "aligned",
+                    "official_domain": "brand.com",
+                    "official_domains": ["brand.com"],
+                    "associated_domains": [],
+                    "trusted_action_domains": ["brand-service.net"],
+                }],
+            },
+        }
+        semantic = _primary(
+            summary="The email reports an account event and links to account settings.",
+            action="change_settings",
+            channel="link",
+            evidence=evidence,
+            signals=["impersonation"],
+            signal_evidence="Brand Security",
+            security_alert=True,
+            requested_external_action=True,
+            identity_deception=True,
+            security_lure_evidence=evidence,
+        )
+
+        analysis = llm.apply_email_risk_policy(soc, semantic)
+
+        self.assertEqual("benign", analysis["content_risk"])
+        self.assertEqual("verified", analysis["identity_risk"])
+        self.assertEqual("clean", analysis["technical_risk"])
+        self.assertEqual("legitimate", analysis["final_verdict"])
+
     def test_grounded_payment_diversion_skips_redundant_audit(self):
         body = "Please transfer EUR 500 to the new IBAN IT60X0542811101000000123456."
         result, calls = self._analyze(

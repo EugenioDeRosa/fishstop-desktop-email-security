@@ -2,10 +2,14 @@ beautifulsoup4>=4.12.0
 lxml>=5.0.0
 pypdf>=6.14.0
 requests>=2.31.0
-numpy>=1.24.0
-torch>=2.0.0
-transformers>=4.36.0,<4.58.0
-huggingface-hub>=0.24.0
-onnxruntime>=1.20.0
-optimum-onnx[onnxruntime]>=0.1.0
+# macOS Intel has no PyTorch wheels newer than 2.2.2. Keep the ONNX export
+# toolchain on mutually compatible versions so fresh CI runners do not pair
+# that wheel with the incompatible NumPy 2 ABI or Optimum 2 split packages.
+numpy==1.26.4
+torch==2.2.2
+transformers==4.53.3
+huggingface-hub==0.36.2
+onnxruntime==1.23.2
+onnx==1.19.0
+optimum==1.27.0
 publicsuffix2>=2.20191221

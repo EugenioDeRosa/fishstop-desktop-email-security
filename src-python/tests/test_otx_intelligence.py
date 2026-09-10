@@ -6,7 +6,10 @@ from unittest.mock import patch
 
 import requests
 
-from fishstop_engine.analyzer.llm_context_analyzer import _technical_context_lines
+from fishstop_engine.analyzer.llm_context_analyzer import (
+    _technical_context_lines,
+    _technical_risk,
+)
 from fishstop_engine.otx_intelligence import (
     _active_indicator,
     _database_connection,
@@ -20,7 +23,7 @@ from fishstop_engine.otx_intelligence import (
 
 
 PULSE = {
-    "id": "pulse-1",
+    "id": "0123456789abcdef01234567",
     "name": "Credential phishing infrastructure",
     "author": "researcher",
     "modified": "2026-09-08T10:00:00Z",
@@ -62,7 +65,7 @@ class LocalOtxIntelligenceTests(unittest.TestCase):
     def test_invalid_indicator_expiration_does_not_break_synchronization(self):
         self.assertTrue(_active_indicator({"expiration": "not-a-timestamp"}))
 
-    def test_exact_url_match_is_medium_supporting_evidence(self):
+    def test_exact_url_match_is_high_risk_evidence(self):
         directory, path = self._cache({
             "url:https://malicious.example/login": [PULSE],
         })
@@ -80,9 +83,14 @@ class LocalOtxIntelligenceTests(unittest.TestCase):
 
         self.assertEqual("match", report["otx_intelligence"]["status"])
         self.assertEqual("strong", report["otx_intelligence"]["matches"][0]["confidence"])
-        self.assertEqual("MEDIUM", report["flags"][-1]["level"])
+        self.assertEqual(
+            "https://otx.alienvault.com/pulse/0123456789abcdef01234567",
+            report["otx_intelligence"]["matches"][0]["pulses"][0]["url"],
+        )
+        self.assertEqual("HIGH", report["flags"][-1]["level"])
+        self.assertEqual("malicious", _technical_risk(report)[0])
 
-    def test_domain_match_is_informational_supporting_context(self):
+    def test_domain_match_is_high_risk_evidence(self):
         directory, path = self._cache({
             "domain:malicious.com": [PULSE],
         })
@@ -98,8 +106,9 @@ class LocalOtxIntelligenceTests(unittest.TestCase):
 
         apply_local_otx_intelligence(report, path)
 
-        self.assertEqual("supporting", report["otx_intelligence"]["matches"][0]["confidence"])
-        self.assertEqual("INFO", report["flags"][-1]["level"])
+        self.assertEqual("strong", report["otx_intelligence"]["matches"][0]["confidence"])
+        self.assertEqual("HIGH", report["flags"][-1]["level"])
+        self.assertEqual("malicious", _technical_risk(report)[0])
 
     def test_no_match_is_neutral_and_does_not_add_a_flag(self):
         directory, path = self._cache({

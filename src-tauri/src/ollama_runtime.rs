@@ -12,7 +12,7 @@ use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use tauri::{path::BaseDirectory, AppHandle, Emitter, Manager};
 
-pub const MANAGED_MODEL: &str = "qwen3:4b-q4_K_M";
+pub const MANAGED_MODEL: &str = "qwen3:4b-instruct-2507-q4_K_M";
 const MANAGED_HOST: &str = "127.0.0.1:11435";
 const MANAGED_ENDPOINT: &str = "http://127.0.0.1:11435";
 const TARGET_TRIPLE: &str = env!("TAURI_ENV_TARGET_TRIPLE");

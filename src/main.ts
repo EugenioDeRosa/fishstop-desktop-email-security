@@ -6,6 +6,7 @@ import { geoDistance, geoGraticule, geoInterpolate, geoOrthographic, geoPath } f
 import { feature, mesh } from "topojson-client";
 import worldAtlas from "world-atlas/countries-110m.json";
 import { animate } from "motion/mini";
+import fishstopMailCheckUrl from "./fishstop-mail-check.svg";
 import "./styles.css";
 
 type AuthUser = { sub: string; name?: string; email: string; picture?: string; provider?: "google" | "microsoft" };
@@ -13,9 +14,25 @@ type MailboxStatus = { connected: boolean; provider: "google" | "microsoft"; ema
 type MailboxMessage = { id: string; subject: string; sender: string; received_at: string; snippet: string; has_attachments: boolean; is_read: boolean };
 type Section = "dashboard" | "analyse" | "inbox" | "history" | "statistics" | "settings";
 type SocFlag = { level: "HIGH" | "MEDIUM" | "LOW" | "INFO"; field: string; message: string };
-type AuthResult = { status?: string; identity?: string; source?: string; raw?: string; all_results?: AuthResult[] };
+type AuthResult = {
+  status?: string;
+  identity?: string;
+  source?: string;
+  raw?: string;
+  all_results?: AuthResult[];
+  delivery_status?: string;
+  delivery_identity?: string;
+  delivery_source?: string;
+  origin_status?: string;
+  origin_identity?: string;
+  origin_source?: string;
+  origin_raw?: string;
+  path_conflict?: boolean;
+  same_envelope_domain?: boolean;
+  sender_boundary_selected?: boolean;
+};
 type ReceivedHop = { from_host?: string; by_host?: string; sender_ip?: string; all_ips?: string[]; received_at?: string; raw?: string };
-type OtxPulseSummary = { id?: string; name?: string; author?: string; modified?: string; tags?: string[]; tlp?: string };
+type OtxPulseSummary = { id?: string; name?: string; author?: string; modified?: string; tags?: string[]; tlp?: string; url?: string };
 type OtxMatch = { indicator?: string; indicator_type?: string; source?: string; confidence?: "strong" | "supporting"; pulse_count?: number; pulses?: OtxPulseSummary[] };
 type OtxIntelligence = { status?: "match" | "no_match" | "unavailable"; synced_at?: string; pulse_count?: number; subscribed_pulse_count?: number; public_phishing_pulse_count?: number; indicator_count?: number; skipped_pulse_count?: number; lookback_days?: number; truncated?: boolean; matches?: OtxMatch[]; message?: string };
 type AnalysisReport = {
@@ -71,7 +88,7 @@ type AnalysisReport = {
 };
 type ReputationResult = { status?: string; message?: string; detection_ratio?: string; malicious?: number; suspicious?: number; total_engines?: number; threat_label?: string; file_type?: string; file_name?: string; last_analysis?: string | number; permalink?: string; abuseConfidenceScore?: number; totalReports?: number; country?: string; country_code?: string; city?: string; region?: string; isp?: string; org?: string; asn?: string; timezone?: string; lat?: number; lon?: number; is_proxy?: boolean; is_hosting?: boolean; resolved_ip?: string; resolved_domain?: string; used_parent_fallback?: string; url?: string; title?: string; crowdsourced_context_summary?: string };
 type AnalysisRecord = { id: string; analyzedAt: string; report: AnalysisReport; analysisDurationMs?: number };
-type ActiveAnalysis = { userSub: string; fileName: string; source?: "file" | "inbox"; status: "processing" | "complete" | "error"; report?: AnalysisReport; recordId?: string | null; error?: string };
+type ActiveAnalysis = { userSub: string; fileName: string; source?: "file" | "inbox"; status: "processing" | "complete" | "error"; analysisId?: string; report?: AnalysisReport; recordId?: string | null; error?: string };
 type StatisticsPeriod = "today" | "week" | "month" | "3m" | "6m" | "9m" | "12m" | "all";
 type CopyEvent = { copiedAt: string };
 
@@ -80,7 +97,7 @@ const HISTORY_STORAGE_PREFIX = "fishstop.analysis-history.";
 const REPUTATION_KEYS_PREFIX = "fishstop.reputation-keys.";
 const INDICATOR_COPY_STORAGE_PREFIX = "fishstop.indicator-copies.";
 const STATISTICS_PERIOD_PREFIX = "fishstop.statistics-period.";
-const DEFAULT_OLLAMA_MODEL = "qwen3:4b-q4_K_M";
+const DEFAULT_OLLAMA_MODEL = "qwen3:4b-instruct-2507-q4_K_M";
 const OTX_LOOKBACK_DAYS = 365;
 const OTX_BACKGROUND_SYNC_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const analysisHistoryCache = new Map<string, AnalysisRecord[]>();
@@ -475,7 +492,7 @@ async function ensureAnalysisHistory(user: AuthUser): Promise<void> {
   return request;
 }
 
-async function saveAnalysis(user: AuthUser, report: AnalysisReport): Promise<string | null> {
+async function saveAnalysis(user: AuthUser, report: AnalysisReport, analysisDurationMs?: number): Promise<string | null> {
   await ensureAnalysisHistory(user);
   if (analysisHistoryErrors.has(user.sub)) return null;
   const history = readAnalysisHistory(user);
@@ -484,8 +501,8 @@ async function saveAnalysis(user: AuthUser, report: AnalysisReport): Promise<str
   const existing = fingerprint ? history.find((record) => analysisFingerprint(record.report) === fingerprint) : undefined;
   const analyzedAt = new Date().toISOString();
   const updated = existing
-    ? [{ ...existing, analyzedAt, report }, ...history.filter((record) => record.id !== existing.id)]
-    : [{ id, analyzedAt, report }, ...history];
+    ? [{ ...existing, analyzedAt, report, ...(analysisDurationMs === undefined ? {} : { analysisDurationMs }) }, ...history.filter((record) => record.id !== existing.id)]
+    : [{ id, analyzedAt, report, ...(analysisDurationMs === undefined ? {} : { analysisDurationMs }) }, ...history];
   try {
     await invoke("save_analysis_history", { userSub: user.sub, history: updated });
     analysisHistoryCache.set(user.sub, updated);
@@ -800,7 +817,7 @@ function pause(milliseconds: number): Promise<void> {
 }
 
 // Mirrors the Streamlit `_auth_from_eml_header` fallback order exactly.
-function authFromEmlHeader(report: AnalysisReport, protocol: "SPF" | "DKIM" | "DMARC"): Required<Pick<AuthResult, "status" | "identity" | "raw" | "source">> & { all_results: AuthResult[] } {
+function authFromEmlHeader(report: AnalysisReport, protocol: "SPF" | "DKIM" | "DMARC"): AuthResult & Required<Pick<AuthResult, "status" | "identity" | "raw" | "source">> & { all_results: AuthResult[] } {
   const effective = report.effective_auth_results?.[protocol];
   if (effective) {
     const source = effective.source || "Authentication headers";
@@ -808,7 +825,7 @@ function authFromEmlHeader(report: AnalysisReport, protocol: "SPF" | "DKIM" | "D
       ? (report.arc_authentication_results || "")
       : source === "Received-SPF" ? (report.received_spf_raw || "")
         : (report.authentication_results_raw || "");
-    return { status: effective.status || "unknown", identity: effective.identity || "", raw: effective.raw || sourceRaw, source, all_results: effective.all_results || [] };
+    return { ...effective, status: effective.status || "unknown", identity: effective.identity || "", raw: effective.raw || sourceRaw, source, all_results: effective.all_results || [] };
   }
   const direct = report.auth_results?.[protocol];
   if (direct) return { status: direct.status || "unknown", identity: direct.identity || "", raw: direct.raw || report.authentication_results_raw || "", source: "Authentication-Results", all_results: direct.all_results || [] };
@@ -868,6 +885,10 @@ function normalizedDomain(value?: string): string {
 function stronglyAuthenticatedSender(report: AnalysisReport): boolean {
   const passed = (protocol: "SPF" | "DKIM" | "DMARC") =>
     ["pass", "bestguesspass"].includes(authFromEmlHeader(report, protocol).status.toLowerCase());
+  const spf = authFromEmlHeader(report, "SPF").status.toLowerCase();
+  const dkim = authFromEmlHeader(report, "DKIM").status.toLowerCase();
+  const spfPathConflict = Boolean(authFromEmlHeader(report, "SPF").path_conflict);
+  if ((spf === "mixed" || spfPathConflict) && dkim !== "pass") return false;
   return passed("DMARC") || (passed("SPF") && passed("DKIM"));
 }
 
@@ -1056,7 +1077,7 @@ function unverifiedRequestedResourceReason(report: AnalysisReport): string | nul
 function authenticationReviewReason(report: AnalysisReport): string | null {
   const protocols = ["SPF", "DKIM", "DMARC"] as const;
   const failed = protocols.filter((protocol) =>
-    ["fail", "softfail", "permerror", "temperror"].includes(
+    ["fail", "softfail", "permerror", "temperror", "mixed"].includes(
       authFromEmlHeader(report, protocol).status.toLowerCase(),
     ),
   );
@@ -1269,17 +1290,24 @@ function otxSenderMatches(report: AnalysisReport): OtxMatch[] {
   );
 }
 
+function otxPulseLinks(pulses: OtxPulseSummary[], limit = 2): string {
+  const seen = new Set<string>();
+  return pulses.flatMap((pulse) => {
+    const id = String(pulse.id || "").trim();
+    if (!/^[0-9a-f]{24}$/i.test(id) || seen.has(id.toLowerCase())) return [];
+    seen.add(id.toLowerCase());
+    const href = `https://otx.alienvault.com/pulse/${id}`;
+    return [`<a href="${href}" target="_blank" rel="noopener noreferrer">${escapeHtml(pulse.name || "Open OTX Pulse")} ↗</a>`];
+  }).slice(0, limit).join("");
+}
+
 function otxInlineEvidence(matches: OtxMatch[]): string {
   if (!matches.length) return "";
-  const strong = matches.some((match) => match.confidence === "strong");
-  const pulseNames = [...new Set(matches.flatMap((match) =>
-    (match.pulses || []).map((pulse) => pulse.name || "Unnamed Pulse"),
-  ))];
+  const pulses = matches.flatMap((match) => match.pulses || []);
+  const pulseLinks = otxPulseLinks(pulses);
   const pulseCount = Math.max(0, ...matches.map((match) => Number(match.pulse_count || 0)));
-  const detail = pulseNames.length
-    ? pulseNames.slice(0, 2).join("; ")
-    : `${pulseCount || matches.length} synchronized Pulse${(pulseCount || matches.length) === 1 ? "" : "s"}`;
-  return `<em class="inline-otx inline-otx-${strong ? "strong" : "supporting"}"><b>OTX ${strong ? "exact match" : "infrastructure match"}</b>${escapeHtml(detail)}</em>`;
+  const detail = `${pulseCount || matches.length} synchronized Pulse${(pulseCount || matches.length) === 1 ? "" : "s"}`;
+  return `<em class="inline-otx inline-otx-strong"><b>OTX threat match</b><span>${pulseLinks || escapeHtml(detail)}</span></em>`;
 }
 
 function hopCheckTone(results: ReputationResult[]): CheckTone {
@@ -1309,7 +1337,16 @@ function reportMarkup(report: AnalysisReport): string {
   const authDetails = authEvidence.map(([protocol, result]) => {
     const tone = authCheckTone(result.status);
     const rawEvidence = result.raw || "No evidence in the EML header.";
-    return `<section class="auth-evidence static-surface-${tone}"><header class="auth-evidence-heading"><h4>${protocol}</h4><span class="auth-status auth-status-${tone}">${authCheckLabel(result.status)}</span></header><div class="auth-evidence-facts"><span><b>Status</b>${escapeHtml(result.status.toUpperCase())}</span><span><b>Source</b>${escapeHtml(result.source)}</span>${result.identity ? `<span><b>Identity</b><code>${escapeHtml(result.identity)}</code></span>` : ""}${result.all_results.length > 1 ? `<span><b>Selection</b>${result.all_results.length} results · least favourable shown</span>` : ""}</div><div class="auth-raw-evidence"><b>Header evidence</b><code tabindex="0" aria-label="${protocol} raw authentication evidence">${escapeHtml(rawEvidence)}</code></div></section>`;
+    const senderBoundarySelected = Boolean(result.sender_boundary_selected);
+    const pathConflict = Boolean(result.path_conflict) || result.status.toLowerCase() === "mixed";
+    const pathFacts = senderBoundarySelected
+      ? `<span><b>Sender boundary</b>${escapeHtml((result.origin_status || result.status || "unknown").toUpperCase())}</span><span><b>Final receiver</b>${escapeHtml((result.delivery_status || "unknown").toUpperCase())}</span>`
+      : "";
+    const selection = pathConflict
+      ? "Sender-boundary SPF selected; final receiver differs"
+      : senderBoundarySelected ? "Sender-boundary SPF selected"
+      : result.all_results.length > 1 ? `${result.all_results.length} results · least favourable shown` : "";
+    return `<section class="auth-evidence static-surface-${tone}"><header class="auth-evidence-heading"><h4>${protocol}</h4><span class="auth-status auth-status-${tone}">${authCheckLabel(result.status)}</span></header><div class="auth-evidence-facts"><span><b>Status</b>${escapeHtml(result.status.toUpperCase())}</span><span><b>Source</b>${escapeHtml(result.source)}</span>${result.identity ? `<span><b>Identity</b><code>${escapeHtml(result.identity)}</code></span>` : ""}${pathFacts}${selection ? `<span><b>Selection</b>${escapeHtml(selection)}</span>` : ""}</div><div class="auth-raw-evidence"><b>Header evidence</b><code tabindex="0" aria-label="${protocol} raw authentication evidence">${escapeHtml(rawEvidence)}</code></div></section>`;
   }).join("");
   const routingSummary = [
     ["Received hops", String((report.received_hops || []).length)],
@@ -1371,14 +1408,14 @@ function reportMarkup(report: AnalysisReport): string {
     const reputationResult = report.link_reputation?.[link.url || ""];
     const reputation = reputationCheckTone(reputationResult);
     const otxMatches = otxMatchesForLink(report, link);
-    const otxStrong = otxMatches.some((match) => match.confidence === "strong");
+    const otxMatch = otxMatches.length > 0;
     const invoiceDeliveryMismatch = Boolean(link.financial_attachment_mismatch);
-    const tone = dangerous || structuralDanger || link.display_mismatch || invoiceDeliveryMismatch || reputation === "fail"
+    const tone = dangerous || structuralDanger || link.display_mismatch || invoiceDeliveryMismatch || reputation === "fail" || otxMatch
       ? "fail"
-      : otxStrong || reputation === "warn" || structuralWarning || link.is_possible_shortener
+      : reputation === "warn" || structuralWarning || link.is_possible_shortener
         ? "warn"
         : safeSignatureTracking || reputation === "pass" ? "pass" : "neutral";
-    const status = invoiceDeliveryMismatch ? (link.dangerous_download ? "Invoice link points to a script/executable" : "Invoice delivery is unrelated to sender domain") : dangerous ? (link.is_ip ? "Direct IP" : link.dangerous_download ? "Executable or script download" : "Lookalike domain") : structuralDanger ? "Hidden destination userinfo" : link.display_mismatch ? "Destination differs from visible text" : reputation === "fail" ? "Detected by VirusTotal" : otxStrong ? "Matched in OTX phishing intelligence" : reputation === "warn" ? "Review required" : safeSignatureTracking ? "Signature tracking redirect" : reputation === "pass" ? "VirusTotal clean" : link.nested_redirect_count ? "Nested redirect destination" : link.nonstandard_port ? "Non-standard port" : link.unicode_path_or_query ? "Unicode path or query" : link.is_possible_shortener ? "Possible URL shortener" : "Valid URL structure";
+    const status = invoiceDeliveryMismatch ? (link.dangerous_download ? "Invoice link points to a script/executable" : "Invoice delivery is unrelated to sender domain") : dangerous ? (link.is_ip ? "Direct IP" : link.dangerous_download ? "Executable or script download" : "Lookalike domain") : structuralDanger ? "Hidden destination userinfo" : link.display_mismatch ? "Destination differs from visible text" : reputation === "fail" ? "Detected by VirusTotal" : otxMatch ? "Matched in OTX threat intelligence" : reputation === "warn" ? "Review required" : safeSignatureTracking ? "Signature tracking redirect" : reputation === "pass" ? "VirusTotal clean" : link.nested_redirect_count ? "Nested redirect destination" : link.nonstandard_port ? "Non-standard port" : link.unicode_path_or_query ? "Unicode path or query" : link.is_possible_shortener ? "Possible URL shortener" : "Valid URL structure";
     const host = link.host || "URL without host";
     const vtUrl = reputationResult?.permalink || `https://www.virustotal.com/gui/domain/${encodeURIComponent(host)}`;
     const whoisUrl = `https://www.whois.com/whois/${encodeURIComponent(host)}`;
@@ -1417,13 +1454,13 @@ function reportMarkup(report: AnalysisReport): string {
     const reputationResult = attachment.file_reputation;
     const reputation = reputationCheckTone(reputationResult);
     const otxMatches = otxMatchesForAttachment(report, attachment.hash_sha256);
-    const otxStrong = otxMatches.some((match) => match.confidence === "strong");
+    const otxMatch = otxMatches.length > 0;
     const attachmentSize = attachment.size_bytes ?? attachment.size;
     const detail = `${attachment.content_type || "unknown type"} · ${formatAttachmentSize(attachmentSize)} · ${attachment.magic_detected_format || "unrecognised format"}`;
     const archiveMeta = attachment.archive_security ? `${attachment.archive_security.entry_count || 0} entries${attachment.archive_security.nested_archive_count ? ` · ${attachment.archive_security.nested_archive_count} nested` : ""}${attachment.archive_security.encrypted_entry_count ? ` · ${attachment.archive_security.encrypted_entry_count} encrypted` : ""}` : "";
     const note = (dangerousType ? attachment.attachment_security?.summary : "") || attachment.anomaly || attachment.pdf_security?.summary || attachment.archive_security?.summary || (caution ? "Archive or PDF requires review" : "Local structure valid");
-    const tone = risky || reputation === "fail" ? "fail" : caution || otxStrong || reputation === "warn" ? "warn" : reputation || "pass";
-    const status = dangerousType ? "High-risk file type" : risky ? "Anomaly detected" : reputation === "fail" ? "Detected by VirusTotal" : otxStrong ? "SHA-256 matched in OTX" : caution || reputation === "warn" ? "Review required" : reputation === "pass" ? "VirusTotal clean" : "Passed";
+    const tone = risky || reputation === "fail" || otxMatch ? "fail" : caution || reputation === "warn" ? "warn" : reputation || "pass";
+    const status = dangerousType ? "High-risk file type" : risky ? "Anomaly detected" : reputation === "fail" ? "Detected by VirusTotal" : otxMatch ? "SHA-256 matched in OTX threat intelligence" : caution || reputation === "warn" ? "Review required" : reputation === "pass" ? "VirusTotal clean" : "Passed";
     const intelligence = [reputationResult?.detection_ratio && `VirusTotal: ${reputationResult.detection_ratio}`, reputationResult?.last_analysis && `Last analysis: ${reputationResult.last_analysis}`].filter(Boolean).join(" · ");
     const reportLink = reputationResult?.permalink ? `<p><a href="${escapeHtml(reputationResult.permalink)}" target="_blank" rel="noopener noreferrer">VirusTotal report ↗</a></p>` : "";
     const copyAction = tone === "fail" && attachment.hash_sha256 ? `<button class="copy-evidence" type="button" data-copy-ioc="${escapeHtml(attachment.hash_sha256)}">Copy SHA-256</button>` : "";
@@ -1541,9 +1578,8 @@ function addReputationPanel(report: AnalysisReport): void {
   }).join("") || '<li class="reputation-empty">No sender domains available.</li>';
   const otx = report.otx_intelligence;
   const otxRows = (otx?.matches || []).map((match) => {
-    const pulses = (match.pulses || []).map((pulse) => `${pulse.name || "Unnamed Pulse"}${pulse.author ? ` · ${pulse.author}` : ""}`).join("; ");
-    const tone = match.confidence === "strong" ? "warn" : "neutral";
-    return `<li class="static-check static-check-${tone}"><strong>${escapeHtml((match.indicator_type || "indicator").toUpperCase())} · ${escapeHtml(match.indicator || "Unknown indicator")}</strong><small>${escapeHtml(match.confidence === "strong" ? "Exact high-confidence indicator match" : "Supporting infrastructure match")} · ${escapeHtml(match.source || "email evidence")}${pulses ? ` · ${escapeHtml(pulses)}` : ""}</small></li>`;
+    const pulseLinks = otxPulseLinks(match.pulses || [], 5);
+    return `<li class="static-check static-check-fail"><strong>${escapeHtml((match.indicator_type || "indicator").toUpperCase())} · ${escapeHtml(match.indicator || "Unknown indicator")}</strong><small>High-risk OTX indicator match · ${escapeHtml(match.source || "email evidence")}</small>${pulseLinks ? `<p class="otx-pulse-links">${pulseLinks}</p>` : ""}</li>`;
   }).join("");
   const otxNoMatch = otx?.truncated
     ? "No match in the locally available OTX data. Public search coverage was limited by OTX; this is neutral evidence, not proof of safety."
@@ -1697,7 +1733,7 @@ function integrateReputation(report: AnalysisReport): void {
   if (senderOtx.length) {
     const matches = senderOtx.map((match) => {
       const label = match.indicator_type === "domain" ? "Sender domain" : "Sender hostname";
-      return `<li class="otx-context-row"><strong>${escapeHtml(label)} · ${escapeHtml(match.indicator || "unknown indicator")}</strong>${otxInlineEvidence([match])}</li>`;
+      return `<li class="otx-context-row static-check static-check-fail"><strong>${escapeHtml(label)} · ${escapeHtml(match.indicator || "unknown indicator")}</strong>${otxInlineEvidence([match])}</li>`;
     }).join("");
     sender?.insertAdjacentHTML("beforeend", `<section class="evidence-card inline-reputation inline-otx-card"><h3>Sender · OTX intelligence</h3><p>Local matches from synchronized phishing Pulses.</p><ul>${matches}</ul></section>`);
   }
@@ -1705,13 +1741,14 @@ function integrateReputation(report: AnalysisReport): void {
   const hops = orderedReceivedHops(report.received_hops).map((hop, index) => {
     const ips = hop.all_ips || (hop.sender_ip ? [hop.sender_ip] : []);
     const reputations = ips.map((ip) => report.hop_reputation?.[ip] || {});
-    const tone = hopCheckTone(reputations);
+    const hopHasOtxMatch = ips.some((ip) => otxMatchesForIp(report, ip).length > 0);
+    const tone = hopHasOtxMatch ? "fail" : hopCheckTone(reputations);
     const details = ips.map((ip) => {
       const reputation = report.hop_reputation?.[ip] || {};
       const geo = report.geolocation_results?.[ip] || {};
       const otxMatches = otxMatchesForIp(report, ip);
       const location = [geo.city, geo.region, geo.country].filter(Boolean).join(", ") || geo.message || "Geolocation unavailable";
-      const copyAction = reputationCheckTone(reputation) === "fail" ? `<button class="copy-evidence" type="button" data-copy-ioc="${escapeHtml(ip)}">Copy IP</button>` : "";
+      const copyAction = reputationCheckTone(reputation) === "fail" || otxMatches.length ? `<button class="copy-evidence" type="button" data-copy-ioc="${escapeHtml(ip)}">Copy IP</button>` : "";
       return `<div class="hop-ip-detail"><strong>IP ${escapeHtml(ip)}</strong><small>${escapeHtml(location)} · ISP ${escapeHtml(geo.isp || "—")}</small><b>AbuseIPDB · ${escapeHtml(String(reputation.abuseConfidenceScore ?? "—"))}/100 · ${escapeHtml(String(reputation.totalReports ?? 0))} report</b>${otxInlineEvidence(otxMatches)}${copyAction}</div>`;
     }).join("") || `<p class="hop-empty">No public IP is available for this hop.</p>`;
     return `<details class="hop-card hop-card-${tone}"><summary><span><strong>Hop ${index + 1} · ${escapeHtml(hop.from_host || "unknown source")}</strong><small>${escapeHtml(hop.by_host || "unknown destination")} · ${escapeHtml(hop.received_at || "date unavailable")}</small></span><span class="hop-disclosure" aria-hidden="true"></span></summary><div class="hop-details">${details}${hop.raw ? `<pre>${escapeHtml(hop.raw)}</pre>` : ""}</div></details>`;
@@ -1856,7 +1893,7 @@ function setPhiSemanticPanel(container: HTMLElement, analysis: NonNullable<NonNu
   panel.innerHTML = `<p class="page-kicker">OLLAMA · ${escapeHtml(model)}</p><h3>Content summary</h3><p class="semantic-summary">${escapeHtml(contentSummary)}</p>${signals.length || details.length || signalEvidence ? `<details class="semantic-details"><summary>Reasoning and evidence <span>${signals.length + details.length + Number(Boolean(signalEvidence))}</span></summary>${signals.length ? `<p><b>Signals:</b> ${escapeHtml(signals.map(semanticLabel).join(" · "))}</p>` : ""}${signalEvidence ? `<p><b>Context:</b> ${escapeHtml(signalEvidence)}</p>` : ""}${details.length ? `<ul>${details.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>` : ""}</details>` : ""}<small class="semantic-meta">${durationMs ? `${(durationMs / 1000).toFixed(1)} s · ` : ""}${passSummary}${corroboration.supports_decision ? "Independent evidence is available" : "Assessment should be confirmed with technical evidence"}</small>`;
 }
 
-async function runAiAnalysis(user: AuthUser, report: AnalysisReport, recordId: string | null, container: HTMLElement, startedAt: number, onSettled?: (engine: "identity" | "phi4" | "content-summary" | "summary") => void): Promise<void> {
+async function runAiAnalysis(user: AuthUser, report: AnalysisReport, recordId: string | null, container: HTMLElement, startedAt: number, analysisId: string, isCurrent: () => boolean, onSettled?: (engine: "identity" | "phi4" | "content-summary" | "summary") => void): Promise<void> {
   const runtime = await invoke<OllamaRuntimeStatus>("ollama_runtime_status").catch(() => ollamaRuntimeSnapshot);
   if (runtime) ollamaRuntimeSnapshot = runtime;
   const model = runtime?.model || DEFAULT_OLLAMA_MODEL;
@@ -1866,27 +1903,34 @@ async function runAiAnalysis(user: AuthUser, report: AnalysisReport, recordId: s
   const ollamaWarmup = runtime?.model_ready
     ? invoke<void>("warm_ollama_model").catch(() => undefined)
     : Promise.resolve(undefined);
-  await invoke<NonNullable<AnalysisReport["identity_analysis"]>>("analyze_identity", { report }).then((value) => {
+  if (!isCurrent()) return;
+  await invoke<NonNullable<AnalysisReport["identity_analysis"]>>("analyze_identity", { report, analysisId }).then((value) => {
+    if (!isCurrent()) return;
     report.identity_analysis = value;
     setIdentityPanel(container, value);
     onSettled?.("identity");
   }).catch((error) => {
+    if (!isCurrent()) return;
     report.identity_analysis = { status: "error", message: String(error) };
     setAiPanel(container, "identity", "Analysis unavailable", String(error), "error");
     onSettled?.("identity");
   });
   await ollamaWarmup;
+  if (!isCurrent()) return;
   const phiStartedAt = performance.now();
-  await invoke<NonNullable<AnalysisReport["phi4_analysis"]>>("analyze_phi4", { report }).then((value) => {
+  await invoke<NonNullable<AnalysisReport["phi4_analysis"]>>("analyze_phi4", { report, analysisId }).then((value) => {
+    if (!isCurrent()) return;
     report.phi4_analysis = { ...value, model: value.model || model, duration_ms: Math.round(performance.now() - phiStartedAt) };
     const analysis = value.analysis || {};
     setPhiSemanticPanel(container, analysis, value.model || model, report.phi4_analysis.duration_ms, report.ai_content_summary?.summary, report.phi4_analysis.performance);
     onSettled?.("phi4");
   }).catch((error) => {
+    if (!isCurrent()) return;
     report.phi4_analysis = { status: "error", message: String(error) };
     setAiPanel(container, "phi4", "Analysis unavailable", String(error), "error", model);
     onSettled?.("phi4");
   });
+  if (!isCurrent()) return;
   if (report.phi4_analysis?.status === "ok" && report.phi4_analysis.analysis) {
     const structuredSummary = (report.phi4_analysis.analysis.content_summary || report.phi4_analysis.analysis.explanation || "Content analysis complete.").replace(/\s+/g, " ").trim();
     report.ai_content_summary = { status: "ok", summary: structuredSummary, model, backend: "ollama-structured" };
@@ -1944,7 +1988,7 @@ function microsoftLogo(): string {
 
 function renderLogin(): void {
   stopOtxBackgroundSync();
-  root.innerHTML = `<section class="shell" aria-labelledby="title"><aside class="brand-panel"><div class="brand"><span class="brand-mark" aria-hidden="true">⌁</span><span>fish<span>stop</span></span></div><div class="hero-copy"><p class="eyebrow">EMAIL DEFENSE DESK</p><h1>Every message<br><em>deserves a check.</em></h1><p class="intro">Quickly identify phishing, scams and Business Email Compromise in email files.</p></div><div class="signal"><span class="signal-dot"></span><span>Private, local protection</span></div><p class="version">FISHSTOP · DESKTOP EDITION</p></aside><section class="login-panel"><div class="login-content"><div class="steps"><span class="active"></span><span></span><span></span></div><p class="kicker">WELCOME</p><h2 id="title">Sign in to FishStop</h2><p class="subtitle">Use your Google or Microsoft account to access your personal analysis workspace.</p><div class="auth-options"><button class="provider google" id="google-login" type="button"><span class="provider-icon" aria-hidden="true">${googleLogo()}</span><span>Continue with Google</span><b aria-hidden="true">→</b></button><button class="provider microsoft" id="microsoft-login" type="button"><span class="provider-icon" aria-hidden="true">${microsoftLogo()}</span><span>Continue with Microsoft</span><b aria-hidden="true">→</b></button></div><p class="privacy">By continuing, you agree to the <a href="#">Terms of Service</a> and <a href="#">Privacy Policy</a>.</p><p class="status" role="status" aria-live="polite"></p></div><footer><span>© 2026 FishStop</span><span>Analyse. Understand. Protect.</span></footer></section></section>`;
+  root.innerHTML = `<section class="shell" aria-labelledby="title"><aside class="brand-panel"><div class="brand"><img class="brand-mark" src="${fishstopMailCheckUrl}" alt="" aria-hidden="true" /><span>fish<span>stop</span></span></div><div class="hero-copy"><p class="eyebrow">EMAIL DEFENSE DESK</p><h1>Every message<br><em>deserves a check.</em></h1><p class="intro">Quickly identify phishing, scams and Business Email Compromise in email files.</p></div><div class="signal"><span class="signal-dot"></span><span>Private, local protection</span></div><p class="version">FISHSTOP · DESKTOP EDITION</p></aside><section class="login-panel"><div class="login-content"><div class="steps"><span class="active"></span><span></span><span></span></div><p class="kicker">WELCOME</p><h2 id="title">Sign in to FishStop</h2><p class="subtitle">Use your Google or Microsoft account to access your personal analysis workspace.</p><div class="auth-options"><button class="provider google" id="google-login" type="button"><span class="provider-icon" aria-hidden="true">${googleLogo()}</span><span>Continue with Google</span><b aria-hidden="true">→</b></button><button class="provider microsoft" id="microsoft-login" type="button"><span class="provider-icon" aria-hidden="true">${microsoftLogo()}</span><span>Continue with Microsoft</span><b aria-hidden="true">→</b></button></div><p class="privacy">By continuing, you agree to the <a href="#">Terms of Service</a> and <a href="#">Privacy Policy</a>.</p><p class="status" role="status" aria-live="polite"></p></div><footer><span>© 2026 FishStop</span><span>Analyse. Understand. Protect.</span></footer></section></section>`;
   const status = document.querySelector<HTMLParagraphElement>(".status");
   const bindLogin = (buttonId: string, provider: string, command: string): void => {
     const button = document.querySelector<HTMLButtonElement>(`#${buttonId}`);
@@ -2068,7 +2112,8 @@ function analysisPageContent(user: AuthUser, source: "file" | "inbox" = "file"):
   const intake = source === "file"
     ? `<section class="eml-intake" id="eml-intake" ${isProcessing || hasReport ? "hidden" : ""}><button class="drop-zone" id="eml-drop" type="button"><span class="drop-icon">↥</span><strong>Drop an .eml file here</strong><span>or select it from your computer · max 40 MB</span></button><input id="eml-input" type="file" accept=".eml,message/rfc822" hidden /><p class="upload-status" id="upload-status">${status}</p></section>`
     : `${!isProcessing && !hasReport ? mailboxIntakeMarkup(user) : ""}<p class="upload-status" id="upload-status">${isProcessing || hasReport ? status : ""}</p>`;
-  return `<div class="page-heading analysis-heading"><div><p class="page-kicker">NEW CHECK</p><h1 id="analysis-title">${title}</h1><p>${source === "inbox" ? "Choose a recent message and inspect it with the local FishStop pipeline." : "The file stays on your device and is processed locally."}</p></div><button class="change-analysis" id="change-eml" type="button" ${hasReport || active?.status === "error" ? "" : "hidden"}>${source === "inbox" ? "Back to inbox" : "Change email"}</button></div>${intake}${source === "file" && (isProcessing || hasReport) ? `<p class="upload-status" id="upload-status">${status}</p>` : ""}<div id="analysis-result">${result}</div>`;
+  const actions = `<div class="analysis-actions"><button class="change-analysis" id="change-eml" type="button" ${(!isProcessing && hasReport) || active?.status === "error" ? "" : "hidden"}>${source === "inbox" ? "Back to inbox" : "Change email"}</button>${source === "file" ? `<button class="reset-analysis" id="reset-analysis" type="button" ${hasReport && !isProcessing ? "" : "hidden"}>Reset</button>` : ""}<button class="cancel-analysis" id="cancel-analysis" type="button" ${isProcessing ? "" : "hidden"}>Cancel</button></div>`;
+  return `<div class="page-heading analysis-heading"><div><p class="page-kicker">NEW CHECK</p><h1 id="analysis-title">${title}</h1><p>${source === "inbox" ? "Choose a recent message and inspect it with the local FishStop pipeline." : "The file stays on your device and is processed locally."}</p></div>${actions}</div>${intake}${source === "file" && (isProcessing || hasReport) ? `<p class="upload-status" id="upload-status">${status}</p>` : ""}<div id="analysis-result">${result}</div>`;
 }
 
 function contentFor(section: Section, user: AuthUser): string {
@@ -2137,7 +2182,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
   const safeName = escapeHtml(user.name || (user.provider === "microsoft" ? "Microsoft account" : "Google account"));
   const safeEmail = escapeHtml(user.email);
   const safePicture = user.picture ? escapeHtml(user.picture) : "";
-  root.innerHTML = `<div class="app-shell ${section === "dashboard" ? "dashboard-shell" : ""}"><aside class="sidebar"><div class="sidebar-brand"><span class="brand-mark">⌁</span><span>fish<span>stop</span></span></div><nav aria-label="Primary navigation">${(Object.keys(labels) as Section[]).map((key) => `<button class="nav-item ${section === key ? "selected" : ""}" data-section="${key}" type="button"><span>${icons[key]}</span>${labels[key]}</button>`).join("")}</nav><div class="sidebar-bottom"><div class="account"><span class="avatar">${safePicture ? `<img src="${safePicture}" alt="" />` : initial}</span><div><strong>${safeName}</strong><small>${safeEmail}</small></div></div><button class="logout" id="logout" type="button">Sign out <span>↗</span></button></div></aside><main class="workspace"><header class="topbar"><div class="crumb"><span>FishStop</span><b>/</b><strong>${labels[section]}</strong></div><div class="top-status top-status-checking" data-protection-status role="status" aria-live="polite"><i aria-hidden="true"></i><span>Checking protection…</span></div></header><section class="content ${section === "dashboard" ? "dashboard-content" : ""}">${contentFor(section, user)}</section></main></div>`;
+  root.innerHTML = `<div class="app-shell ${section === "dashboard" ? "dashboard-shell" : ""}"><aside class="sidebar"><div class="sidebar-brand"><img class="brand-mark" src="${fishstopMailCheckUrl}" alt="" aria-hidden="true" /><span>fish<span>stop</span></span></div><nav aria-label="Primary navigation">${(Object.keys(labels) as Section[]).map((key) => `<button class="nav-item ${section === key ? "selected" : ""}" data-section="${key}" type="button"><span>${icons[key]}</span>${labels[key]}</button>`).join("")}</nav><div class="sidebar-bottom"><div class="account"><span class="avatar">${safePicture ? `<img src="${safePicture}" alt="" />` : initial}</span><div><strong>${safeName}</strong><small>${safeEmail}</small></div></div><button class="logout" id="logout" type="button">Sign out <span>↗</span></button></div></aside><main class="workspace"><header class="topbar"><div class="crumb"><span>FishStop</span><b>/</b><strong>${labels[section]}</strong></div><div class="top-status top-status-checking" data-protection-status role="status" aria-live="polite"><i aria-hidden="true"></i><span>Checking protection…</span></div></header><section class="content ${section === "dashboard" ? "dashboard-content" : ""}">${contentFor(section, user)}</section></main></div>`;
   const active = currentAnalysis(user);
   const activeSource = active?.source || "file";
   if (((section === "analyse" && activeSource === "file") || (section === "inbox" && activeSource === "inbox")) && active?.status === "complete" && active.report) {
@@ -2463,6 +2508,8 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
   const dropZone = document.querySelector<HTMLButtonElement>("#eml-drop"); const uploadStatus = document.querySelector<HTMLParagraphElement>("#upload-status");
   const emlInput = document.querySelector<HTMLInputElement>("#eml-input");
   const intake = document.querySelector<HTMLElement>("#eml-intake"); const changeEmail = document.querySelector<HTMLButtonElement>("#change-eml");
+  const resetAnalysis = document.querySelector<HTMLButtonElement>("#reset-analysis");
+  const cancelAnalysis = document.querySelector<HTMLButtonElement>("#cancel-analysis");
   const inboxIntake = document.querySelector<HTMLElement>("#inbox-intake");
   let analysisRun = 0;
   let lastDropAt = 0;
@@ -2472,31 +2519,35 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
     lastDropAt = now;
     return true;
   };
-  const displayAnalysis = async (fileName: string, request: () => Promise<AnalysisReport>) => {
+  const displayAnalysis = async (fileName: string, request: (analysisId: string) => Promise<AnalysisReport>) => {
     if (!uploadStatus) return;
     const run = ++analysisRun;
-    const session: ActiveAnalysis = { userSub: user.sub, fileName, source: section === "inbox" ? "inbox" : "file", status: "processing" };
+    const analysisId = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const session: ActiveAnalysis = { userSub: user.sub, fileName, source: section === "inbox" ? "inbox" : "file", status: "processing", analysisId };
     activeAnalysis = session;
     const startedAt = performance.now();
     const title = document.querySelector<HTMLHeadingElement>("#analysis-title");
     if (title) title.textContent = fileName;
-    if (intake) intake.hidden = true; if (inboxIntake) inboxIntake.hidden = true; if (changeEmail) changeEmail.hidden = false;
+    if (intake) intake.hidden = true;
+    if (inboxIntake) inboxIntake.hidden = true;
+    if (changeEmail) changeEmail.hidden = true;
+    if (resetAnalysis) resetAnalysis.hidden = true;
+    if (cancelAnalysis) cancelAnalysis.hidden = false;
     const result = document.querySelector<HTMLDivElement>("#analysis-result");
     if (result) result.innerHTML = analysisLoadingMarkup(fileName);
     uploadStatus.textContent = `Local analysis of ${fileName} in progress…`;
     dropZone?.setAttribute("disabled", "true");
     try {
-      const report = await request();
+      const report = await request(analysisId);
       if (run !== analysisRun || activeAnalysis !== session) return;
       session.report = report;
       if (result) markLoadingCheck(result, 0);
-      const recordId = await saveAnalysis(user, report);
-      session.recordId = recordId;
       uploadStatus.textContent = "Identity, intent and AI summaries in progress…";
-      await runAiAnalysis(user, report, recordId, document.createElement("div"), startedAt, (engine) => {
+      await runAiAnalysis(user, report, null, document.createElement("div"), startedAt, analysisId, () => run === analysisRun && activeAnalysis === session, (engine) => {
         if (run === analysisRun && result) markLoadingCheck(result, engine === "identity" ? 1 : engine === "phi4" ? 2 : engine === "content-summary" ? 3 : 4);
       });
       if (run !== analysisRun || activeAnalysis !== session) return;
+      session.recordId = await saveAnalysis(user, report, Math.round(performance.now() - startedAt));
       // Let the browser paint the completed AI-summary step before completing
       // the final-report step, then keep the fully checked state visible.
       await pause(180);
@@ -2517,20 +2568,23 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       session.status = "complete";
       const activeSection = document.querySelector<HTMLButtonElement>("[data-section].selected")?.dataset.section;
       if (activeAnalysis === session && (activeSection === "analyse" || activeSection === "inbox")) renderDashboard(user, activeSection);
-    } catch (error) { if (run === analysisRun && activeAnalysis === session) { session.status = "error"; session.error = String(error); if (intake) intake.hidden = false; if (inboxIntake) inboxIntake.hidden = false; if (changeEmail) changeEmail.hidden = true; uploadStatus.textContent = `Analysis did not complete: ${String(error)}`; if (result) result.innerHTML = ""; } }
-    finally { if (run === analysisRun) dropZone?.removeAttribute("disabled"); }
+    } catch (error) { if (run === analysisRun && activeAnalysis === session) { session.status = "error"; session.error = String(error); if (intake) intake.hidden = false; if (inboxIntake) inboxIntake.hidden = false; if (changeEmail) changeEmail.hidden = false; if (cancelAnalysis) cancelAnalysis.hidden = true; uploadStatus.textContent = `Analysis did not complete: ${String(error)}`; if (result) result.innerHTML = ""; } }
+    finally {
+      void invoke("finish_analysis", { analysisId }).catch(() => undefined);
+      if (run === analysisRun) dropZone?.removeAttribute("disabled");
+    }
   };
   const displayFile = (path?: string) => {
     if (!path || !uploadStatus) return;
     const fileName = path.split(/[\\/]/).pop() || "email.eml";
     if (!fileName.toLowerCase().endsWith(".eml")) { uploadStatus.textContent = "Select a file with the .eml extension."; return; }
-    void displayAnalysis(fileName, () => invoke<AnalysisReport>("analyze_eml", { path, userSub: user.sub }));
+    void displayAnalysis(fileName, (analysisId) => invoke<AnalysisReport>("analyze_eml", { path, userSub: user.sub, analysisId }));
   };
   const displayBrowserFile = async (file?: File) => {
     if (!file || !uploadStatus) return;
     if (!file.name.toLowerCase().endsWith(".eml")) { uploadStatus.textContent = "Select a file with the .eml extension."; return; }
     const contents = Array.from(new Uint8Array(await file.arrayBuffer()));
-    void displayAnalysis(file.name, () => invoke<AnalysisReport>("analyze_eml_contents", { fileName: file.name, contents, userSub: user.sub }));
+    void displayAnalysis(file.name, (analysisId) => invoke<AnalysisReport>("analyze_eml_contents", { fileName: file.name, contents, userSub: user.sub, analysisId }));
   };
   const chooseEml = async () => {
     try {
@@ -2581,7 +2635,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       if (!messageId) return;
       document.querySelectorAll<HTMLButtonElement>(".analyse-inbox-message").forEach((action) => { action.disabled = true; });
       const subject = button.dataset.messageSubject || "Inbox message";
-      void displayAnalysis(subject, () => invoke<AnalysisReport>("analyze_mailbox_message", { userSub: user.sub, provider, messageId }));
+      void displayAnalysis(subject, (analysisId) => invoke<AnalysisReport>("analyze_mailbox_message", { userSub: user.sub, provider, messageId, analysisId }));
     }
   });
   if (inboxIntake) void refreshMailboxPanel(user);
@@ -2591,6 +2645,20 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       activeAnalysis = null;
       renderDashboard(user, "inbox");
     } else void chooseEml();
+  });
+  resetAnalysis?.addEventListener("click", () => {
+    activeAnalysis = null;
+    renderDashboard(user, "analyse");
+  });
+  cancelAnalysis?.addEventListener("click", () => {
+    const running = currentAnalysis(user);
+    if (!running || running.status !== "processing" || !running.analysisId) return;
+    cancelAnalysis.disabled = true;
+    cancelAnalysis.textContent = "Cancelling…";
+    analysisRun += 1;
+    activeAnalysis = null;
+    void invoke("cancel_analysis", { analysisId: running.analysisId }).catch(() => undefined);
+    renderDashboard(user, section === "inbox" ? "inbox" : "analyse");
   });
   emlInput?.addEventListener("change", () => {
     void displayBrowserFile(emlInput.files?.[0]);

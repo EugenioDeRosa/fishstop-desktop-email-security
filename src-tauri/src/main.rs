@@ -3,7 +3,7 @@
 mod ollama_runtime;
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs,
     io::{BufRead, BufReader, BufWriter, Read, Write},
     net::TcpListener,
@@ -1595,14 +1595,20 @@ async fn analyze_mailbox_message(
     user_sub: String,
     provider: String,
     message_id: String,
+    analysis_id: String,
     cache: tauri::State<'_, Arc<Mutex<ReputationCredentialCache>>>,
+    cancellation: tauri::State<'_, Arc<AnalysisCancellation>>,
 ) -> Result<serde_json::Value, String> {
     if message_id.trim().is_empty() || message_id.len() > 2048 {
         return Err("Invalid mailbox message identifier.".to_string());
     }
     let otx_cache_path = otx_cache_file(&app, &user_sub)?;
     let cache = Arc::clone(&cache);
+    let cancellation = Arc::clone(&cancellation);
     tauri::async_runtime::spawn_blocking(move || {
+        if cancellation.is_cancelled(&analysis_id) {
+            return Err("Analysis cancelled.".to_string());
+        }
         let token = mailbox_access_token(&user_sub, &provider, &cache)?;
         let contents = match provider.as_str() {
             "google" => download_google_message(&token, &message_id),
@@ -1615,6 +1621,8 @@ async fn analyze_mailbox_message(
             user_sub,
             cache,
             otx_cache_path,
+            analysis_id,
+            cancellation,
         )
     })
     .await
@@ -1698,10 +1706,37 @@ fn engine_command() -> Result<Command, String> {
     Err("FishStop analysis engine is unavailable in the application.".to_string())
 }
 
-fn run_command_with_timeout(
+#[derive(Default)]
+struct AnalysisCancellation {
+    cancelled: Mutex<HashSet<String>>,
+}
+
+impl AnalysisCancellation {
+    fn cancel(&self, analysis_id: &str) {
+        if let Ok(mut cancelled) = self.cancelled.lock() {
+            cancelled.insert(analysis_id.to_string());
+        }
+    }
+
+    fn finish(&self, analysis_id: &str) {
+        if let Ok(mut cancelled) = self.cancelled.lock() {
+            cancelled.remove(analysis_id);
+        }
+    }
+
+    fn is_cancelled(&self, analysis_id: &str) -> bool {
+        self.cancelled
+            .lock()
+            .map(|cancelled| cancelled.contains(analysis_id))
+            .unwrap_or(false)
+    }
+}
+
+fn run_command_with_timeout_cancellable(
     mut command: Command,
     timeout: Duration,
     description: &str,
+    cancellation: Option<(Arc<AnalysisCancellation>, String)>,
 ) -> Result<Output, String> {
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = command
@@ -1726,6 +1761,17 @@ fn run_command_with_timeout(
     let started_at = Instant::now();
 
     let status = loop {
+        if cancellation
+            .as_ref()
+            .map(|(state, analysis_id)| state.is_cancelled(analysis_id))
+            .unwrap_or(false)
+        {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = stdout_reader.join();
+            let _ = stderr_reader.join();
+            return Err("Analysis cancelled.".to_string());
+        }
         match child.try_wait() {
             Ok(Some(status)) => break status,
             Ok(None) if started_at.elapsed() < timeout => {
@@ -1764,6 +1810,14 @@ fn run_command_with_timeout(
         stdout,
         stderr,
     })
+}
+
+fn run_command_with_timeout(
+    command: Command,
+    timeout: Duration,
+    description: &str,
+) -> Result<Output, String> {
+    run_command_with_timeout_cancellable(command, timeout, description, None)
 }
 
 fn run_otx_sync_with_progress(
@@ -1903,7 +1957,12 @@ impl IdentityWorker {
         }
     }
 
-    fn analyze(&mut self, report: serde_json::Value) -> Result<serde_json::Value, String> {
+    fn analyze(
+        &mut self,
+        report: serde_json::Value,
+        analysis_id: &str,
+        cancellation: &AnalysisCancellation,
+    ) -> Result<serde_json::Value, String> {
         self.start()?;
         let request = serde_json::to_string(&report)
             .map_err(|error| format!("Could not serialize the identity report: {error}"))?;
@@ -1918,27 +1977,37 @@ impl IdentityWorker {
                 "Could not send the report to identity analysis: {error}"
             ));
         }
-        let response = match self
-            .responses
-            .as_ref()
-            .ok_or("Identity worker unavailable")?
-            .recv_timeout(IDENTITY_ENGINE_TIMEOUT)
-        {
-            Ok(Ok(response)) => response,
-            Ok(Err(error)) => {
+        let started_at = Instant::now();
+        let response = loop {
+            if cancellation.is_cancelled(analysis_id) {
                 self.stop();
-                return Err(format!("Could not read the identity response: {error}"));
+                return Err("Analysis cancelled.".to_string());
             }
-            Err(RecvTimeoutError::Timeout) => {
+            let remaining = IDENTITY_ENGINE_TIMEOUT.saturating_sub(started_at.elapsed());
+            if remaining.is_zero() {
                 self.stop();
                 return Err(format!(
                     "Identity analysis exceeded the {} second safety timeout and was stopped.",
                     IDENTITY_ENGINE_TIMEOUT.as_secs()
                 ));
             }
-            Err(RecvTimeoutError::Disconnected) => {
-                self.stop();
-                return Err("The identity worker stopped. Try the analysis again.".to_string());
+            let wait = remaining.min(Duration::from_millis(50));
+            match self
+                .responses
+                .as_ref()
+                .ok_or("Identity worker unavailable")?
+                .recv_timeout(wait)
+            {
+                Ok(Ok(response)) => break response,
+                Ok(Err(error)) => {
+                    self.stop();
+                    return Err(format!("Could not read the identity response: {error}"));
+                }
+                Err(RecvTimeoutError::Timeout) => continue,
+                Err(RecvTimeoutError::Disconnected) => {
+                    self.stop();
+                    return Err("The identity worker stopped. Try the analysis again.".to_string());
+                }
             }
         };
         if response.trim().is_empty() {
@@ -1976,6 +2045,8 @@ fn run_eml_engine(
     temporary_eml: PathBuf,
     credentials: ReputationCredentials,
     otx_cache_path: PathBuf,
+    analysis_id: String,
+    cancellation: Arc<AnalysisCancellation>,
 ) -> Result<serde_json::Value, String> {
     let output = engine_command().and_then(|mut command| {
         command
@@ -1983,7 +2054,12 @@ fn run_eml_engine(
             .env("VIRUSTOTAL_API_KEY", credentials.virustotal)
             .env("ABUSEIPDB_API_KEY", credentials.abuseipdb)
             .env("FISHSTOP_OTX_CACHE_PATH", otx_cache_path);
-        run_command_with_timeout(command, STATIC_ENGINE_TIMEOUT, "the FishStop engine")
+        run_command_with_timeout_cancellable(
+            command,
+            STATIC_ENGINE_TIMEOUT,
+            "the FishStop engine",
+            Some((cancellation, analysis_id)),
+        )
     });
     let _ = fs::remove_file(&temporary_eml);
     let output = output?;
@@ -2016,6 +2092,8 @@ fn analyze_eml_with_engine(
     user_sub: String,
     cache: Arc<Mutex<ReputationCredentialCache>>,
     otx_cache_path: PathBuf,
+    analysis_id: String,
+    cancellation: Arc<AnalysisCancellation>,
 ) -> Result<serde_json::Value, String> {
     let source = PathBuf::from(path);
     if !source.is_file()
@@ -2038,7 +2116,13 @@ fn analyze_eml_with_engine(
     let temporary_eml = std::env::temp_dir().join(format!("fishstop-{}.eml", random_url_safe(16)));
     fs::copy(&source, &temporary_eml)
         .map_err(|error| format!("Could not prepare the file for analysis: {error}"))?;
-    run_eml_engine(temporary_eml, credentials, otx_cache_path)
+    run_eml_engine(
+        temporary_eml,
+        credentials,
+        otx_cache_path,
+        analysis_id,
+        cancellation,
+    )
 }
 
 fn analyze_eml_contents_with_engine(
@@ -2047,6 +2131,8 @@ fn analyze_eml_contents_with_engine(
     user_sub: String,
     cache: Arc<Mutex<ReputationCredentialCache>>,
     otx_cache_path: PathBuf,
+    analysis_id: String,
+    cancellation: Arc<AnalysisCancellation>,
 ) -> Result<serde_json::Value, String> {
     if !file_name.to_lowercase().ends_with(".eml") {
         return Err("FishStop supports .eml files only.".to_string());
@@ -2058,7 +2144,13 @@ fn analyze_eml_contents_with_engine(
     let temporary_eml = std::env::temp_dir().join(format!("fishstop-{}.eml", random_url_safe(16)));
     fs::write(&temporary_eml, contents)
         .map_err(|error| format!("Could not prepare the file for analysis: {error}"))?;
-    run_eml_engine(temporary_eml, credentials, otx_cache_path)
+    run_eml_engine(
+        temporary_eml,
+        credentials,
+        otx_cache_path,
+        analysis_id,
+        cancellation,
+    )
 }
 
 #[tauri::command]
@@ -2066,12 +2158,22 @@ async fn analyze_eml(
     app: tauri::AppHandle,
     path: String,
     user_sub: String,
+    analysis_id: String,
     cache: tauri::State<'_, Arc<Mutex<ReputationCredentialCache>>>,
+    cancellation: tauri::State<'_, Arc<AnalysisCancellation>>,
 ) -> Result<serde_json::Value, String> {
     let otx_cache_path = otx_cache_file(&app, &user_sub)?;
     let cache = Arc::clone(&cache);
+    let cancellation = Arc::clone(&cancellation);
     tauri::async_runtime::spawn_blocking(move || {
-        analyze_eml_with_engine(path, user_sub, cache, otx_cache_path)
+        analyze_eml_with_engine(
+            path,
+            user_sub,
+            cache,
+            otx_cache_path,
+            analysis_id,
+            cancellation,
+        )
     })
     .await
     .map_err(|error| format!("Analysis interrupted: {error}"))?
@@ -2083,12 +2185,23 @@ async fn analyze_eml_contents(
     file_name: String,
     contents: Vec<u8>,
     user_sub: String,
+    analysis_id: String,
     cache: tauri::State<'_, Arc<Mutex<ReputationCredentialCache>>>,
+    cancellation: tauri::State<'_, Arc<AnalysisCancellation>>,
 ) -> Result<serde_json::Value, String> {
     let otx_cache_path = otx_cache_file(&app, &user_sub)?;
     let cache = Arc::clone(&cache);
+    let cancellation = Arc::clone(&cancellation);
     tauri::async_runtime::spawn_blocking(move || {
-        analyze_eml_contents_with_engine(file_name, contents, user_sub, cache, otx_cache_path)
+        analyze_eml_contents_with_engine(
+            file_name,
+            contents,
+            user_sub,
+            cache,
+            otx_cache_path,
+            analysis_id,
+            cancellation,
+        )
     })
     .await
     .map_err(|error| format!("Analysis interrupted: {error}"))?
@@ -2099,6 +2212,8 @@ fn analyze_ai_with_engine(
     report: serde_json::Value,
     ollama_model: &str,
     gpu_accelerated: bool,
+    analysis_id: String,
+    cancellation: Arc<AnalysisCancellation>,
 ) -> Result<serde_json::Value, String> {
     if command != "phi4" {
         return Err("Unsupported AI engine.".to_string());
@@ -2118,7 +2233,12 @@ fn analyze_ai_with_engine(
                 "OLLAMA_REQUEST_TIMEOUT",
                 ollama_request_timeout_seconds(gpu_accelerated).to_string(),
             );
-        run_command_with_timeout(engine, AI_ENGINE_TIMEOUT, "the AI engine")
+        run_command_with_timeout_cancellable(
+            engine,
+            AI_ENGINE_TIMEOUT,
+            "the AI engine",
+            Some((cancellation, analysis_id)),
+        )
     });
     let _ = fs::remove_file(&temporary_report);
     let output = output?;
@@ -2146,14 +2266,17 @@ fn analyze_ai_with_engine(
 #[tauri::command]
 async fn analyze_identity(
     report: serde_json::Value,
+    analysis_id: String,
     worker: tauri::State<'_, Arc<Mutex<IdentityWorker>>>,
+    cancellation: tauri::State<'_, Arc<AnalysisCancellation>>,
 ) -> Result<serde_json::Value, String> {
     let worker = Arc::clone(&worker);
+    let cancellation = Arc::clone(&cancellation);
     tauri::async_runtime::spawn_blocking(move || {
         worker
             .lock()
             .map_err(|_| "Identity worker unavailable.".to_string())?
-            .analyze(report)
+            .analyze(report, &analysis_id, &cancellation)
     })
     .await
     .map_err(|error| format!("Identity analysis interrupted: {error}"))?
@@ -2162,21 +2285,52 @@ async fn analyze_identity(
 #[tauri::command]
 async fn analyze_phi4(
     report: serde_json::Value,
+    analysis_id: String,
     app: tauri::AppHandle,
     runtime: tauri::State<'_, Arc<Mutex<OllamaRuntime>>>,
+    cancellation: tauri::State<'_, Arc<AnalysisCancellation>>,
 ) -> Result<serde_json::Value, String> {
     let runtime = Arc::clone(&runtime);
+    let cancellation = Arc::clone(&cancellation);
     tauri::async_runtime::spawn_blocking(move || {
+        if cancellation.is_cancelled(&analysis_id) {
+            return Err("Analysis cancelled.".to_string());
+        }
         let prepared_model = ollama_runtime::prepare_model(&app, &runtime)?;
+        if cancellation.is_cancelled(&analysis_id) {
+            return Err("Analysis cancelled.".to_string());
+        }
         analyze_ai_with_engine(
             "phi4",
             report,
             prepared_model.name,
             prepared_model.gpu_accelerated,
+            analysis_id,
+            cancellation,
         )
     })
     .await
     .map_err(|error| format!("Phi-4 analysis interrupted: {error}"))?
+}
+
+#[tauri::command]
+fn cancel_analysis(
+    analysis_id: String,
+    cancellation: tauri::State<'_, Arc<AnalysisCancellation>>,
+) -> Result<(), String> {
+    if analysis_id.trim().is_empty() || analysis_id.len() > 128 {
+        return Err("Invalid analysis identifier.".to_string());
+    }
+    cancellation.cancel(&analysis_id);
+    Ok(())
+}
+
+#[tauri::command]
+fn finish_analysis(
+    analysis_id: String,
+    cancellation: tauri::State<'_, Arc<AnalysisCancellation>>,
+) {
+    cancellation.finish(&analysis_id);
 }
 
 #[tauri::command]
@@ -2350,6 +2504,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(Arc::new(Mutex::new(IdentityWorker::default())))
+        .manage(Arc::new(AnalysisCancellation::default()))
         .manage(Arc::new(Mutex::new(OllamaRuntime::default())))
         .manage(Arc::new(Mutex::new(ReputationCredentialCache::default())))
         .setup(|_app| {
@@ -2382,6 +2537,8 @@ fn main() {
             clear_analysis_history,
             analyze_eml,
             analyze_eml_contents,
+            cancel_analysis,
+            finish_analysis,
             analyze_identity,
             analyze_phi4,
             warm_ollama_model,
@@ -2400,6 +2557,18 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn analysis_cancellation_is_scoped_and_clearable() {
+        let cancellation = AnalysisCancellation::default();
+        cancellation.cancel("analysis-a");
+
+        assert!(cancellation.is_cancelled("analysis-a"));
+        assert!(!cancellation.is_cancelled("analysis-b"));
+
+        cancellation.finish("analysis-a");
+        assert!(!cancellation.is_cancelled("analysis-a"));
+    }
 
     #[test]
     fn desktop_oauth_token_exchange_uses_pkce_and_the_configured_client_secret() {

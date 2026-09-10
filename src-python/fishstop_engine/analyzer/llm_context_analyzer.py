@@ -18,7 +18,7 @@ from fishstop_engine.domain_utils import registered_domain
 from .lookalike import is_risky_lookalike_alert
 
 OLLAMA_CHAT_ENDPOINT = os.getenv("OLLAMA_CHAT_ENDPOINT", "http://localhost:11434/api/chat")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3:4b-q4_K_M")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3:4b-instruct-2507-q4_K_M")
 OLLAMA_KEEP_ALIVE = os.getenv("OLLAMA_KEEP_ALIVE", "5m")
 OLLAMA_NUM_CTX = int(os.getenv("OLLAMA_NUM_CTX", "4096"))
 OLLAMA_NUM_PREDICT = int(os.getenv("OLLAMA_NUM_PREDICT", "320"))
@@ -56,7 +56,7 @@ OLLAMA_AVAILABILITY_TTL = max(
     0.0,
     float(os.getenv("OLLAMA_AVAILABILITY_TTL", "5")),
 )
-PROMPT_VERSION = "semantic-policy-v35-reward-redemption-grounding"
+PROMPT_VERSION = "semantic-policy-v36-qwen3-instruct-grounding"
 
 _OLLAMA_AVAILABILITY_LOCK = Lock()
 _OLLAMA_AVAILABILITY_CACHE: tuple[float, tuple, bool] | None = None
@@ -145,9 +145,9 @@ Return plain English prose only: one or two concise sentences, no JSON, Markdown
 TASK_INSTRUCTIONS = """Extract the recipient's most specific requested outcome. Follow this order:
 1. Find a request, question, imperative, or actionable button directed to the recipient. A notification, receipt, reminder, ordinary discussion, brand, deadline, link, attachment, or security event alone is not a request.
 2. If there is no requested action, use info for meaningful informational content or none only for empty/unclassifiable content. For info or none, channel must be none and evidence empty.
-3. Classify the final outcome, not an intermediate click: credentials for entering/sending a password, OTP, PIN, recovery code, or wallet seed; information for personal, confidential, identity, financial, or authentication data; payment for paying, transferring, depositing, or sending value; change_settings for creating/resetting a password, granting application consent, or changing settings; verify_account for confirming, denying, or reporting account activity; claim_reward for obtaining or redeeming a prize, refund, bonus, loyalty points, miles, voucher, or similar benefit without paying; bypass for evading a normal control. Use visit_link, open_attachment, or reply only when no more specific outcome is explicit.
+3. Classify the final outcome, not an intermediate click. This precedence is strict: credentials for entering/sending a password, OTP, PIN, recovery code, or wallet seed, even when the email calls the process sign-in, login, verification, or account protection; information for personal, confidential, identity, financial, or authentication data; payment for paying, transferring, depositing, or sending value; change_settings for creating/resetting a password, granting application consent, or changing settings; verify_account only for confirming, denying, or reporting account activity without submitting a credential; claim_reward for obtaining or redeeming a prize, refund, bonus, loyalty points, miles, voucher, or similar benefit without paying; bypass for evading a normal control. Use visit_link, open_attachment, or reply only when no more specific outcome is explicit.
 4. Choose a supported channel: link only if META links>0; attachment only if META attachments>0; form only for an explicit form; known_procedure for an independently known portal/settings path not supplied by the email; reply only for an email response; phone only for an explicit phone action.
-5. Copy the shortest exact action phrase into evidence. Quotations must be verbatim, in the email's original language, and may come only from subject, body, or visible link call-to-action text.
+5. Copy the shortest exact continuous action phrase into evidence. Quotations must be verbatim, in the email's original language, and may come only from subject, body, or visible link call-to-action text. Never correct, reformat, translate, or reconstruct an amount, account number, IBAN, URL, code, or identifier.
 
 Important distinctions:
 - A warning such as "if this was not you" is not verify_account unless it directs the recipient to respond. A concise actionable HTML button does count when paired with the relevant event.
@@ -158,7 +158,7 @@ Important distinctions:
 - A link or attachment request is not proof of phishing. scam_type remains none unless an explicit deception, credential, diversion, coercion, or other scam pattern is present.
 - A request to copy or paste a command, UNC/network path, or executable path into File Explorer, the Run dialog, a terminal, or a shell is an explicit action even when META reports zero links and zero attachments. Classify it as other with channel unclear; quote the shortest copy/paste instruction. Transparent or hidden text that differs from the apparent path is deception evidence.
 
-Signals are secondary context: financial_pretext for a debt/invoice/charge or diversion pretext; incentive for a prize/bonus/refund; threat for suspension, penalty, loss, exposure, reputational or physical harm; urgency for deadline/scarcity pressure; impersonation for a claimed person, role, organization, or brand. Copy the strongest signal's shortest exact phrase into signal_evidence.
+Signals are secondary context: financial_pretext for a debt/invoice/charge or diversion pretext; incentive for a prize/bonus/refund; threat for suspension, penalty, loss, exposure, reputational or physical harm; urgency for deadline/scarcity pressure; impersonation for a claimed person, role, organization, or brand. Include only signals explicitly supported by the email; never populate signals as a generic checklist. If signals is non-empty, copy the strongest signal's shortest exact phrase into signal_evidence. If no exact supporting phrase exists, return signals=[] and signal_evidence="".
 
 When relevant, populate credential_type, payment_method, payment_asset, amount, payment destination change, coercion, threat_type, scam_type, and claimed_brand. Omit optional detail fields when they are not supported. Set ambiguity=high only when the requested outcome remains genuinely unclear after applying these rules. Summary is one concise factual English sentence with no risk verdict.
 
@@ -469,6 +469,9 @@ def _strongly_authenticated_sender(soc: dict) -> bool:
     spf = _auth_status(soc, "SPF")
     dkim = _auth_status(soc, "DKIM")
     dmarc = _auth_status(soc, "DMARC")
+    spf_result = (soc.get("effective_auth_results") or {}).get("SPF") or {}
+    if (spf == "mixed" or spf_result.get("path_conflict")) and dkim != "pass":
+        return False
     return dmarc in {"pass", "bestguesspass"} or (
         spf == "pass" and dkim == "pass"
     )
@@ -643,7 +646,16 @@ def _technical_context_lines(soc: dict, body_for_llm: str = "", link_reputation:
             + ", ".join(str(link.get("host") or "URL") for link in html_ctas[:5])
         )
 
-    if spf_status not in {"pass", "unknown"}:
+    spf = (soc.get("effective_auth_results") or {}).get("SPF") or {}
+    if spf.get("sender_boundary_selected") and spf.get("path_conflict"):
+        lines.append(
+            "SPF at the sender boundary did not match the final relay result: "
+            f"sender_boundary={spf.get('origin_status') or spf_status} "
+            f"final_receiver={spf.get('delivery_status') or 'unknown'}"
+        )
+    elif spf_status == "mixed":
+        lines.append("SPF results conflict across the delivery path")
+    elif spf_status not in {"pass", "unknown"}:
         lines.append(f"SPF check did not pass: {spf_status}")
     if dkim_status in {"fail", "temperror", "permerror", "policy"}:
         lines.append(f"DKIM check did not pass: {dkim_status}")
@@ -754,11 +766,11 @@ def _technical_context_lines(soc: dict, body_for_llm: str = "", link_reputation:
     otx = soc.get("otx_intelligence") or {}
     for match in (otx.get("matches") or [])[:5]:
         lines.append(
-            "OTX synchronized Pulse match (supporting intelligence, not standalone proof): "
+            "OTX synchronized Pulse match (positive malicious evidence): "
             f"type={match.get('indicator_type') or '-'} "
             f"indicator={_clip(match.get('indicator', ''), 180)} "
             f"source={match.get('source') or '-'} "
-            f"confidence={match.get('confidence') or 'supporting'} "
+            f"confidence={match.get('confidence') or 'strong'} "
             f"pulse_count={match.get('pulse_count') or '-'}"
         )
     if otx.get("status") == "no_match":
@@ -992,7 +1004,7 @@ _EXTORTION_THREAT_PATTERN = re.compile(
     r"\b(?:threat(?:en|s|ened|ening)?|blackmail|extort(?:ion)?|ransom|"
     r"expos\w*|publish\w*|releas\w*|leak\w*|disclos\w*|destroy\w*|"
     r"harm\w*|suspend\w*|clos\w*|block\w*|lose|loss|penalt(?:y|ies)|fine\w*|"
-    r"chantag\w*|menac\w*|amenaz\w*|extorsi[oó]n|public\w*|difund\w*|"
+    r"chantag\w*|menac\w*|amenaz\w*|extorsi[oó]n|public\w*|pubblic\w*|difund\w*|"
     r"filtr\w*|divulg\w*|bloque\w*|perd\w*|multa\w*|minacci\w*|"
     r"ricatt\w*|sospend\w*|blocc\w*|penal(?:it[àa])?|espor\w*|vaz\w*|"
     r"amea[cç]\w*|chantagem)\b",
@@ -1115,6 +1127,7 @@ def _grounded_payment_diversion(soc: dict) -> dict:
         return {}
     return {
         "action": "payment",
+        "evidence": _explicit_payment_evidence(soc),
         "payment_method": "bank_transfer",
         "payment_destination_change": True,
         "payment_change_evidence": change_evidence,
@@ -1167,6 +1180,15 @@ def _explicit_credential_submission(soc: dict) -> bool:
         _CREDENTIAL_SUBMISSION_PATTERN.search(segment)
         for segment in _evidence_segments(soc)
     )
+
+
+def _explicit_credential_evidence(soc: dict) -> str:
+    """Return the original credential-submission instruction verbatim."""
+    matches = [
+        segment for segment in _evidence_segments(soc)
+        if _CREDENTIAL_SUBMISSION_PATTERN.search(segment)
+    ]
+    return _clip_exact_span(min(matches, key=len), 180) if matches else ""
 
 
 def _grounded_reward_claim(soc: dict) -> dict:
@@ -1464,6 +1486,15 @@ def normalize_semantic_extraction(raw: dict, soc: dict | None = None) -> dict:
         },
         "none",
     )
+    # The compact schema intentionally leaves detail fields optional so small
+    # local models can finish reliably. If the model nevertheless returns a
+    # coherent extortion classification and a concrete threat type, do not
+    # discard it solely because the redundant ``coercion`` boolean was omitted.
+    # Message grounding is still enforced later by _explicit_extortion_threat.
+    coercion = coercion or (
+        scam_type in {"extortion", "sextortion"}
+        and threat_type != "none"
+    )
     structured_extortion_claim = (
         coercion
         and payment_method != "none"
@@ -1733,6 +1764,26 @@ def _correlate_semantic_with_message_structure(soc: dict, semantic: dict) -> dic
         semantic["semantic_signals"] = sorted(set(semantic.get("semantic_signals") or []) | {"payment"})
         action = "pay_or_transfer"
         channel = "none"
+    # The final outcome is credential submission even when the message frames
+    # it as sign-in or account verification. Preserve the model's grounded
+    # delivery channel, but source the evidence from the original message.
+    credential_evidence = _explicit_credential_evidence(soc)
+    if credential_evidence and action in {
+        "none", "informational", "visit_link", "change_account_settings",
+        "verify_account", "other",
+    }:
+        semantic["requested_action"] = "provide_credentials"
+        semantic["asks_for_credentials"] = True
+        semantic["credential_type"] = (
+            semantic.get("credential_type")
+            if semantic.get("credential_type") not in {None, "", "none"}
+            else "other"
+        )
+        semantic["evidence_phrase"] = credential_evidence
+        semantic["reason"] = "The email explicitly asks the recipient to submit an authentication secret."
+        semantic["content_summary"] = "The email asks the recipient to submit an authentication secret."
+        semantic["ambiguity"] = "low"
+        action = "provide_credentials"
     # A visible HTML CTA is actionable even when the sender did not write a
     # separate 'click here' sentence.  Restrict this fallback to a claimed
     # account/security context so ordinary newsletter buttons remain neutral.
@@ -2071,7 +2122,15 @@ def _identity_risk(
         ]
 
     statuses = {name: _auth_status(soc, name) for name in ("SPF", "DKIM", "DMARC")}
-    authentication_passed = statuses["DMARC"] in {"pass", "bestguesspass"} or (
+    spf_result = (soc.get("effective_auth_results") or {}).get("SPF") or {}
+    spf_path_conflict = bool(spf_result.get("path_conflict"))
+    authentication_passed = (
+        statuses["DMARC"] in {"pass", "bestguesspass"}
+        and not (
+            (statuses["SPF"] == "mixed" or spf_path_conflict)
+            and statuses["DKIM"] != "pass"
+        )
+    ) or (
         statuses["SPF"] == "pass" and statuses["DKIM"] == "pass"
     )
     if authentication_passed:
@@ -2109,6 +2168,28 @@ def _identity_risk(
     if not reasons:
         reasons.append("sender authentication is incomplete or unavailable")
     return "uncertain", reasons
+
+
+def _sender_spf_rejected(soc: dict) -> bool:
+    """Return whether SPF rejected the sender at the relevant boundary.
+
+    A transient/error result is not treated as rejection. When the parser has
+    selected a preserved sender-boundary result, use that origin result rather
+    than a later forwarding relay's PASS.
+    """
+    spf = (
+        (soc.get("effective_auth_results") or {}).get("SPF")
+        or (soc.get("auth_results") or {}).get("SPF")
+        or (soc.get("arc_auth_results") or {}).get("SPF")
+        or {}
+    )
+    status_value = (
+        spf.get("origin_status")
+        if spf.get("sender_boundary_selected")
+        else spf.get("status")
+    )
+    status = str(status_value or "unknown").lower()
+    return status in {"fail", "softfail"}
 
 
 def _sender_domain(soc: dict) -> str:
@@ -2259,6 +2340,9 @@ def _technical_risk(soc: dict, semantic: dict | None = None) -> tuple[str, list[
         elif status == "suspicious" or _safe_int(rep.get("suspicious")) > 0:
             suspicious.append("a sender domain has suspicious VirusTotal reputation")
 
+    if (soc.get("otx_intelligence") or {}).get("matches"):
+        malicious.append("an email indicator exactly matches synchronized OTX threat intelligence")
+
     if any(link.get("is_ip") for link in (soc.get("links") or [])):
         suspicious.append("the message contains a direct-IP URL")
     if soc.get("mime_findings"):
@@ -2378,6 +2462,16 @@ def apply_email_risk_policy(soc: dict, semantic: dict) -> dict:
     if technical_risk == "malicious" or content_risk == "malicious":
         verdict = "phishing"
     elif identity_risk == "spoofing_evidence" and supplied_action:
+        verdict = "phishing"
+    elif (
+        content_risk == "suspicious"
+        and semantic.get("asks_for_payment")
+        and bool(semantic.get("evidence_phrase"))
+        and _sender_spf_rejected(soc)
+    ):
+        # A grounded request to send money and an explicit SPF fail/softfail at
+        # the sender boundary corroborate one another. Neither a generic money
+        # mention nor a transient SPF error is sufficient for this escalation.
         verdict = "phishing"
     elif content_risk == "suspicious" and (
         identity_risk == "spoofing_evidence" or technical_risk == "uncertain"
@@ -2658,13 +2752,13 @@ def _valid_content_summary(value: str) -> bool:
 
 TARGETED_INTENT_INSTRUCTIONS = (
     "Check only whether the email explicitly requests a sensitive final outcome: "
-    "provide_credentials=enter/send an authentication secret; provide_information=submit personal or confidential data; "
+    "provide_credentials=enter/send an authentication secret, and this always takes precedence over sign-in, login, verification, or account-protection wording; provide_information=submit personal or confidential data; "
     "payment=pay or transfer value; change_settings=create/reset/change a password, consent, or setting; "
-    "verify_account=confirm/deny/report account activity; claim_reward=obtain or redeem a prize, refund, bonus, loyalty points, miles, voucher, or similar benefit; bypass=evade a normal control. "
+    "verify_account=confirm/deny/report account activity without submitting a credential; claim_reward=obtain or redeem a prize, refund, bonus, loyalty points, miles, voucher, or similar benefit; bypass=evade a normal control. "
     "An intermediate link does not replace the final outcome. Surveys and feedback are not sensitive without an explicit sensitive target. "
     "For reply/forwarded context, combine the newest answer with its immediately quoted request; supplied account details or a payment-proof condition can complete an already requested transfer workflow. "
     "Payment diversion still requires explicit new/changed/updated/replacement/different destination context. "
-    "Extract relevant payment or threat details from meaning, not isolated words. Return action=none if unsupported, and copy the shortest verbatim action phrase as evidence.\n"
+    "Extract relevant payment or threat details from meaning, not isolated words. Return action=none if unsupported. Copy the shortest exact continuous action phrase as evidence; never correct, reformat, translate, or reconstruct an amount, account number, IBAN, URL, code, or identifier.\n"
 )
 
 TARGETED_SYSTEM_MESSAGE = (
@@ -2697,7 +2791,7 @@ PAYMENT_DIVERSION_SCHEMA = {
 
 PAYMENT_DIVERSION_INSTRUCTIONS = (
     "Check only for payment-destination change. It is true when a transfer/payment context explicitly presents a bank account, IBAN, beneficiary, or equivalent as new, changed, updated, replacement, different, or current. "
-    "Read adjacent messages together in reply/forwarded context. Bank details alone are false. If true, quote the shortest exact change phrase. "
+    "Read adjacent messages together in reply/forwarded context. Bank details alone are false. If true, quote the shortest exact continuous change phrase without correcting, reformatting, or reconstructing any amount, account number, IBAN, or identifier. "
     "Use business_email_compromise for an updated destination plus a transfer instruction; use invoice_fraud only when explicitly framed as invoice fraud.\n"
 )
 

@@ -23,7 +23,7 @@ Apri **Settings → Qwen locale**:
 - se il modello è installato, è disponibile **Remove model**;
 - il runtime e i modelli gestiti sono locali all'app.
 
-La selezione manuale è disabilitata: FishStop usa `qwen3:4b-q4_K_M` sui Mac Apple Silicon e `qwen3:4b-instruct-2507-q4_K_M` sui runtime CPU Windows e Linux.
+La selezione manuale è disabilitata: FishStop usa `qwen3:4b-instruct-2507-q4_K_M` su tutte le piattaforme supportate.
 
 L'analisi semantica usa per impostazione predefinita la modalità `balanced`: una passata primaria e, solo quando rimangono ambiguità rilevanti, un unico audit locale aggiuntivo. Per confronti di qualità si può impostare `FISHSTOP_ANALYSIS_MODE=fast|balanced|thorough`; `fast` disabilita l'audit e `thorough` conserva i controlli specializzati separati.
 

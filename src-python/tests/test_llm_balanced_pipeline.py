@@ -105,6 +105,56 @@ class BalancedPipelineTests(unittest.TestCase):
         self.assertEqual(result["performance"]["llm_calls"], 1)
         self.assertEqual(result["analysis"]["final_verdict"], "legitimate")
 
+    def test_spf_path_conflict_without_dkim_is_not_strong_authentication(self):
+        self.assertFalse(llm._strongly_authenticated_sender({
+            "effective_auth_results": {
+                "SPF": {
+                    "status": "softfail",
+                    "origin_status": "softfail",
+                    "delivery_status": "pass",
+                    "path_conflict": True,
+                },
+                "DKIM": {"status": "none"},
+                "DMARC": {"status": "pass"},
+            },
+        }))
+
+    def test_dkim_pass_can_preserve_strong_authentication_despite_spf_conflict(self):
+        self.assertTrue(llm._strongly_authenticated_sender({
+            "effective_auth_results": {
+                "SPF": {
+                    "status": "softfail",
+                    "origin_status": "softfail",
+                    "delivery_status": "pass",
+                    "path_conflict": True,
+                },
+                "DKIM": {"status": "pass"},
+                "DMARC": {"status": "pass"},
+            },
+        }))
+
+    def test_spf_path_conflict_prevents_verified_identity_without_dkim(self):
+        analysis = llm.apply_email_risk_policy(
+            {
+                "subject": "Ordinary update",
+                "body_for_ai": "This is an ordinary informational update.",
+                "links": [],
+                "attachments": [],
+                "effective_auth_results": {
+                    "SPF": {
+                        "status": "mixed",
+                        "delivery_status": "pass",
+                        "origin_status": "softfail",
+                    },
+                    "DKIM": {"status": "none"},
+                    "DMARC": {"status": "pass"},
+                },
+            },
+            _primary(),
+        )
+
+        self.assertEqual("uncertain", analysis["identity_risk"])
+
     def test_authenticated_brand_link_prevents_model_only_security_deception(self):
         evidence = "Manage the applications connected to your account."
         soc = {
@@ -177,6 +227,58 @@ class BalancedPipelineTests(unittest.TestCase):
 
         self.assertEqual(calls, ["primary:1"])
         self.assertTrue(result["analysis"]["payment_destination_change"])
+        self.assertEqual(result["analysis"]["final_verdict"], "phishing")
+
+    def test_grounded_payment_diversion_replaces_miscopied_model_evidence(self):
+        body = "Please transfer EUR 2,400 to our new IBAN IT60X0542811101000000123456."
+        result, calls = self._analyze(
+            {
+                "subject": "Updated payment details",
+                "body_for_ai": body,
+                "links": [],
+                "attachments": [],
+            },
+            _primary(
+                summary="The email requests a transfer to updated bank details.",
+                action="payment",
+                channel="none",
+                evidence="Please transfer EUR 2,400 to our new IBAN IT60X054281101000000123456.",
+                payment_method="bank_transfer",
+            ),
+        )
+
+        self.assertEqual(calls, ["primary:1"])
+        self.assertEqual(result["analysis"]["requested_action"], "pay_or_transfer")
+        self.assertEqual(result["analysis"]["intent_evidence"], body)
+        self.assertEqual(result["analysis"]["final_verdict"], "phishing")
+
+    def test_credential_submission_takes_precedence_over_account_verification(self):
+        body = "Verify your account using the button and enter your password to keep access."
+        result, _ = self._analyze(
+            {
+                "subject": "Account verification",
+                "body_for_ai": body,
+                "links": [{
+                    "url": "https://example.net/login",
+                    "host": "example.net",
+                    "display_text": "Verify account",
+                    "role": "body_action",
+                    "actionable": True,
+                }],
+                "attachments": [],
+            },
+            _primary(
+                summary="The email asks the recipient to verify the account and enter a password.",
+                action="verify_account",
+                channel="link",
+                evidence="Verify account",
+                credential_type="password",
+            ),
+        )
+
+        self.assertEqual(result["analysis"]["requested_action"], "provide_credentials")
+        self.assertEqual(result["analysis"]["credential_type"], "password")
+        self.assertEqual(result["analysis"]["intent_evidence"], body)
         self.assertEqual(result["analysis"]["final_verdict"], "phishing")
 
     def test_related_checks_share_one_adaptive_audit(self):
@@ -314,6 +416,114 @@ class BalancedPipelineTests(unittest.TestCase):
 
         self.assertFalse(llm._needs_extortion_verifier(ordinary))
         self.assertTrue(llm._needs_extortion_verifier(threatening))
+
+    def test_extortion_details_imply_omitted_coercion_boolean(self):
+        body = (
+            "Trasferire 950 EUR in Bitcoin o rendero pubblici i tuoi video privati."
+        )
+        analysis = llm.apply_email_risk_policy(
+            {
+                "subject": "Payment required",
+                "body_for_ai": body,
+                "links": [],
+                "attachments": [],
+            },
+            _primary(
+                action="payment",
+                evidence="Trasferire 950 EUR in Bitcoin",
+                payment_method="cryptocurrency",
+                payment_asset="Bitcoin",
+                amount="950 EUR",
+                scam_type="extortion",
+                threat_type="reputation_harm",
+            ),
+        )
+
+        self.assertTrue(analysis["coercion"])
+        self.assertTrue(analysis["semantic_extraction"]["structured_extortion"])
+        self.assertEqual("malicious", analysis["content_risk"])
+        self.assertEqual("phishing", analysis["final_verdict"])
+
+    def test_grounded_payment_plus_sender_boundary_spf_softfail_is_phishing(self):
+        body = "Please transfer EUR 950 to my Bitcoin wallet."
+        analysis = llm.apply_email_risk_policy(
+            {
+                "subject": "Payment required",
+                "body_for_ai": body,
+                "links": [],
+                "attachments": [],
+                "effective_auth_results": {
+                    "SPF": {
+                        "status": "softfail",
+                        "origin_status": "softfail",
+                        "delivery_status": "pass",
+                        "sender_boundary_selected": True,
+                        "path_conflict": True,
+                    },
+                    "DKIM": {"status": "none"},
+                    "DMARC": {"status": "pass"},
+                },
+            },
+            _primary(
+                action="payment",
+                evidence=body,
+                payment_method="cryptocurrency",
+                payment_asset="Bitcoin",
+                amount="EUR 950",
+            ),
+        )
+
+        self.assertEqual("suspicious", analysis["content_risk"])
+        self.assertEqual("uncertain", analysis["identity_risk"])
+        self.assertEqual("phishing", analysis["final_verdict"])
+
+    def test_payment_plus_transient_spf_error_stays_review(self):
+        body = "Please transfer EUR 950 to my Bitcoin wallet."
+        analysis = llm.apply_email_risk_policy(
+            {
+                "subject": "Payment required",
+                "body_for_ai": body,
+                "links": [],
+                "attachments": [],
+                "effective_auth_results": {
+                    "SPF": {"status": "temperror"},
+                    "DKIM": {"status": "none"},
+                    "DMARC": {"status": "none"},
+                },
+            },
+            _primary(
+                action="payment",
+                evidence=body,
+                payment_method="cryptocurrency",
+                payment_asset="Bitcoin",
+                amount="EUR 950",
+            ),
+        )
+
+        self.assertEqual("review", analysis["final_verdict"])
+
+    def test_otx_indicator_match_is_high_risk_without_other_signals(self):
+        analysis = llm.apply_email_risk_policy(
+            {
+                "subject": "Ordinary update",
+                "body_for_ai": "This is an ordinary informational update.",
+                "links": [],
+                "attachments": [],
+                "otx_intelligence": {
+                    "status": "match",
+                    "matches": [{
+                        "indicator_type": "domain",
+                        "indicator": "malicious.example",
+                        "confidence": "strong",
+                        "pulse_count": 1,
+                    }],
+                },
+            },
+            _primary(),
+        )
+
+        self.assertEqual("malicious", analysis["technical_risk"])
+        self.assertEqual("phishing", analysis["final_verdict"])
 
     def test_primary_schema_requires_only_core_semantic_fields(self):
         self.assertEqual(

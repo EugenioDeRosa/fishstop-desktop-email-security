@@ -66,6 +66,14 @@ def _select_worst_auth_result(items: List[Dict[str, Any]]) -> Dict[str, Any]:
     return selected
 
 
+def _auth_identity_domain(value: str) -> str:
+    """Normalize an SPF identity so the same envelope domain can be compared."""
+    identity = str(value or "").strip().strip("<>\"'").lower().rstrip(".")
+    if "@" in identity:
+        identity = identity.rsplit("@", 1)[-1]
+    return identity
+
+
 # ── Funzioni di Utility Internizzate ─────────────────────────────────────────
 
 
@@ -310,15 +318,16 @@ def select_effective_auth_results(
     arc_authentication_headers: List[str],
     received_spf_headers: List[str],
 ) -> Dict[str, Dict[str, Any]]:
-    """Select the result at the latest available authentication boundary.
+    """Select authentication results without losing the original SPF check.
 
     Header order is significant: a receiving service prepends its own
     ``Authentication-Results`` field, while ARC instances describe earlier
     stages of the route.  Combining every stage and choosing the most adverse
-    status turns an historical ``none`` into a false failure even when the
-    final receiver recorded ``pass``.  Prefer the first direct result for each
-    protocol, then the highest ARC instance, and use Received-SPF only as an
-    SPF fallback.
+    status turns an historical ``none`` into a false failure. DKIM and DMARC
+    therefore retain the final receiver's result. SPF is different because it
+    authenticates the client IP at each SMTP hop: when a valid-looking ARC
+    chain is available, the earliest ARC assessment is the primary SPF result
+    and the final receiver's relay result is retained as delivery metadata.
 
     This establishes precedence, not cryptographic trust in arbitrary header
     text; the UI continues to present the raw evidence for inspection.
@@ -346,12 +355,75 @@ def select_effective_auth_results(
     # ARC sets grow monotonically; the highest instance is the newest sealed
     # account of the preceding route and is only a fallback for missing direct
     # receiver results.
-    for raw in sorted(
+    ordered_arc_headers = sorted(
         (str(value) for value in (arc_authentication_headers or [])),
         key=arc_instance,
         reverse=True,
-    ):
+    )
+    for raw in ordered_arc_headers:
         add_missing(parse_auth_results(raw), "ARC-Authentication-Results")
 
     add_missing(parse_received_spf_results(received_spf_headers), "Received-SPF")
+
+    # SPF is evaluated independently at every SMTP boundary. A forwarder can
+    # therefore pass SPF at the final receiver even though the original source
+    # failed it. If the newest ARC custodian reports a passing ARC chain, make
+    # the earliest preserved result primary and retain the delivery result.
+    delivery_spf = selected.get("SPF")
+    newest_arc = ordered_arc_headers[0] if ordered_arc_headers else ""
+    arc_chain_passed = bool(re.search(r"\barc\s*=\s*pass\b", newest_arc, re.IGNORECASE))
+    if arc_chain_passed:
+        origin_spf = None
+        origin_instance = 0
+        for raw in sorted(ordered_arc_headers, key=arc_instance):
+            if arc_instance(raw) <= 0:
+                continue
+            candidate = (parse_auth_results(raw) or {}).get("SPF")
+            if candidate:
+                origin_spf = candidate
+                origin_instance = arc_instance(raw)
+                break
+
+        if origin_spf:
+            origin = {
+                key: value for key, value in origin_spf.items()
+                if key != "all_results"
+            }
+            origin_status = str(origin.get("status") or "unknown").lower()
+            result = {
+                **origin,
+                "status": origin_status,
+                "source": f"ARC-Authentication-Results i={origin_instance} (sender boundary)",
+                "origin_status": origin_status,
+                "origin_identity": origin.get("identity") or "",
+                "origin_source": f"ARC-Authentication-Results i={origin_instance}",
+                "origin_raw": origin.get("raw") or "",
+                "sender_boundary_selected": True,
+            }
+            if delivery_spf:
+                delivery = {
+                    key: value for key, value in delivery_spf.items()
+                    if key != "all_results"
+                }
+                delivery_status = str(delivery.get("status") or "unknown").lower()
+                result.update({
+                    "raw": (
+                        f"Sender boundary i={origin_instance} ({origin_status}): "
+                        f"{origin.get('raw') or ''}\n"
+                        f"Final receiver ({delivery_status}): {delivery.get('raw') or ''}"
+                    ).strip(),
+                    "delivery_status": delivery_status,
+                    "delivery_identity": delivery.get("identity") or "",
+                    "delivery_source": delivery.get("source") or "Authentication-Results",
+                    "path_conflict": delivery_status != origin_status,
+                    "same_envelope_domain": (
+                        bool(_auth_identity_domain(origin.get("identity") or ""))
+                        and _auth_identity_domain(origin.get("identity") or "")
+                        == _auth_identity_domain(delivery.get("identity") or "")
+                    ),
+                    "all_results": [origin, delivery],
+                })
+            else:
+                result["all_results"] = [origin]
+            selected["SPF"] = result
     return selected

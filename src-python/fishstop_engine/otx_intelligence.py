@@ -1221,12 +1221,13 @@ def apply_local_otx_intelligence(report: dict, cache_path: str | None = None) ->
                     "id": row["id"], "name": row["name"], "author": row["author"],
                     "modified": row["modified_at"], "tags": json.loads(row["tags_json"]),
                     "tlp": row["tlp"],
+                    "url": f"{OTX_BASE_URL}/pulse/{row['id']}",
                 } for row in rows]
                 matches.append({
                     "indicator": normalized,
                     "indicator_type": kind,
                     "source": source,
-                    "confidence": "strong" if kind in {"url", "sha256"} else "supporting",
+                    "confidence": "strong",
                     "pulse_count": int(rows[0]["match_count"]),
                     "pulses": pulses,
                 })
@@ -1261,16 +1262,14 @@ def apply_local_otx_intelligence(report: dict, cache_path: str | None = None) ->
         ),
     }
     if matches:
-        strong = [match for match in matches if match["confidence"] == "strong"]
-        level = "MEDIUM" if strong else "INFO"
-        strongest = strong[0] if strong else matches[0]
+        strongest = matches[0]
         report.setdefault("flags", []).append({
-            "level": level,
+            "level": "HIGH",
             "field": "OTX Threat Intelligence",
             "message": (
                 f"{strongest['indicator_type'].upper()} indicator '{strongest['indicator']}' appears in "
                 f"{strongest['pulse_count']} synchronized OTX Pulse(s). "
-                "Treat this as supporting intelligence, not standalone proof."
+                "An exact OTX indicator match is treated as high-risk threat intelligence."
             ),
         })
     return report

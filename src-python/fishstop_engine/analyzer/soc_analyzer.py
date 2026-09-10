@@ -1117,7 +1117,17 @@ class EmlSOCAnalyzer:
         spf = effective.get("SPF") or report["auth_results"].get("SPF") or report["arc_auth_results"].get("SPF")
         if spf:
             spf_status = (spf.get("status") or "unknown").lower()
-            if spf_status != "pass":
+            if spf.get("sender_boundary_selected") and spf.get("path_conflict"):
+                delivery_status = str(spf.get("delivery_status") or "unknown").upper()
+                origin_status = str(spf.get("origin_status") or "unknown").upper()
+                flag(
+                    "MEDIUM",
+                    "SPF",
+                    f"SPF {origin_status} at the sender boundary; the final receiver reported {delivery_status} for a later relay",
+                )
+            elif spf_status == "mixed":
+                flag("MEDIUM", "SPF", "SPF results differ across the delivery path")
+            elif spf_status != "pass":
                 flag("MEDIUM", "SPF", f"SPF {spf_status.upper()} - sender authorization should be reviewed")
         # An EML export can legitimately omit all delivery/authentication
         # headers.  Absence of an SPF result is not equivalent to an SPF

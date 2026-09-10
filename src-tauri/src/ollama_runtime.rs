@@ -13,8 +13,14 @@ use serde::{Deserialize, Serialize};
 use tauri::{path::BaseDirectory, AppHandle, Emitter, Manager};
 
 pub const MANAGED_MODEL: &str = "qwen3:4b-instruct-2507-q4_K_M";
+pub const CPU_REQUEST_TIMEOUT_SECONDS: u64 = 180;
+pub const CPU_CONTEXT_TOKENS: u64 = 3072;
+pub const CPU_OUTPUT_TOKENS: u64 = 224;
+pub const CPU_AUDIT_TOKENS: u64 = 160;
 const MANAGED_HOST: &str = "127.0.0.1:11435";
 const MANAGED_ENDPOINT: &str = "http://127.0.0.1:11435";
+const MODEL_KEEP_ALIVE: &str = "15m";
+const MODEL_WARMUP_TIMEOUT: Duration = Duration::from_secs(90);
 const TARGET_TRIPLE: &str = env!("TAURI_ENV_TARGET_TRIPLE");
 
 #[derive(Default)]
@@ -166,6 +172,26 @@ fn command_value(program: &str, arguments: &[&str]) -> Option<String> {
     }
     let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
     (!value.is_empty()).then_some(value)
+}
+
+pub fn recommended_cpu_threads() -> Option<usize> {
+    #[cfg(target_os = "windows")]
+    let detected = command_value(
+        "powershell.exe",
+        &[
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "(Get-CimInstance Win32_Processor | Measure-Object -Property NumberOfCores -Sum).Sum",
+        ],
+    )
+    .and_then(|value| value.parse::<usize>().ok());
+    #[cfg(not(target_os = "windows"))]
+    let detected = std::thread::available_parallelism()
+        .ok()
+        .map(|value| value.get());
+
+    detected.map(|cores| cores.clamp(1, 64))
 }
 
 fn configure_background_command(command: &mut Command) {
@@ -348,6 +374,9 @@ fn ensure_server(
                 .arg("serve")
                 .env("OLLAMA_HOST", MANAGED_HOST)
                 .env("OLLAMA_MODELS", models)
+                .env("OLLAMA_KEEP_ALIVE", MODEL_KEEP_ALIVE)
+                .env("OLLAMA_MAX_LOADED_MODELS", "1")
+                .env("OLLAMA_NUM_PARALLEL", "1")
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null());
@@ -406,9 +435,19 @@ pub fn warm_default_model(
     runtime: &Arc<Mutex<OllamaRuntime>>,
 ) -> Result<(), String> {
     let (endpoint, _) = ensure_server(app, runtime)?;
+    let cpu_profile = !cfg!(all(target_os = "macos", target_arch = "aarch64"));
+    let mut options = serde_json::json!({
+        "num_predict": 1,
+        "num_ctx": if cpu_profile { CPU_CONTEXT_TOKENS } else { 4096 },
+    });
+    if cpu_profile {
+        if let Some(cpu_threads) = recommended_cpu_threads() {
+            options["num_thread"] = serde_json::json!(cpu_threads);
+        }
+    }
     Client::builder()
         .connect_timeout(Duration::from_secs(5))
-        .timeout(Duration::from_secs(600))
+        .timeout(MODEL_WARMUP_TIMEOUT)
         .build()
         .map_err(|error| format!("Could not prepare the local AI warm-up: {error}"))?
         .post(format!("{endpoint}/api/generate"))
@@ -416,7 +455,8 @@ pub fn warm_default_model(
             "model": recommended_model(),
             "prompt": "",
             "stream": false,
-            "keep_alive": "5m"
+            "keep_alive": MODEL_KEEP_ALIVE,
+            "options": options
         }))
         .send()
         .and_then(|response| response.error_for_status())

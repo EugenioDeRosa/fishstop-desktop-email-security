@@ -1898,11 +1898,6 @@ async function runAiAnalysis(user: AuthUser, report: AnalysisReport, recordId: s
   if (runtime) ollamaRuntimeSnapshot = runtime;
   const model = runtime?.model || DEFAULT_OLLAMA_MODEL;
   renderAiPanels(container, model);
-  // Load Qwen while the CPU-only identity model is working. The semantic
-  // analysis still waits for identity evidence before receiving the report.
-  const ollamaWarmup = runtime?.model_ready
-    ? invoke<void>("warm_ollama_model").catch(() => undefined)
-    : Promise.resolve(undefined);
   if (!isCurrent()) return;
   await invoke<NonNullable<AnalysisReport["identity_analysis"]>>("analyze_identity", { report, analysisId }).then((value) => {
     if (!isCurrent()) return;
@@ -1915,21 +1910,34 @@ async function runAiAnalysis(user: AuthUser, report: AnalysisReport, recordId: s
     setAiPanel(container, "identity", "Analysis unavailable", String(error), "error");
     onSettled?.("identity");
   });
-  await ollamaWarmup;
+  if (!isCurrent()) return;
+  let warmupError = "";
+  if (runtime?.model_ready) {
+    setAiPanel(container, "phi4", "Preparing Qwen", "Loading the local model after identity analysis to avoid CPU and memory contention…", "loading", model);
+    await invoke<void>("warm_ollama_model").catch((error) => {
+      warmupError = `Qwen could not be prepared within the local startup budget: ${String(error)}`;
+    });
+  }
   if (!isCurrent()) return;
   const phiStartedAt = performance.now();
-  await invoke<NonNullable<AnalysisReport["phi4_analysis"]>>("analyze_phi4", { report, analysisId }).then((value) => {
-    if (!isCurrent()) return;
-    report.phi4_analysis = { ...value, model: value.model || model, duration_ms: Math.round(performance.now() - phiStartedAt) };
-    const analysis = value.analysis || {};
-    setPhiSemanticPanel(container, analysis, value.model || model, report.phi4_analysis.duration_ms, report.ai_content_summary?.summary, report.phi4_analysis.performance);
+  if (warmupError) {
+    report.phi4_analysis = { status: "error", message: warmupError, model, duration_ms: Math.round(performance.now() - phiStartedAt) };
+    setAiPanel(container, "phi4", "Analysis unavailable", warmupError, "error", model);
     onSettled?.("phi4");
-  }).catch((error) => {
-    if (!isCurrent()) return;
-    report.phi4_analysis = { status: "error", message: String(error) };
-    setAiPanel(container, "phi4", "Analysis unavailable", String(error), "error", model);
-    onSettled?.("phi4");
-  });
+  } else {
+    await invoke<NonNullable<AnalysisReport["phi4_analysis"]>>("analyze_phi4", { report, analysisId }).then((value) => {
+      if (!isCurrent()) return;
+      report.phi4_analysis = { ...value, model: value.model || model, duration_ms: Math.round(performance.now() - phiStartedAt) };
+      const analysis = value.analysis || {};
+      setPhiSemanticPanel(container, analysis, value.model || model, report.phi4_analysis.duration_ms, report.ai_content_summary?.summary, report.phi4_analysis.performance);
+      onSettled?.("phi4");
+    }).catch((error) => {
+      if (!isCurrent()) return;
+      report.phi4_analysis = { status: "error", message: String(error) };
+      setAiPanel(container, "phi4", "Analysis unavailable", String(error), "error", model);
+      onSettled?.("phi4");
+    });
+  }
   if (!isCurrent()) return;
   if (report.phi4_analysis?.status === "ok" && report.phi4_analysis.analysis) {
     const structuredSummary = (report.phi4_analysis.analysis.content_summary || report.phi4_analysis.analysis.explanation || "Content analysis complete.").replace(/\s+/g, " ").trim();

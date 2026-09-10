@@ -2,6 +2,7 @@ import json
 import unittest
 from unittest.mock import Mock, patch
 
+from fishstop_engine.analyzer import llm_context_analyzer as llm
 from fishstop_engine.analyzer.llm_context_analyzer import _stream_ollama
 
 
@@ -53,6 +54,53 @@ class OllamaTimeoutTests(unittest.TestCase):
         self.assertEqual("first", events[-1]["text"])
         self.assertTrue(response.closed)
         self.assertEqual((5.0, 10.0), mocked_post.call_args.kwargs["timeout"])
+
+    @patch("fishstop_engine.analyzer.llm_context_analyzer.requests.post")
+    @patch("fishstop_engine.analyzer.llm_context_analyzer.monotonic")
+    def test_idle_timeout_reports_the_real_phase_and_elapsed_time(
+        self,
+        mocked_monotonic: Mock,
+        mocked_post: Mock,
+    ):
+        mocked_monotonic.side_effect = [100.0, 190.0]
+        mocked_post.side_effect = llm.requests.exceptions.ReadTimeout("no first byte")
+
+        events = list(_stream_ollama([], "test-model", timeout=180))
+
+        self.assertEqual("error", events[-1]["status"])
+        self.assertIn("first response", events[-1]["message"])
+        self.assertIn("90 seconds", events[-1]["message"])
+        self.assertIn("elapsed 90.0s", events[-1]["message"])
+        self.assertIn("total request budget 180s", events[-1]["message"])
+        self.assertEqual((5.0, 90.0), mocked_post.call_args.kwargs["timeout"])
+
+    @patch("fishstop_engine.analyzer.llm_context_analyzer.requests.post")
+    @patch("fishstop_engine.analyzer.llm_context_analyzer.monotonic")
+    def test_connection_timeout_is_not_reported_as_the_full_request_budget(
+        self,
+        mocked_monotonic: Mock,
+        mocked_post: Mock,
+    ):
+        mocked_monotonic.side_effect = [100.0, 105.0]
+        mocked_post.side_effect = llm.requests.exceptions.ConnectTimeout("offline")
+
+        events = list(_stream_ollama([], "test-model", timeout=180))
+
+        self.assertEqual("error", events[-1]["status"])
+        self.assertIn("5 second connection budget", events[-1]["message"])
+        self.assertNotIn("180 seconds", events[-1]["message"])
+
+    @patch("fishstop_engine.analyzer.llm_context_analyzer.requests.post")
+    def test_cpu_thread_count_is_forwarded_as_a_request_option(self, mocked_post: Mock):
+        mocked_post.return_value = _StreamingResponse([
+            {"message": {"content": "{}"}, "done": True},
+        ])
+
+        with patch.object(llm, "OLLAMA_NUM_THREAD", 6):
+            events = list(_stream_ollama([], "test-model", timeout=10))
+
+        self.assertEqual("ok", events[-1]["status"])
+        self.assertEqual(6, mocked_post.call_args.kwargs["json"]["options"]["num_thread"])
 
 
 if __name__ == "__main__":

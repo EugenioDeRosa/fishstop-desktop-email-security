@@ -19,12 +19,15 @@ from .lookalike import is_risky_lookalike_alert
 
 OLLAMA_CHAT_ENDPOINT = os.getenv("OLLAMA_CHAT_ENDPOINT", "http://localhost:11434/api/chat")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3:4b-instruct-2507-q4_K_M")
-OLLAMA_KEEP_ALIVE = os.getenv("OLLAMA_KEEP_ALIVE", "5m")
+OLLAMA_KEEP_ALIVE = os.getenv("OLLAMA_KEEP_ALIVE", "15m")
 OLLAMA_NUM_CTX = int(os.getenv("OLLAMA_NUM_CTX", "4096"))
 OLLAMA_NUM_PREDICT = int(os.getenv("OLLAMA_NUM_PREDICT", "320"))
 OLLAMA_AUDIT_NUM_PREDICT = int(os.getenv("OLLAMA_AUDIT_NUM_PREDICT", "240"))
 OLLAMA_DISABLE_THINKING = os.getenv("OLLAMA_DISABLE_THINKING", "1").strip().lower() not in {"0", "false", "no"}
 OLLAMA_REQUEST_TIMEOUT = int(os.getenv("OLLAMA_REQUEST_TIMEOUT", "90"))
+OLLAMA_RESPONSE_IDLE_TIMEOUT = int(os.getenv("OLLAMA_RESPONSE_IDLE_TIMEOUT", "90"))
+OLLAMA_PIPELINE_TIMEOUT = int(os.getenv("OLLAMA_PIPELINE_TIMEOUT", "270"))
+OLLAMA_NUM_THREAD = int(os.getenv("OLLAMA_NUM_THREAD", "0"))
 OLLAMA_SINGLE_PASS = os.getenv("OLLAMA_SINGLE_PASS", "0").strip().lower() in {"1", "true", "yes"}
 ANALYSIS_MODE = os.getenv("FISHSTOP_ANALYSIS_MODE", "balanced").strip().lower()
 if ANALYSIS_MODE not in {"fast", "balanced", "thorough"}:
@@ -3538,6 +3541,16 @@ def stream_phi4_email_analysis(
     timeout: int = OLLAMA_REQUEST_TIMEOUT,
     cancellation_requested=None,
 ):
+    pipeline_started_at = monotonic()
+    pipeline_deadline = pipeline_started_at + max(
+        float(timeout),
+        float(OLLAMA_PIPELINE_TIMEOUT),
+    )
+
+    def remaining_timeout(cap: int) -> int:
+        remaining = int(pipeline_deadline - monotonic())
+        return max(1, min(int(cap), remaining))
+
     if cancellation_requested and cancellation_requested():
         yield {"status": "cancelled", "text": ""}
         return
@@ -3599,7 +3612,7 @@ def stream_phi4_email_analysis(
         backend_stream = _stream_ollama(
             messages,
             model,
-            timeout,
+            remaining_timeout(timeout),
             request_stage=f"primary:{section_number}",
             telemetry=ollama_calls,
         )
@@ -3644,7 +3657,7 @@ def stream_phi4_email_analysis(
                 for retry in _stream_ollama(
                     retry_messages,
                     model,
-                    timeout,
+                    remaining_timeout(timeout),
                     request_stage=f"retry:{section_number}",
                     telemetry=ollama_calls,
                 ):
@@ -3708,7 +3721,7 @@ def stream_phi4_email_analysis(
                         section_soc,
                         checks,
                         model=model,
-                        timeout=timeout,
+                        timeout=remaining_timeout(timeout),
                         email_prompt=email_prompt,
                         telemetry=ollama_calls,
                         cancellation_requested=cancellation_requested,
@@ -3734,7 +3747,7 @@ def stream_phi4_email_analysis(
                         targeted = _request_targeted_intent(
                             section_soc,
                             model=model,
-                            timeout=timeout,
+                            timeout=remaining_timeout(timeout),
                             email_prompt=email_prompt,
                             telemetry=ollama_calls,
                             cancellation_requested=cancellation_requested,
@@ -3753,7 +3766,7 @@ def stream_phi4_email_analysis(
                         payment_diversion = _request_payment_diversion_verifier(
                             section_soc,
                             model=model,
-                            timeout=timeout,
+                            timeout=remaining_timeout(timeout),
                             email_prompt=email_prompt,
                             telemetry=ollama_calls,
                             cancellation_requested=cancellation_requested,
@@ -3768,7 +3781,7 @@ def stream_phi4_email_analysis(
                         security_lure = _request_security_lure_verifier(
                             section_soc,
                             model=model,
-                            timeout=timeout,
+                            timeout=remaining_timeout(timeout),
                             email_prompt=email_prompt,
                             telemetry=ollama_calls,
                             cancellation_requested=cancellation_requested,
@@ -3783,7 +3796,7 @@ def stream_phi4_email_analysis(
                         extortion = _request_extortion_verifier(
                             section_soc,
                             model=model,
-                            timeout=timeout,
+                            timeout=remaining_timeout(timeout),
                             email_prompt=email_prompt,
                             telemetry=ollama_calls,
                             cancellation_requested=cancellation_requested,
@@ -3972,18 +3985,21 @@ def _stream_ollama(
     request_timeout = max(1.0, float(timeout))
     started_at = monotonic()
     deadline = started_at + request_timeout
+    options = {
+        "temperature": 0.0,
+        "top_p": 0.9,
+        "num_ctx": OLLAMA_NUM_CTX,
+        "num_predict": max(1, int(num_predict or OLLAMA_NUM_PREDICT)),
+    }
+    if OLLAMA_NUM_THREAD > 0:
+        options["num_thread"] = OLLAMA_NUM_THREAD
     payload = {
         "model": model,
         "messages": messages,
         "stream": True,
         **({"format": PHI4_OUTPUT_SCHEMA if output_schema is None else output_schema} if output_schema is not False else {}),
         "keep_alive": OLLAMA_KEEP_ALIVE,
-        "options": {
-            "temperature": 0.0,
-            "top_p": 0.9,
-            "num_ctx": OLLAMA_NUM_CTX,
-            "num_predict": max(1, int(num_predict or OLLAMA_NUM_PREDICT)),
-        },
+        "options": options,
     }
     # Qwen-like reasoning models may otherwise exhaust their output budget before
     # emitting the schema. Ollama ignores this control for models without thinking.
@@ -3995,7 +4011,11 @@ def _stream_ollama(
         # requests' scalar timeout is an inactivity timeout, not a wall-clock
         # deadline. Keep short connect/read bounds and enforce the total budget
         # below even when the server continues to trickle tokens indefinitely.
-        socket_timeout = (min(5.0, request_timeout), min(30.0, request_timeout))
+        response_idle_timeout = min(
+            max(1.0, float(OLLAMA_RESPONSE_IDLE_TIMEOUT)),
+            request_timeout,
+        )
+        socket_timeout = (min(5.0, request_timeout), response_idle_timeout)
         with requests.post(
             OLLAMA_CHAT_ENDPOINT,
             json=payload,
@@ -4030,8 +4050,37 @@ def _stream_ollama(
                 if event.get("done"):
                     done_event = event
                     break
+    except requests.exceptions.ConnectTimeout:
+        elapsed = monotonic() - started_at
+        yield {
+            "status": "error",
+            "message": (
+                "Ollama could not be reached within the 5 second connection "
+                f"budget (elapsed {elapsed:.1f}s)."
+            ),
+            "text": "".join(chunks),
+        }
+        return
+    except requests.exceptions.ReadTimeout:
+        elapsed = monotonic() - started_at
+        phase = "its first response" if not chunks else "the next output chunk"
+        yield {
+            "status": "error",
+            "message": (
+                f"Ollama did not return {phase} for "
+                f"{response_idle_timeout:g} seconds "
+                f"(elapsed {elapsed:.1f}s; total request budget {timeout}s)."
+            ),
+            "text": "".join(chunks),
+        }
+        return
     except requests.exceptions.Timeout:
-        yield {"status": "error", "message": f"Ollama timed out after {timeout} seconds of total or network inactivity.", "text": "".join(chunks)}
+        elapsed = monotonic() - started_at
+        yield {
+            "status": "error",
+            "message": f"Ollama timed out after {elapsed:.1f}s during the local request.",
+            "text": "".join(chunks),
+        }
         return
     except requests.exceptions.HTTPError as exc:
         code = exc.response.status_code if exc.response is not None else "?"

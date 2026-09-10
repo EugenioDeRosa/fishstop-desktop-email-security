@@ -61,11 +61,11 @@ const KEYRING_SERVICE: &str = "it.fishstop.desktop";
 const MAX_EML_BYTES: usize = 40 * 1024 * 1024;
 const STATIC_ENGINE_TIMEOUT: Duration = Duration::from_secs(180);
 const IDENTITY_ENGINE_TIMEOUT: Duration = Duration::from_secs(180);
-const AI_ENGINE_TIMEOUT: Duration = Duration::from_secs(660);
+const AI_ENGINE_TIMEOUT: Duration = Duration::from_secs(300);
 // Allow the Python synchronizer's 20-minute soft budget to publish its
 // checkpoint and close the database cleanly before the process is stopped.
 const OTX_SYNC_TIMEOUT: Duration = Duration::from_secs(21 * 60);
-const CPU_OLLAMA_REQUEST_TIMEOUT_SECONDS: u64 = 600;
+const OLLAMA_PIPELINE_TIMEOUT_SECONDS: u64 = 270;
 #[cfg(target_os = "windows")]
 const ACCELERATED_OLLAMA_REQUEST_TIMEOUT_SECONDS: u64 = 240;
 #[cfg(not(target_os = "windows"))]
@@ -75,7 +75,7 @@ fn ollama_request_timeout_seconds(gpu_accelerated: bool) -> u64 {
     if gpu_accelerated {
         ACCELERATED_OLLAMA_REQUEST_TIMEOUT_SECONDS
     } else {
-        CPU_OLLAMA_REQUEST_TIMEOUT_SECONDS
+        ollama_runtime::CPU_REQUEST_TIMEOUT_SECONDS
     }
 }
 
@@ -2230,9 +2230,25 @@ fn analyze_ai_with_engine(
             .arg(&temporary_report)
             .env("OLLAMA_MODEL", ollama_model)
             .env(
+                "OLLAMA_PIPELINE_TIMEOUT",
+                OLLAMA_PIPELINE_TIMEOUT_SECONDS.to_string(),
+            )
+            .env(
                 "OLLAMA_REQUEST_TIMEOUT",
                 ollama_request_timeout_seconds(gpu_accelerated).to_string(),
             );
+        if !gpu_accelerated {
+            engine
+                .env("OLLAMA_NUM_CTX", ollama_runtime::CPU_CONTEXT_TOKENS.to_string())
+                .env("OLLAMA_NUM_PREDICT", ollama_runtime::CPU_OUTPUT_TOKENS.to_string())
+                .env(
+                    "OLLAMA_AUDIT_NUM_PREDICT",
+                    ollama_runtime::CPU_AUDIT_TOKENS.to_string(),
+                );
+            if let Some(cpu_threads) = ollama_runtime::recommended_cpu_threads() {
+                engine.env("OLLAMA_NUM_THREAD", cpu_threads.to_string());
+            }
+        }
         run_command_with_timeout_cancellable(
             engine,
             AI_ENGINE_TIMEOUT,
@@ -2664,13 +2680,16 @@ mod tests {
     }
 
     #[test]
-    fn cpu_ollama_requests_get_a_ten_minute_budget_and_process_grace() {
+    fn cpu_ollama_requests_use_a_bounded_profile_with_process_grace() {
         assert_eq!(
             ollama_request_timeout_seconds(false),
-            CPU_OLLAMA_REQUEST_TIMEOUT_SECONDS
+            ollama_runtime::CPU_REQUEST_TIMEOUT_SECONDS
         );
-        assert_eq!(CPU_OLLAMA_REQUEST_TIMEOUT_SECONDS, 10 * 60);
-        assert!(AI_ENGINE_TIMEOUT > Duration::from_secs(CPU_OLLAMA_REQUEST_TIMEOUT_SECONDS));
+        assert_eq!(ollama_runtime::CPU_REQUEST_TIMEOUT_SECONDS, 3 * 60);
+        assert_eq!(ollama_runtime::CPU_CONTEXT_TOKENS, 3072);
+        assert_eq!(ollama_runtime::CPU_OUTPUT_TOKENS, 224);
+        assert_eq!(ollama_runtime::CPU_AUDIT_TOKENS, 160);
+        assert!(AI_ENGINE_TIMEOUT > Duration::from_secs(OLLAMA_PIPELINE_TIMEOUT_SECONDS));
     }
 
     #[test]

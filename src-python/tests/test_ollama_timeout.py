@@ -102,6 +102,17 @@ class OllamaTimeoutTests(unittest.TestCase):
         self.assertEqual("ok", events[-1]["status"])
         self.assertEqual(6, mocked_post.call_args.kwargs["json"]["options"]["num_thread"])
 
+    @patch("fishstop_engine.analyzer.llm_context_analyzer.requests.post")
+    def test_http_error_includes_ollama_response_detail(self, mocked_post: Mock):
+        response = Mock(status_code=400, text='{"error":"invalid keep_alive"}')
+        response.json.return_value = {"error": "invalid keep_alive"}
+        mocked_post.side_effect = llm.requests.exceptions.HTTPError(response=response)
+
+        events = list(_stream_ollama([], "test-model", timeout=10))
+
+        self.assertEqual("error", events[-1]["status"])
+        self.assertEqual("Ollama HTTP 400: invalid keep_alive", events[-1]["message"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -5,7 +5,7 @@ const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 function run(args) {
   return spawn(npmCommand, args, {
     stdio: "inherit",
-    shell: false,
+    shell: process.platform === "win32",
   });
 }
 

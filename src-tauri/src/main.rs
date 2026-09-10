@@ -36,7 +36,7 @@ use url::Url;
 // Un Client ID di un'app desktop è pubblico per definizione. Non inserire mai qui
 // un client secret o credenziali personali.
 const GOOGLE_CLIENT_ID: &str =
-    "676285460838-a927po5i3k4eo5cq7pls04ltjg63p8mf.apps.googleusercontent.com";
+    "676285460838-ddntr70n2um8s68r56aludqt4qkgc6hs.apps.googleusercontent.com";
 const GOOGLE_CLIENT_SECRET_RESOURCE: &str = "google-oauth-client-secret";
 const AUTHORIZATION_ENDPOINT: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_ENDPOINT: &str = "https://oauth2.googleapis.com/token";
@@ -61,11 +61,12 @@ const KEYRING_SERVICE: &str = "it.fishstop.desktop";
 const MAX_EML_BYTES: usize = 40 * 1024 * 1024;
 const STATIC_ENGINE_TIMEOUT: Duration = Duration::from_secs(180);
 const IDENTITY_ENGINE_TIMEOUT: Duration = Duration::from_secs(180);
-const AI_ENGINE_TIMEOUT: Duration = Duration::from_secs(300);
+const ACCELERATED_AI_ENGINE_TIMEOUT: Duration = Duration::from_secs(300);
+const CPU_AI_ENGINE_TIMEOUT: Duration = Duration::from_secs(21 * 60);
 // Allow the Python synchronizer's 20-minute soft budget to publish its
 // checkpoint and close the database cleanly before the process is stopped.
 const OTX_SYNC_TIMEOUT: Duration = Duration::from_secs(21 * 60);
-const OLLAMA_PIPELINE_TIMEOUT_SECONDS: u64 = 270;
+const ACCELERATED_OLLAMA_PIPELINE_TIMEOUT_SECONDS: u64 = 270;
 #[cfg(target_os = "windows")]
 const ACCELERATED_OLLAMA_REQUEST_TIMEOUT_SECONDS: u64 = 240;
 #[cfg(not(target_os = "windows"))]
@@ -76,6 +77,22 @@ fn ollama_request_timeout_seconds(gpu_accelerated: bool) -> u64 {
         ACCELERATED_OLLAMA_REQUEST_TIMEOUT_SECONDS
     } else {
         ollama_runtime::CPU_REQUEST_TIMEOUT_SECONDS
+    }
+}
+
+fn ollama_pipeline_timeout_seconds(gpu_accelerated: bool) -> u64 {
+    if gpu_accelerated {
+        ACCELERATED_OLLAMA_PIPELINE_TIMEOUT_SECONDS
+    } else {
+        ollama_runtime::CPU_PIPELINE_TIMEOUT_SECONDS
+    }
+}
+
+fn ai_engine_timeout(gpu_accelerated: bool) -> Duration {
+    if gpu_accelerated {
+        ACCELERATED_AI_ENGINE_TIMEOUT
+    } else {
+        CPU_AI_ENGINE_TIMEOUT
     }
 }
 
@@ -2231,16 +2248,27 @@ fn analyze_ai_with_engine(
             .env("OLLAMA_MODEL", ollama_model)
             .env(
                 "OLLAMA_PIPELINE_TIMEOUT",
-                OLLAMA_PIPELINE_TIMEOUT_SECONDS.to_string(),
+                ollama_pipeline_timeout_seconds(gpu_accelerated).to_string(),
             )
             .env(
                 "OLLAMA_REQUEST_TIMEOUT",
                 ollama_request_timeout_seconds(gpu_accelerated).to_string(),
-            );
+            )
+            .env("OLLAMA_KEEP_ALIVE", "-1m");
         if !gpu_accelerated {
             engine
-                .env("OLLAMA_NUM_CTX", ollama_runtime::CPU_CONTEXT_TOKENS.to_string())
-                .env("OLLAMA_NUM_PREDICT", ollama_runtime::CPU_OUTPUT_TOKENS.to_string())
+                .env(
+                    "OLLAMA_NUM_CTX",
+                    ollama_runtime::CPU_CONTEXT_TOKENS.to_string(),
+                )
+                .env(
+                    "OLLAMA_NUM_PREDICT",
+                    ollama_runtime::CPU_OUTPUT_TOKENS.to_string(),
+                )
+                .env(
+                    "OLLAMA_RESPONSE_IDLE_TIMEOUT",
+                    ollama_runtime::CPU_RESPONSE_IDLE_TIMEOUT_SECONDS.to_string(),
+                )
                 .env(
                     "OLLAMA_AUDIT_NUM_PREDICT",
                     ollama_runtime::CPU_AUDIT_TOKENS.to_string(),
@@ -2251,7 +2279,7 @@ fn analyze_ai_with_engine(
         }
         run_command_with_timeout_cancellable(
             engine,
-            AI_ENGINE_TIMEOUT,
+            ai_engine_timeout(gpu_accelerated),
             "the AI engine",
             Some((cancellation, analysis_id)),
         )
@@ -2309,21 +2337,26 @@ async fn analyze_phi4(
     let runtime = Arc::clone(&runtime);
     let cancellation = Arc::clone(&cancellation);
     tauri::async_runtime::spawn_blocking(move || {
-        if cancellation.is_cancelled(&analysis_id) {
-            return Err("Analysis cancelled.".to_string());
-        }
-        let prepared_model = ollama_runtime::prepare_model(&app, &runtime)?;
-        if cancellation.is_cancelled(&analysis_id) {
-            return Err("Analysis cancelled.".to_string());
-        }
-        analyze_ai_with_engine(
-            "phi4",
-            report,
-            prepared_model.name,
-            prepared_model.gpu_accelerated,
-            analysis_id,
-            cancellation,
-        )
+        let result = (|| {
+            if cancellation.is_cancelled(&analysis_id) {
+                return Err("Analysis cancelled.".to_string());
+            }
+            ollama_runtime::warm_default_model(&app, &runtime)?;
+            if cancellation.is_cancelled(&analysis_id) {
+                return Err("Analysis cancelled.".to_string());
+            }
+            let prepared_model = ollama_runtime::prepare_model(&app, &runtime)?;
+            analyze_ai_with_engine(
+                "phi4",
+                report,
+                prepared_model.name,
+                prepared_model.gpu_accelerated,
+                analysis_id,
+                cancellation,
+            )
+        })();
+        let _ = ollama_runtime::unload_default_model();
+        result
     })
     .await
     .map_err(|error| format!("Phi-4 analysis interrupted: {error}"))?
@@ -2685,11 +2718,22 @@ mod tests {
             ollama_request_timeout_seconds(false),
             ollama_runtime::CPU_REQUEST_TIMEOUT_SECONDS
         );
-        assert_eq!(ollama_runtime::CPU_REQUEST_TIMEOUT_SECONDS, 3 * 60);
+        assert_eq!(ollama_runtime::CPU_REQUEST_TIMEOUT_SECONDS, 10 * 60);
+        assert_eq!(ollama_runtime::CPU_RESPONSE_IDLE_TIMEOUT_SECONDS, 5 * 60);
+        assert_eq!(ollama_runtime::CPU_PIPELINE_TIMEOUT_SECONDS, 20 * 60);
         assert_eq!(ollama_runtime::CPU_CONTEXT_TOKENS, 3072);
         assert_eq!(ollama_runtime::CPU_OUTPUT_TOKENS, 224);
         assert_eq!(ollama_runtime::CPU_AUDIT_TOKENS, 160);
-        assert!(AI_ENGINE_TIMEOUT > Duration::from_secs(OLLAMA_PIPELINE_TIMEOUT_SECONDS));
+        assert!(ai_engine_timeout(false)
+            > Duration::from_secs(ollama_pipeline_timeout_seconds(false)));
+        assert_eq!(
+            ollama_request_timeout_seconds(true),
+            ACCELERATED_OLLAMA_REQUEST_TIMEOUT_SECONDS
+        );
+        assert_eq!(
+            ollama_pipeline_timeout_seconds(true),
+            ACCELERATED_OLLAMA_PIPELINE_TIMEOUT_SECONDS
+        );
     }
 
     #[test]

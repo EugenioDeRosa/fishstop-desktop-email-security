@@ -4084,7 +4084,18 @@ def _stream_ollama(
         return
     except requests.exceptions.HTTPError as exc:
         code = exc.response.status_code if exc.response is not None else "?"
-        yield {"status": "error", "message": f"Ollama HTTP {code}: verify that model '{model}' is installed. ({exc})", "text": "".join(chunks)}
+        detail = ""
+        if exc.response is not None:
+            try:
+                detail = str(exc.response.json().get("error") or "").strip()
+            except (ValueError, AttributeError):
+                detail = exc.response.text.strip()
+        message = f"Ollama HTTP {code}"
+        if detail:
+            message += f": {detail}"
+        else:
+            message += f": request failed for model '{model}'"
+        yield {"status": "error", "message": message, "text": "".join(chunks)}
         return
     except requests.exceptions.RequestException as exc:
         yield {"status": "error", "message": f"Ollama is unreachable at {OLLAMA_CHAT_ENDPOINT}: {exc}", "text": "".join(chunks)}

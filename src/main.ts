@@ -88,7 +88,7 @@ type AnalysisReport = {
 };
 type ReputationResult = { status?: string; message?: string; detection_ratio?: string; malicious?: number; suspicious?: number; total_engines?: number; threat_label?: string; file_type?: string; file_name?: string; last_analysis?: string | number; permalink?: string; abuseConfidenceScore?: number; totalReports?: number; country?: string; country_code?: string; city?: string; region?: string; isp?: string; org?: string; asn?: string; timezone?: string; lat?: number; lon?: number; is_proxy?: boolean; is_hosting?: boolean; resolved_ip?: string; resolved_domain?: string; used_parent_fallback?: string; url?: string; title?: string; crowdsourced_context_summary?: string };
 type AnalysisRecord = { id: string; analyzedAt: string; report: AnalysisReport; analysisDurationMs?: number };
-type ActiveAnalysis = { userSub: string; fileName: string; source?: "file" | "inbox"; status: "processing" | "complete" | "error"; analysisId?: string; report?: AnalysisReport; recordId?: string | null; error?: string };
+type ActiveAnalysis = { userSub: string; fileName: string; source?: "file" | "inbox"; status: "processing" | "complete" | "error"; analysisId?: string; report?: AnalysisReport; recordId?: string | null; error?: string; completedChecks?: number[]; progressMessage?: string };
 type StatisticsPeriod = "today" | "week" | "month" | "3m" | "6m" | "9m" | "12m" | "all";
 type CopyEvent = { copiedAt: string };
 
@@ -777,9 +777,10 @@ function searchIconMarkup(): string {
   return `<svg class="search-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="10.5" cy="10.5" r="6.25"></circle><path d="m15.1 15.1 4.4 4.4"></path></svg>`;
 }
 
-function analysisLoadingMarkup(fileName: string): string {
+function analysisLoadingMarkup(fileName: string, completedChecks: number[] = []): string {
   const checks = ["Static checks and reputation", "Identity intelligence", "Intent analysis", "Content summary", "Verdict explanation", "Final report"];
-  return `<section class="analysis-loading" aria-live="polite"><div class="loading-orbit"><i></i><b aria-hidden="true">${searchIconMarkup()}</b></div><div><p class="page-kicker">LOCAL ANALYSIS IN PROGRESS</p><h2>Checking ${escapeHtml(fileName)}</h2><p class="loading-copy">Each signal is processed on this device.</p></div><ol>${checks.map((label, index) => `<li data-loading-check="${index}"><span>✓</span>${label}</li>`).join("")}</ol></section>`;
+  const completed = new Set(completedChecks);
+  return `<section class="analysis-loading" aria-live="polite"><div class="loading-orbit"><i></i><b aria-hidden="true">${searchIconMarkup()}</b></div><div><p class="page-kicker">LOCAL ANALYSIS IN PROGRESS</p><h2>Checking ${escapeHtml(fileName)}</h2><p class="loading-copy">Each signal is processed on this device.</p></div><ol>${checks.map((label, index) => `<li data-loading-check="${index}" class="${completed.has(index) ? "done" : ""}"><span>✓</span>${label}</li>`).join("")}</ol></section>`;
 }
 
 function markLoadingCheck(container: HTMLElement, index: number): void {
@@ -1911,33 +1912,21 @@ async function runAiAnalysis(user: AuthUser, report: AnalysisReport, recordId: s
     onSettled?.("identity");
   });
   if (!isCurrent()) return;
-  let warmupError = "";
-  if (runtime?.model_ready) {
-    setAiPanel(container, "phi4", "Preparing Qwen", "Loading the local model after identity analysis to avoid CPU and memory contention…", "loading", model);
-    await invoke<void>("warm_ollama_model").catch((error) => {
-      warmupError = `Qwen could not be prepared within the local startup budget: ${String(error)}`;
-    });
-  }
+  if (runtime?.model_ready) setAiPanel(container, "phi4", "Preparing Qwen", "Loading the local model after identity analysis to avoid CPU and memory contention…", "loading", model);
   if (!isCurrent()) return;
   const phiStartedAt = performance.now();
-  if (warmupError) {
-    report.phi4_analysis = { status: "error", message: warmupError, model, duration_ms: Math.round(performance.now() - phiStartedAt) };
-    setAiPanel(container, "phi4", "Analysis unavailable", warmupError, "error", model);
+  await invoke<NonNullable<AnalysisReport["phi4_analysis"]>>("analyze_phi4", { report, analysisId }).then((value) => {
+    if (!isCurrent()) return;
+    report.phi4_analysis = { ...value, model: value.model || model, duration_ms: Math.round(performance.now() - phiStartedAt) };
+    const analysis = value.analysis || {};
+    setPhiSemanticPanel(container, analysis, value.model || model, report.phi4_analysis.duration_ms, report.ai_content_summary?.summary, report.phi4_analysis.performance);
     onSettled?.("phi4");
-  } else {
-    await invoke<NonNullable<AnalysisReport["phi4_analysis"]>>("analyze_phi4", { report, analysisId }).then((value) => {
-      if (!isCurrent()) return;
-      report.phi4_analysis = { ...value, model: value.model || model, duration_ms: Math.round(performance.now() - phiStartedAt) };
-      const analysis = value.analysis || {};
-      setPhiSemanticPanel(container, analysis, value.model || model, report.phi4_analysis.duration_ms, report.ai_content_summary?.summary, report.phi4_analysis.performance);
-      onSettled?.("phi4");
-    }).catch((error) => {
-      if (!isCurrent()) return;
-      report.phi4_analysis = { status: "error", message: String(error) };
-      setAiPanel(container, "phi4", "Analysis unavailable", String(error), "error", model);
-      onSettled?.("phi4");
-    });
-  }
+  }).catch((error) => {
+    if (!isCurrent()) return;
+    report.phi4_analysis = { status: "error", message: String(error) };
+    setAiPanel(container, "phi4", "Analysis unavailable", String(error), "error", model);
+    onSettled?.("phi4");
+  });
   if (!isCurrent()) return;
   if (report.phi4_analysis?.status === "ok" && report.phi4_analysis.analysis) {
     const structuredSummary = (report.phi4_analysis.analysis.content_summary || report.phi4_analysis.analysis.explanation || "Content analysis complete.").replace(/\s+/g, " ").trim();
@@ -2051,6 +2040,25 @@ function currentAnalysis(user: AuthUser): ActiveAnalysis | null {
   return activeAnalysis?.userSub === user.sub ? activeAnalysis : null;
 }
 
+function analysisSection(session: ActiveAnalysis): "analyse" | "inbox" {
+  return session.source === "inbox" ? "inbox" : "analyse";
+}
+
+function analysisIsVisible(session: ActiveAnalysis): boolean {
+  return document.querySelector<HTMLButtonElement>("[data-section].selected")?.dataset.section === analysisSection(session);
+}
+
+function updateAnalysisProgress(session: ActiveAnalysis, check: number, message?: string): void {
+  session.completedChecks ||= [];
+  if (!session.completedChecks.includes(check)) session.completedChecks.push(check);
+  if (message) session.progressMessage = message;
+  if (!analysisIsVisible(session)) return;
+  const result = document.querySelector<HTMLDivElement>("#analysis-result");
+  if (result) markLoadingCheck(result, check);
+  const status = document.querySelector<HTMLElement>("#upload-status");
+  if (status && message) status.textContent = message;
+}
+
 function mailboxProvider(user: AuthUser): "google" | "microsoft" {
   return user.provider === "microsoft" ? "microsoft" : "google";
 }
@@ -2108,14 +2116,14 @@ function analysisPageContent(user: AuthUser, source: "file" | "inbox" = "file"):
   const status = active?.status === "error"
     ? `Analysis did not complete: ${escapeHtml(active.error || "Unknown error")}`
     : isProcessing
-      ? `Local analysis of ${title} in progress…`
+      ? escapeHtml(active.progressMessage || `Local analysis of ${active.fileName} in progress…`)
       : hasReport
         ? `Analysis complete: ${title}.`
         : "Nothing is sent to external services.";
   const result = hasReport
-    ? (isProcessing ? analysisLoadingMarkup(active!.fileName) : reportMarkup(active!.report!))
+    ? (isProcessing ? analysisLoadingMarkup(active!.fileName, active!.completedChecks) : reportMarkup(active!.report!))
     : isProcessing
-      ? analysisLoadingMarkup(active!.fileName)
+      ? analysisLoadingMarkup(active!.fileName, active!.completedChecks)
       : "";
   const intake = source === "file"
     ? `<section class="eml-intake" id="eml-intake" ${isProcessing || hasReport ? "hidden" : ""}><button class="drop-zone" id="eml-drop" type="button"><span class="drop-icon">↥</span><strong>Drop an .eml file here</strong><span>or select it from your computer · max 40 MB</span></button><input id="eml-input" type="file" accept=".eml,message/rfc822" hidden /><p class="upload-status" id="upload-status">${status}</p></section>`
@@ -2519,7 +2527,6 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
   const resetAnalysis = document.querySelector<HTMLButtonElement>("#reset-analysis");
   const cancelAnalysis = document.querySelector<HTMLButtonElement>("#cancel-analysis");
   const inboxIntake = document.querySelector<HTMLElement>("#inbox-intake");
-  let analysisRun = 0;
   let lastDropAt = 0;
   const acceptsDrop = () => {
     const now = Date.now();
@@ -2529,9 +2536,16 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
   };
   const displayAnalysis = async (fileName: string, request: (analysisId: string) => Promise<AnalysisReport>) => {
     if (!uploadStatus) return;
-    const run = ++analysisRun;
     const analysisId = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    const session: ActiveAnalysis = { userSub: user.sub, fileName, source: section === "inbox" ? "inbox" : "file", status: "processing", analysisId };
+    const session: ActiveAnalysis = {
+      userSub: user.sub,
+      fileName,
+      source: section === "inbox" ? "inbox" : "file",
+      status: "processing",
+      analysisId,
+      completedChecks: [],
+      progressMessage: `Local analysis of ${fileName} in progress…`,
+    };
     activeAnalysis = session;
     const startedAt = performance.now();
     const title = document.querySelector<HTMLHeadingElement>("#analysis-title");
@@ -2542,44 +2556,45 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
     if (resetAnalysis) resetAnalysis.hidden = true;
     if (cancelAnalysis) cancelAnalysis.hidden = false;
     const result = document.querySelector<HTMLDivElement>("#analysis-result");
-    if (result) result.innerHTML = analysisLoadingMarkup(fileName);
-    uploadStatus.textContent = `Local analysis of ${fileName} in progress…`;
+    if (result) result.innerHTML = analysisLoadingMarkup(fileName, session.completedChecks);
+    uploadStatus.textContent = session.progressMessage || `Local analysis of ${fileName} in progress…`;
     dropZone?.setAttribute("disabled", "true");
     try {
       const report = await request(analysisId);
-      if (run !== analysisRun || activeAnalysis !== session) return;
+      if (activeAnalysis !== session) return;
       session.report = report;
-      if (result) markLoadingCheck(result, 0);
-      uploadStatus.textContent = "Identity, intent and AI summaries in progress…";
-      await runAiAnalysis(user, report, null, document.createElement("div"), startedAt, analysisId, () => run === analysisRun && activeAnalysis === session, (engine) => {
-        if (run === analysisRun && result) markLoadingCheck(result, engine === "identity" ? 1 : engine === "phi4" ? 2 : engine === "content-summary" ? 3 : 4);
+      updateAnalysisProgress(session, 0, "Identity, intent and AI summaries in progress…");
+      await runAiAnalysis(user, report, null, document.createElement("div"), startedAt, analysisId, () => activeAnalysis === session, (engine) => {
+        if (activeAnalysis === session) updateAnalysisProgress(session, engine === "identity" ? 1 : engine === "phi4" ? 2 : engine === "content-summary" ? 3 : 4);
       });
-      if (run !== analysisRun || activeAnalysis !== session) return;
+      if (activeAnalysis !== session) return;
       session.recordId = await saveAnalysis(user, report, Math.round(performance.now() - startedAt));
       // Let the browser paint the completed AI-summary step before completing
       // the final-report step, then keep the fully checked state visible.
       await pause(180);
-      if (run !== analysisRun || activeAnalysis !== session) return;
-      const completedResult = document.querySelector<HTMLDivElement>("#analysis-result");
-      if (completedResult) {
-        markLoadingCheck(completedResult, 5);
+      if (activeAnalysis !== session) return;
+      updateAnalysisProgress(session, 5);
+      session.status = "complete";
+      const completedResult = analysisIsVisible(session) ? document.querySelector<HTMLDivElement>("#analysis-result") : null;
+      if (completedResult?.isConnected && completedResult.querySelector(".analysis-loading")) {
         completeAnalysisLoading(completedResult);
         await pause(780);
-        if (run !== analysisRun || activeAnalysis !== session) return;
+        if (activeAnalysis !== session || !analysisIsVisible(session) || !completedResult.isConnected) return;
         completedResult.querySelector<HTMLElement>(".analysis-loading")?.classList.add("is-leaving");
         await pause(260);
-        if (run !== analysisRun || activeAnalysis !== session) return;
-        completedResult.innerHTML = reportMarkup(report);
-        bindReportInteractions(user, report);
-        restoreAiAnalysis(report, completedResult);
+        if (activeAnalysis !== session || !analysisIsVisible(session) || !completedResult.isConnected) return;
       }
-      session.status = "complete";
-      const activeSection = document.querySelector<HTMLButtonElement>("[data-section].selected")?.dataset.section;
-      if (activeAnalysis === session && (activeSection === "analyse" || activeSection === "inbox")) renderDashboard(user, activeSection);
-    } catch (error) { if (run === analysisRun && activeAnalysis === session) { session.status = "error"; session.error = String(error); if (intake) intake.hidden = false; if (inboxIntake) inboxIntake.hidden = false; if (changeEmail) changeEmail.hidden = false; if (cancelAnalysis) cancelAnalysis.hidden = true; uploadStatus.textContent = `Analysis did not complete: ${String(error)}`; if (result) result.innerHTML = ""; } }
+      if (activeAnalysis === session && analysisIsVisible(session)) renderDashboard(user, analysisSection(session));
+    } catch (error) {
+      if (activeAnalysis === session) {
+        session.status = "error";
+        session.error = String(error);
+        if (analysisIsVisible(session)) renderDashboard(user, analysisSection(session));
+      }
+    }
     finally {
       void invoke("finish_analysis", { analysisId }).catch(() => undefined);
-      if (run === analysisRun) dropZone?.removeAttribute("disabled");
+      if (activeAnalysis === session) document.querySelector<HTMLButtonElement>("#eml-drop")?.removeAttribute("disabled");
     }
   };
   const displayFile = (path?: string) => {
@@ -2663,7 +2678,6 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
     if (!running || running.status !== "processing" || !running.analysisId) return;
     cancelAnalysis.disabled = true;
     cancelAnalysis.textContent = "Cancelling…";
-    analysisRun += 1;
     activeAnalysis = null;
     void invoke("cancel_analysis", { analysisId: running.analysisId }).catch(() => undefined);
     renderDashboard(user, section === "inbox" ? "inbox" : "analyse");

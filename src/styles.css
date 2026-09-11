@@ -34,7 +34,6 @@ h1 { margin: 0; font-size: clamp(39px, 4.25vw, 66px); line-height: 1.12; letter-
 h1 em { color: #a2edda; font-family: "Playfair Display", Georgia, serif; font-weight: 600; }
 .intro { max-width: 410px; margin: 24px 0 0; color: #b5c9c5; font-size: 15px; line-height: 1.75; }
 .signal { display: flex; gap: 9px; align-items: center; color: #b5c9c5; font-size: 11px; position: relative; z-index: 1; }
-.signal > span:last-child { background: linear-gradient(100deg, #9bbab3 15%, #e1fff7 46%, #9bbab3 76%); background-size: 220% 100%; color: transparent; background-clip: text; -webkit-background-clip: text; animation: signal-text-shimmer 4.2s ease-in-out infinite; }
 .signal-dot { width: 8px; height: 8px; background: #79e3c8; box-shadow: 0 0 0 5px rgba(121,227,200,.12); border-radius: 50%; animation: signal-dot-pulse 2.4s ease-in-out infinite; }
 .version { color: #6d9390; margin: 30px 0 0; position: relative; z-index: 1; }
 .login-panel { min-height: 100vh; padding: 46px clamp(38px, 10vw, 165px) 30px; background: #f7f8f5; display: flex; flex-direction: column; }
@@ -53,9 +52,8 @@ h2 { font-size: 34px; letter-spacing: -1.75px; line-height: 1.15; margin: 0; }
 .status { min-height: 20px; margin: 14px 3px 0; color: #278477; font-size: 11px; line-height: 1.5; }
 footer { display: flex; justify-content: space-between; gap: 18px; color: #9aa8a5; font-family: "DM Mono", monospace; font-size: 9px; letter-spacing: .4px; }
 @keyframes signal-dot-pulse { 0%, 100% { box-shadow: 0 0 0 5px rgba(121,227,200,.1); transform: scale(.92); } 50% { box-shadow: 0 0 0 9px rgba(121,227,200,.02); transform: scale(1.08); } }
-@keyframes signal-text-shimmer { 0%, 24% { background-position: 110% 0; } 64%, 100% { background-position: -110% 0; } }
 @media (hover: none), (pointer: coarse) { .brand-panel::before { display: none; } }
-@media (prefers-reduced-motion: reduce) { .signal-dot, .signal > span:last-child { animation: none; }.signal > span:last-child { color: #b5c9c5; background: none; } }
+@media (prefers-reduced-motion: reduce) { .signal-dot { animation: none; } }
 @media (max-width: 760px) { .shell { grid-template-columns: 1fr; }.brand-panel { min-height: 320px; padding: 32px; }.hero-copy { margin: 58px 0 8px; }.intro, .signal, .version { display: none; }.login-panel { min-height: calc(100vh - 320px); padding: 42px 28px 26px; }.login-content { margin: 0 auto auto; } footer { margin-top: 35px; } }
 @media (max-width: 430px) { .brand-panel { min-height: 260px; }.hero-copy { margin-top: 47px; } h1 { font-size: 37px; }.login-panel { min-height: calc(100vh - 260px); } h2 { font-size: 30px; } footer { flex-direction: column; gap: 7px; } }
 

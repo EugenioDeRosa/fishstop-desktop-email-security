@@ -55,6 +55,8 @@ type AnalysisReport = {
   subject?: string; from_?: string; from_registered_domain?: string; reply_to?: string; return_path?: string; flags?: SocFlag[];
   delivered_to?: string; to?: string; date?: string; message_id?: string; errors_to?: string; importance?: string;
   body_source?: string; body_clean?: string; body_ai?: string; body_context?: string; body_html?: string; body_html_safe?: string; injection_sender_ip?: string;
+  forwarded_identity?: { from?: string; to?: string; cc?: string; subject?: string; date?: string; display_name?: string; address?: string; domain?: string; authentication_status?: string; authentication_scope?: string };
+  injection_ip_spf_authorized?: boolean; spf_sender_aligned?: boolean;
   eml_sha256?: string;
   raw_eml_preview?: string;
   raw_eml_preview_error?: string;
@@ -63,10 +65,10 @@ type AnalysisReport = {
   mime_duplicate_header_count?: number;
   mime_review_finding_count?: number;
   mime_notice_finding_count?: number;
-  mime_findings?: Array<{ kind?: string; code?: string; level?: "HIGH" | "MEDIUM" | "LOW" | "INFO"; part_path?: string; header?: string; count?: number; message?: string }>;
+  mime_findings?: Array<{ kind?: string; code?: string; category?: "security_ambiguity" | "damaged_content" | "compatibility_notice"; level?: "HIGH" | "MEDIUM" | "LOW" | "INFO"; part_path?: string; header?: string; count?: number; message?: string }>;
   mime_alternative_analysis?: { status?: "not_applicable" | "consistent" | "divergent"; groups_analyzed?: number; divergent_group_count?: number; message?: string; groups?: Array<{ part_path?: string; alternative_count?: number; content_types?: string[]; minimum_similarity?: number; divergent?: boolean; alternatives?: Array<{ part_path?: string; content_type?: string; effective_content_type?: string; character_count?: number; token_count?: number }> }> };
   return_path_domain_mismatch?: boolean; reply_to_mismatch?: boolean; display_name_spoofing?: string;
-  links?: Array<{ url?: string; host?: string; registered_domain?: string; is_ip?: boolean; scheme?: string; source?: string; display_text?: string; display_host?: string; display_registered_domain?: string; display_mismatch?: boolean; resolved_display_destination?: boolean; signature_tracking_redirect?: boolean; html_call_to_action?: boolean; is_possible_shortener?: boolean; shortener_reason?: string; has_userinfo?: boolean; has_credentials?: boolean; nonstandard_port?: boolean; port?: number; nested_redirect_count?: number; redirect_hosts?: string[]; redirect_downloads?: Array<{ filename?: string; extension?: string; dangerous?: boolean }>; unicode_host?: boolean; unicode_path_or_query?: boolean; role?: string; actionable?: boolean; sources?: string[]; download_filename?: string; download_extension?: string; download_source?: string; dangerous_download?: boolean; financial_attachment_mismatch?: boolean; context_risk_level?: string; context_risk_message?: string }>;
+  links?: Array<{ url?: string; host?: string; registered_domain?: string; is_ip?: boolean; scheme?: string; source?: string; display_text?: string; display_host?: string; display_registered_domain?: string; display_mismatch?: boolean; resolved_display_destination?: boolean; signature_tracking_redirect?: boolean; html_call_to_action?: boolean; has_userinfo?: boolean; has_credentials?: boolean; nonstandard_port?: boolean; port?: number; nested_redirect_count?: number; redirect_hosts?: string[]; redirect_downloads?: Array<{ filename?: string; extension?: string; dangerous?: boolean }>; unicode_host?: boolean; unicode_path_or_query?: boolean; role?: string; actionable?: boolean; sources?: string[]; download_filename?: string; download_extension?: string; download_source?: string; dangerous_download?: boolean; financial_attachment_mismatch?: boolean; context_risk_level?: string; context_risk_message?: string }>;
   link_reputation?: Record<string, ReputationResult>;
   hop_reputation?: Record<string, ReputationResult>;
   domain_reputation?: Record<string, { infrastructure?: ReputationResult; virustotal?: ReputationResult & { registrar?: string; creation_date?: string | number }; rdap?: ReputationResult & { registration_date?: string; registrar?: string } }>;
@@ -137,11 +139,11 @@ if (!app) throw new Error("FishStop could not start.");
 const root: HTMLDivElement = app;
 
 type ProtectionTone = "checking" | "ok" | "warning" | "error";
-type LocalEngineStatus = { static_engine: boolean; python_runtime: boolean; identity_dependencies: boolean };
+type LocalEngineStatus = { static_engine: boolean; python_runtime: boolean };
 type ReputationKeyStatus = { virustotal: boolean; abuseipdb: boolean; otx: boolean };
 type OtxCacheStatus = { configured: boolean; status: "disabled" | "not_synced" | "ready" | "stale"; synced_at: string; pulse_count: number; subscribed_pulse_count: number; public_phishing_pulse_count: number; indicator_count: number; pending_pulse_count: number; coverage_days: number; skipped_pulse_count: number; truncated: boolean; limit_reason: string; stale: boolean; lookback_days: number; database_bytes: number; message: string };
 type OtxSyncProgress = { user_sub: string; phase: string; metric?: string; processed: number; total?: number; pulse_index?: number; pulse_total?: number; pulse_name?: string; percentage?: number; message: string };
-type HuggingFaceModelInfo = { repository: string; runtime_revision: string; latest_commit?: string; updated_at?: string };
+type AiAnalysisResult = NonNullable<AnalysisReport["phi4_analysis"]> & { identity_analysis?: NonNullable<AnalysisReport["identity_analysis"]> };
 type OllamaRuntimeStatus = {
   runtime_ready: boolean; model_ready: boolean; managed: boolean; model: string;
   platform: string; architecture: string; cpu: string; memory_bytes?: number;
@@ -471,7 +473,6 @@ async function resolveProtectionStatus(user: AuthUser): Promise<ProtectionStatus
     ]);
     ollamaRuntimeSnapshot = runtime;
     if (!engine.static_engine || !engine.python_runtime) return { userSub: user.sub, tone: "error", message: "Analysis engine unavailable" };
-    if (!engine.identity_dependencies) return { userSub: user.sub, tone: "error", message: "Identity intelligence unavailable" };
     if (!runtime.runtime_ready || !runtime.model_ready) return { userSub: user.sub, tone: "error", message: runtime.runtime_ready ? "AI model unavailable" : "AI unavailable" };
     const missingKeys = [
       !keys.virustotal && "VirusTotal",
@@ -829,13 +830,6 @@ function dashboardGreeting(now = new Date()): string {
   return "Good evening";
 }
 
-function formatModelUpdatedAt(value?: string): string {
-  if (!value) return "Date unavailable";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return new Intl.DateTimeFormat("en-GB", { dateStyle: "medium", timeStyle: "short" }).format(date);
-}
-
 function formatAttachmentSize(size?: number): string {
   if (size === undefined || !Number.isFinite(size) || size < 0) return "size unavailable";
   return `${(size / 1_000_000).toFixed(2)} MB`;
@@ -874,7 +868,7 @@ function inboxIconMarkup(): string {
 }
 
 function analysisLoadingMarkup(fileName: string, completedChecks: number[] = []): string {
-  const checks = ["Static checks and reputation", "Identity intelligence", "Intent analysis", "Content summary", "Verdict explanation", "Final report"];
+  const checks = ["Static checks and reputation", "Declared identity", "Intent analysis", "Content summary", "Verdict explanation", "Final report"];
   const completed = new Set(completedChecks);
   return `<section class="analysis-loading" aria-live="polite"><div class="loading-orbit"><i></i><b aria-hidden="true">${searchIconMarkup()}</b></div><div><p class="page-kicker">LOCAL ANALYSIS IN PROGRESS</p><h2>Checking ${escapeHtml(fileName)}</h2><p class="loading-copy">Each signal is processed on this device.</p></div><ol>${checks.map((label, index) => `<li data-loading-check="${index}" class="${completed.has(index) ? "done" : ""}"><span>✓</span>${label}</li>`).join("")}</ol></section>`;
 }
@@ -989,6 +983,21 @@ function stronglyAuthenticatedSender(report: AnalysisReport): boolean {
   return passed("DMARC") || (passed("SPF") && passed("DKIM"));
 }
 
+function qualifiedAlignedSpfSender(report: AnalysisReport): boolean {
+  const spf = authFromEmlHeader(report, "SPF");
+  const dkim = authFromEmlHeader(report, "DKIM").status.toLowerCase();
+  const dmarc = authFromEmlHeader(report, "DMARC").status.toLowerCase();
+  return spf.status.toLowerCase() === "pass"
+    && ["none", "unknown", "present"].includes(dkim)
+    && ["none", "unknown"].includes(dmarc)
+    && !spf.path_conflict
+    && report.injection_ip_spf_authorized === true
+    && report.spf_sender_aligned === true
+    && !report.return_path_domain_mismatch
+    && !report.reply_to_mismatch
+    && !report.display_name_spoofing;
+}
+
 function returnPathMismatchForVerdict(report: AnalysisReport): boolean {
   if (!report.return_path_domain_mismatch) return false;
   const dmarcStatus = authFromEmlHeader(report, "DMARC").status.toLowerCase();
@@ -1019,7 +1028,7 @@ function isRiskyLookalikeAlert(alert: NonNullable<AnalysisReport["lookalike_aler
 
 function isAuthenticatedFirstPartyLink(report: AnalysisReport, link: NonNullable<AnalysisReport["links"]>[number]): boolean {
   if (!stronglyAuthenticatedSender(report)) return false;
-  if (link.is_ip || link.display_mismatch || link.has_userinfo || link.has_credentials || link.is_possible_shortener) return false;
+  if (link.is_ip || link.display_mismatch || link.has_userinfo || link.has_credentials) return false;
   // The Python engine owns Public Suffix List resolution. If an old stored
   // report lacks these fields, fail closed instead of guessing from labels.
   const linkDomain = normalizedDomain(link.registered_domain);
@@ -1071,8 +1080,7 @@ function structurallySuspiciousLink(link: NonNullable<AnalysisReport["links"]>[n
     || link.nonstandard_port
     || link.unicode_host
     || link.dangerous_download
-    || link.financial_attachment_mismatch
-    || (link.is_possible_shortener && !link.signature_tracking_redirect),
+    || link.financial_attachment_mismatch,
   );
 }
 
@@ -1165,7 +1173,26 @@ function unverifiedRequestedResourceReason(report: AnalysisReport): string | nul
       return "The message asks you to open a link, but its reputation could not be verified.";
     }
   }
-  if (action === "open_attachment" && (report.attachments || []).some((attachment) => attachment.actionable !== false && attachment.mime_role !== "inline_resource" && cannotVerify(attachment.file_reputation))) {
+  const benignAlignedSpfContext = (semantic?.final_verdict || "").toLowerCase() === "legitimate"
+    && (semantic?.content_risk || "").toLowerCase() === "benign"
+    && ["verified", "clean", "aligned"].includes((semantic?.identity_risk || "").toLowerCase())
+    && (semantic?.technical_risk || "").toLowerCase() === "clean"
+    && qualifiedAlignedSpfSender(report);
+  const locallyCleanAttachment = (attachment: NonNullable<AnalysisReport["attachments"]>[number]) => {
+    const attachmentRisk = (attachment.attachment_security?.risk_level || "clean").toLowerCase();
+    const pdfRisk = (attachment.pdf_security?.risk_level || "clean").toLowerCase();
+    const archiveRisk = (attachment.archive_security?.risk_level || "clean").toLowerCase();
+    return !attachment.anomaly
+      && !["high", "critical", "medium"].includes(attachmentRisk)
+      && !["high", "critical", "medium"].includes(pdfRisk)
+      && !["high", "critical", "medium"].includes(archiveRisk);
+  };
+  if (action === "open_attachment" && (report.attachments || []).some((attachment) =>
+    attachment.actionable !== false
+    && attachment.mime_role !== "inline_resource"
+    && cannotVerify(attachment.file_reputation)
+    && !(benignAlignedSpfContext && locallyCleanAttachment(attachment))
+  )) {
     return "The message asks you to open an attachment, but its reputation could not be verified.";
   }
   return null;
@@ -1271,52 +1298,21 @@ function verdictRationale(report: AnalysisReport): string {
 type CheckTone = "pass" | "warn" | "fail" | "neutral";
 
 function authCheckTone(status: string): CheckTone {
-  const value = status.toLowerCase();
+  const value = status.trim().toLowerCase();
   if (["pass", "bestguesspass"].includes(value)) return "pass";
   if (["fail", "softfail", "permerror", "temperror", "policy"].includes(value)) return "fail";
-  if (["neutral", "none", "unknown", "present"].includes(value)) return "neutral";
+  // `none` means that the EML contains no usable result for the protocol. It
+  // must remain visually distinct from both a verified pass and a hard fail.
+  if (value === "none") return "warn";
+  if (["neutral", "unknown", "present"].includes(value)) return "neutral";
   return "warn";
 }
 
 function authCheckLabel(status: string): string {
+  const value = status.trim().toLowerCase();
+  if (["none", "unknown", "present"].includes(value)) return "Unavailable";
   const tone = authCheckTone(status);
   return tone === "pass" ? "Passed" : tone === "fail" ? "Failed" : tone === "warn" ? "Review required" : "Unavailable";
-}
-
-function authenticationCheckpointMarkup(report: AnalysisReport): string {
-  const checkpoints = report.authentication_checkpoints || [];
-  if (!checkpoints.length) {
-    return `<section class="auth-checkpoints"><div class="checkpoint-heading"><div><p class="page-kicker">AUTHENTICATION CHECKPOINTS</p><h4>Reported along the route</h4></div></div><p class="checkpoint-empty">Detailed hop mapping is unavailable for this saved analysis. Reanalyse the email to generate it.</p></section>`;
-  }
-  const geographicHopIndices = new Set<number>();
-  orderedReceivedHops(report.received_hops).forEach((hop, index) => {
-    const ip = hop.sender_ip || hop.all_ips?.[0];
-    const geo = ip ? report.geolocation_results?.[ip] : undefined;
-    if (geo?.status === "ok" && Number.isFinite(geo.lat) && Number.isFinite(geo.lon)) geographicHopIndices.add(index);
-  });
-  const rows = checkpoints.map((checkpoint) => {
-    const tone = authCheckTone(checkpoint.status || "unknown");
-    const linked = checkpoint.association === "exact" && Number.isInteger(checkpoint.linked_hop_index);
-    const hopNumber = linked ? Number(checkpoint.linked_hop_index) + 1 : 0;
-    const association = linked
-      ? `Hop ${hopNumber} · exact ${checkpoint.link_basis === "client-ip" ? "client IP" : "evaluator"} match`
-      : "Hop not determinable from the available header evidence";
-    const source = checkpoint.source === "ARC-Authentication-Results"
-      ? `ARC checkpoint${checkpoint.arc_instance ? ` i=${checkpoint.arc_instance}` : ""}`
-      : checkpoint.source === "Received-SPF" ? "Received-SPF report" : checkpoint.trust === "receiver_reported" ? "Final receiver report" : "Authentication-Results report";
-    const facts = [
-      checkpoint.authserv_id && `Evaluator: ${checkpoint.authserv_id}`,
-      checkpoint.client_ip && `Client IP: ${checkpoint.client_ip}`,
-      checkpoint.identity && `Identity: ${checkpoint.identity}`,
-    ].filter(Boolean).join(" · ");
-    const visibleOnGlobe = linked && geographicHopIndices.has(hopNumber - 1);
-    const focusTarget = visibleOnGlobe ? ` data-auth-hop="${hopNumber - 1}"` : "";
-    const focus = visibleOnGlobe
-      ? `<span class="checkpoint-focus">Show on globe</span>`
-      : `<span class="checkpoint-unmapped">${linked ? "Mapped · no location" : "Not mapped"}</span>`;
-    return `<details class="auth-checkpoint checkpoint-${tone}"><summary${focusTarget}><span class="checkpoint-protocol">${escapeHtml(checkpoint.protocol)}</span><span><strong>${escapeHtml((checkpoint.status || "unknown").toUpperCase())}</strong><small>${escapeHtml(source)} · ${escapeHtml(association)}</small></span>${focus}</summary><div>${facts ? `<p>${escapeHtml(facts)}</p>` : ""}<code>${escapeHtml(checkpoint.raw || "No raw evidence available.")}</code></div></details>`;
-  }).join("");
-  return `<section class="auth-checkpoints"><div class="checkpoint-heading"><div><p class="page-kicker">AUTHENTICATION CHECKPOINTS</p><h4>Reported along the route</h4></div><small>Results are positioned only when header evidence identifies the hop exactly.</small></div><div class="checkpoint-list">${rows}</div></section>`;
 }
 
 function staticCheckItem(tone: CheckTone, title: string, detail: string, status?: string): string {
@@ -1359,6 +1355,17 @@ function reputationCheckTone(result?: ReputationResult): CheckTone | undefined {
   if (status === "suspicious" || (score !== undefined && score >= 25)) return "warn";
   if (status === "clean" || (status === "ok" && (score === undefined || score < 25))) return "pass";
   return undefined;
+}
+
+function abuseIpDbAvailable(result?: ReputationResult): boolean {
+  return (result?.status || "").toLowerCase() === "ok"
+    && typeof result?.abuseConfidenceScore === "number";
+}
+
+function abuseIpDbSummary(result?: ReputationResult): string {
+  if (!abuseIpDbAvailable(result)) return "AbuseIPDB unavailable";
+  const reports = result?.totalReports ?? 0;
+  return `AbuseIPDB · ${result?.abuseConfidenceScore}/100 · ${reports} ${reports === 1 ? "report" : "reports"}`;
 }
 
 function normalizedOtxUrl(value?: string): string {
@@ -1560,16 +1567,16 @@ function reportMarkup(report: AnalysisReport): string {
     const invoiceDeliveryMismatch = Boolean(link.financial_attachment_mismatch);
     const tone = dangerous || structuralDanger || invoiceDeliveryMismatch || reputation === "fail" || strongOtxMatch
       ? "fail"
-      : link.display_mismatch || reputation === "warn" || structuralWarning || link.is_possible_shortener
+      : link.display_mismatch || reputation === "warn" || structuralWarning
         ? "warn"
         : safeSignatureTracking || reputation === "pass" ? "pass" : "neutral";
-    const status = reputation === "fail" ? "Detected by VirusTotal" : invoiceDeliveryMismatch ? (link.dangerous_download ? "Invoice link points to a script/executable" : "Invoice delivery is unrelated to sender domain") : dangerous ? (link.is_ip ? "Direct IP" : link.dangerous_download ? "Executable or script download" : "Lookalike domain") : structuralDanger ? "Hidden destination userinfo" : link.display_mismatch ? "Destination differs from visible text" : strongOtxMatch ? "Matched in OTX threat intelligence" : reputation === "warn" ? "Review required" : safeSignatureTracking ? "Signature tracking redirect" : reputation === "pass" ? "VirusTotal clean" : supportingOtxMatch ? "Shared service appears in OTX context" : link.nested_redirect_count ? "Nested redirect destination" : link.nonstandard_port ? "Non-standard port" : link.unicode_path_or_query ? "Unicode path or query" : link.is_possible_shortener ? "Possible URL shortener" : "Valid URL structure";
+    const status = reputation === "fail" ? "Detected by VirusTotal" : invoiceDeliveryMismatch ? (link.dangerous_download ? "Invoice link points to a script/executable" : "Invoice delivery is unrelated to sender domain") : dangerous ? (link.is_ip ? "Direct IP" : link.dangerous_download ? "Executable or script download" : "Lookalike domain") : structuralDanger ? "Hidden destination userinfo" : link.display_mismatch ? "Destination differs from visible text" : strongOtxMatch ? "Matched in OTX threat intelligence" : reputation === "warn" ? "Review required" : safeSignatureTracking ? "Signature tracking redirect" : reputation === "pass" ? "VirusTotal clean" : supportingOtxMatch ? "Shared service appears in OTX context" : link.nested_redirect_count ? "Nested redirect destination" : link.nonstandard_port ? "Non-standard port" : link.unicode_path_or_query ? "Unicode path or query" : "Valid URL structure";
     const host = link.host || "URL without host";
     const vtUrl = reputationResult?.permalink || `https://www.virustotal.com/gui/domain/${encodeURIComponent(host)}`;
     const whoisUrl = `https://www.whois.com/whois/${encodeURIComponent(host)}`;
     const isWebLink = ["http", "https"].includes((link.scheme || "").toLowerCase());
     const metadata = [sourceLabel[link.source || ""] || link.source, link.scheme ? link.scheme.toUpperCase() : ""].filter(Boolean).join(" · ");
-    const notes = [htmlCallToAction && "Clickable HTML call-to-action", invoiceDeliveryMismatch && link.context_risk_message, link.dangerous_download && `${link.download_source === "redirect" ? "Redirect download filename" : "Download filename"}: ${link.download_filename || `.${link.download_extension || "unknown"}`}`, signatureTracking && `Final destination: ${(link.redirect_hosts || []).join(", ") || "embedded target"}`, link.display_mismatch && `Visible text: ${link.display_host || link.display_text || "different domain"}`, link.has_credentials && "Username or password is embedded before the destination host", link.has_userinfo && "Userinfo is present before the destination host", link.nonstandard_port && `Port ${link.port}`, !signatureTracking && link.nested_redirect_count && `Redirects to: ${(link.redirect_hosts || []).join(", ") || "embedded target"}`, link.unicode_path_or_query && "Unicode characters in path or query", link.is_possible_shortener && link.shortener_reason, reputationResult?.detection_ratio && `VirusTotal: ${reputationResult.detection_ratio}`, reputationResult?.last_analysis && `Last analysis: ${reputationResult.last_analysis}`].filter(Boolean).join(" · ");
+    const notes = [htmlCallToAction && "Clickable HTML call-to-action", invoiceDeliveryMismatch && link.context_risk_message, link.dangerous_download && `${link.download_source === "redirect" ? "Redirect download filename" : "Download filename"}: ${link.download_filename || `.${link.download_extension || "unknown"}`}`, signatureTracking && `Final destination: ${(link.redirect_hosts || []).join(", ") || "embedded target"}`, link.display_mismatch && `Visible text: ${link.display_host || link.display_text || "different domain"}`, link.has_credentials && "Username or password is embedded before the destination host", link.has_userinfo && "Userinfo is present before the destination host", link.nonstandard_port && `Port ${link.port}`, !signatureTracking && link.nested_redirect_count && `Redirects to: ${(link.redirect_hosts || []).join(", ") || "embedded target"}`, link.unicode_path_or_query && "Unicode characters in path or query", reputationResult?.detection_ratio && `VirusTotal: ${reputationResult.detection_ratio}`, reputationResult?.last_analysis && `Last analysis: ${reputationResult.last_analysis}`].filter(Boolean).join(" · ");
     const virusTotalAction = !isWebLink ? ""
       : reputationResult?.status === "not_found"
       ? `<a class="manual-vt-action" href="https://www.virustotal.com/gui/home/url" target="_blank" rel="noopener noreferrer" data-vt-manual-url="${escapeHtml(link.url || "")}">Copy URL &amp; open VirusTotal ↗</a>`
@@ -1630,25 +1637,42 @@ function reportMarkup(report: AnalysisReport): string {
       : "No lookalike domains detected.";
   const mimeAnalysis = report.mime_alternative_analysis;
   const mimeFindings = report.mime_findings || [];
-  const mimeTone: CheckTone = report.mime_status === "review" || mimeAnalysis?.status === "divergent" ? "warn" : report.mime_status === "notice" ? "neutral" : "pass";
+  const mimeFindingCategory = (finding: (typeof mimeFindings)[number]) => {
+    if (finding.category) return finding.category;
+    const code = finding.code || "";
+    if (["DuplicateSingletonHeader", "NoBoundaryInMultipartDefect", "StartBoundaryNotFoundDefect", "MultipartInvariantViolationDefect", "InvalidMultipartContentTransferEncodingDefect", "MissingHeaderBodySeparatorDefect", "FirstHeaderLineIsContinuationDefect", "DiscardedLeadingNonHeaderLines"].includes(code)) return "security_ambiguity";
+    if (["InvalidBase64LengthDefect", "InvalidBase64CharactersDefect", "InvalidBase64PaddingDefect", "CloseBoundaryNotFoundDefect", "UndecodableBytesDefect"].includes(code) || finding.kind === "decode_error") return "damaged_content";
+    return "compatibility_notice";
+  };
+  const mimeSecurityFindings = mimeFindings.filter((finding) => mimeFindingCategory(finding) === "security_ambiguity");
+  const mimeDamagedFindings = mimeFindings.filter((finding) => mimeFindingCategory(finding) === "damaged_content");
+  const mimeCompatibilityFindings = mimeFindings.filter((finding) => mimeFindingCategory(finding) === "compatibility_notice");
+  const mimeHasSecurityAmbiguity = mimeSecurityFindings.length > 0 || mimeAnalysis?.status === "divergent";
+  const mimeTone: CheckTone = mimeHasSecurityAmbiguity || mimeDamagedFindings.some((finding) => ["HIGH", "MEDIUM"].includes(finding.level || "")) ? "warn" : mimeFindings.length ? "neutral" : "pass";
+  const mimeCategoryLabel = (finding: (typeof mimeFindings)[number]) => mimeFindingCategory(finding) === "security_ambiguity"
+    ? "Security ambiguity"
+    : mimeFindingCategory(finding) === "damaged_content" ? "Damaged content" : "Compatibility notice";
   const mimeFindingRows = mimeFindings.map((finding) => staticCheckItem(
-    finding.level === "HIGH" ? "fail" : finding.level === "MEDIUM" ? "warn" : "neutral",
+    mimeFindingCategory(finding) === "security_ambiguity" && finding.level === "HIGH" ? "fail" : ["security_ambiguity", "damaged_content"].includes(mimeFindingCategory(finding)) && finding.level === "MEDIUM" ? "warn" : "neutral",
     finding.header ? `${finding.code || finding.kind || "MIME finding"} · ${finding.header}` : finding.code || finding.kind || "MIME finding",
     finding.message || `MIME part ${finding.part_path || "unknown"} requires review.`,
-    finding.level || "Review",
+    mimeCategoryLabel(finding),
   )).join("");
-  const alternativeRows = (mimeAnalysis?.groups || []).map((group) => staticCheckItem(
-    group.divergent ? "warn" : "pass",
+  const alternativeRows = (mimeAnalysis?.groups || []).filter((group) => group.divergent).map((group) => staticCheckItem(
+    "warn",
     `Alternative group ${group.part_path || "unknown"}`,
     `${group.alternative_count || 0} variant(s) · ${(group.content_types || []).join(", ") || "unknown types"} · minimum similarity ${Math.round((group.minimum_similarity ?? 1) * 100)}%.`,
-    group.divergent ? "Divergent · all variants analysed" : "Consistent",
+    "Security ambiguity · all variants analysed",
   )).join("");
-  const mimeSummary = report.mime_status === "review"
-    ? "A structural ambiguity could change how parts or decoded content are interpreted."
-    : report.mime_status === "notice"
-      ? "Minor format irregularities were found, but none changes the security verdict."
-      : "No structural ambiguity was detected.";
-  const mimeInspection = `<section class="html-form-inspection static-surface-${mimeTone}"><div><p class="page-kicker">MIME CONSISTENCY</p><h3>Structure and alternative bodies</h3><p>${escapeHtml(mimeAnalysis?.status === "divergent" ? mimeAnalysis.message || mimeSummary : mimeSummary)}</p></div><ul>${mimeFindingRows}${alternativeRows || staticCheckItem("pass", "No divergent alternatives", "No conflicting text/plain and text/html bodies were detected.", "Passed")}</ul></section>`;
+  const mimeSummary = mimeHasSecurityAmbiguity
+    ? "The message contains a structural ambiguity that could make email clients or security tools interpret it differently."
+    : mimeDamagedFindings.length
+      ? "Some message content is damaged or incomplete. This requires attention but is not phishing evidence by itself."
+      : mimeCompatibilityFindings.length
+        ? "Minor email-format compatibility issues were found; they do not affect the security verdict."
+        : "Email structure checked. No conflicting interpretations were detected.";
+  const mimeRows = `${mimeFindingRows}${alternativeRows}` || staticCheckItem("pass", "Message structure checked", "Text, HTML and MIME structure can be interpreted consistently.", "Passed");
+  const mimeInspection = `<section class="html-form-inspection static-surface-${mimeTone}"><div><p class="page-kicker">MESSAGE STRUCTURE</p><h3>Email format consistency</h3><p>${escapeHtml(mimeSummary)}</p></div><ul>${mimeRows}</ul></section>`;
   const fields = (items: Array<[string, string | undefined | null | boolean]>) => `<dl class="field-list">${items.filter(([, value]) => value !== undefined && value !== null && value !== "").map(([label, value]) => `<div><dt>${label}</dt><dd>${escapeHtml(String(value))}</dd></div>`).join("") || "<div><dd>No data available.</dd></div>"}</dl>`;
   const menu = [["summary", "Summary"], ["sender", "Sender"], ["auth", "Authentication"], ["links", "Links"], ["files", "Files"], ["content", "Content"], ["technical", "Technical"]];
   const tabs = menu.map(([id, label], index) => `<button class="report-tab ${index === 0 ? "active" : ""}" data-report-tab="${id}" type="button">${label}</button>`).join("");
@@ -1659,18 +1683,24 @@ function reportMarkup(report: AnalysisReport): string {
     const composedContent = id === "content" ? `${mimeInspection}${copyDeceptionDetails}${panelContent}${htmlFormDetails}` : panelContent;
     return `<section class="report-panel ${active ? "active" : ""}" data-report-panel="${id}">${composedContent}</section>`;
   };
-  return `<section class="analysis-report verdict-${verdict.tone}"><div class="report-summary"><p class="page-kicker">ANALYSIS RESULT</p><h2>${risk}</h2><p class="verdict-detail">${escapeHtml(verdict.detail)}</p>${rationale}<p><strong>${escapeHtml(report.subject || "No subject")}</strong> · ${escapeHtml(report.from_ || "Sender unavailable")}</p><div class="report-stats"><span>${high} high</span><span>${medium} medium</span>${aiThreatBadges}<span>${(report.links || []).filter((link) => (link.scheme || "").toLowerCase() !== "mailto").length} web links</span><span>${(report.attachments || []).length} attachments</span></div></div><nav class="report-tabs" aria-label="Report sections"><span class="report-tab-indicator" aria-hidden="true"></span>${tabs}</nav>${panel("summary", `<div class="report-grid"><section><h3>Message</h3>${fields([["From", report.from_], ["To", report.to], ["Subject", report.subject], ["Date", report.date]])}</section><section><h3>Trust checks</h3><ul class="auth-grid">${auth}</ul><p class="quiet">${lookalikeSummary}</p></section></div><div class="report-flags"><h3>All signals</h3><ul>${details}</ul></div>`, true)}${panel("sender", `<div class="report-grid"><section><h3>Sender identity</h3>${fields([["Delivered-To", report.delivered_to], ["Return-Path", report.return_path], ["Reply-To", report.reply_to], ["Errors-To", report.errors_to], ["Importance", report.importance]])}</section><section class="sender-consistency"><h3>Identity consistency</h3><ul class="auth-grid">${senderInconsistencies}</ul></section></div>`)}${panel("auth", `<section class="authentication-card"><div class="authentication-heading"><div><p class="page-kicker">MESSAGE AUTHENTICATION</p><h3>Authentication</h3><p>Routing context and header checks in one view.</p></div><div class="routing-summary" aria-label="Routing summary">${routingSummary}</div></div><div class="auth-evidence-grid">${authDetails}</div></section>`)}${panel("links", `<div class="report-grid"><section class="evidence-card"><h3>Web links</h3><ul>${links}</ul></section><section class="evidence-card"><h3>Email actions</h3><ul>${emailActions}</ul></section><section class="evidence-card"><h3>Lookalike / Typosquatting</h3><ul>${lookalikes}</ul></section></div>`)}${panel("files", `<section class="evidence-card"><h3>Attachments</h3><ul>${attachments}</ul></section>`)}${panel("content", `<div class="report-grid"><section><h3>Context</h3>${fields([["Source", report.body_source], ["Selection", report.body_context]])}</section><section><h3>Extracted body</h3><pre>${escapeHtml((report.body_ai || report.body_clean || "No extractable text.").slice(0, 12000))}</pre></section></div>`)}${panel("technical", `<section class="technical-report raw-eml-report"><div><h3>Raw EML</h3><p>Read-only source view. Attachment payloads are omitted to keep MIME evidence readable.</p></div><pre tabindex="0" aria-label="Raw EML source with attachment payloads omitted">${escapeHtml(report.raw_eml_preview || report.raw_eml_preview_error || "Raw EML preview unavailable for this saved report. Reanalyse the email to generate it.")}</pre></section><section class="technical-report"><div><h3>Structured report</h3><p>Export technical evidence as JSON, without the raw EML preview or original binary content.</p></div><button id="download-report" type="button">Download JSON</button><pre>${escapeHtml(JSON.stringify(structuredReport, null, 2))}</pre></section>`)}</section>`;
+  const forwardedIdentity = report.forwarded_identity?.from
+    ? `<section><h3>Forwarded message identity</h3>${fields([["Embedded From", report.forwarded_identity.from], ["Embedded To", report.forwarded_identity.to], ["Embedded Subject", report.forwarded_identity.subject], ["Authentication", "Unavailable for the embedded message"]])}<p class="quiet">SPF, DKIM and DMARC shown in this report authenticate the forwarding message, not this embedded sender.</p></section>`
+    : "";
+  return `<section class="analysis-report verdict-${verdict.tone}"><div class="report-summary"><p class="page-kicker">ANALYSIS RESULT</p><h2>${risk}</h2><p class="verdict-detail">${escapeHtml(verdict.detail)}</p>${rationale}<p><strong>${escapeHtml(report.subject || "No subject")}</strong> · ${escapeHtml(report.from_ || "Sender unavailable")}</p><div class="report-stats"><span>${high} high</span><span>${medium} medium</span>${aiThreatBadges}<span>${(report.links || []).filter((link) => (link.scheme || "").toLowerCase() !== "mailto").length} web links</span><span>${(report.attachments || []).length} attachments</span></div></div><nav class="report-tabs" aria-label="Report sections"><span class="report-tab-indicator" aria-hidden="true"></span>${tabs}</nav>${panel("summary", `<div class="report-grid"><section><h3>Message</h3>${fields([["From", report.from_], ["To", report.to], ["Subject", report.subject], ["Date", report.date]])}</section><section><h3>Trust checks</h3><ul class="auth-grid">${auth}</ul><p class="quiet">${lookalikeSummary}</p></section></div><div class="report-flags"><h3>All signals</h3><ul>${details}</ul></div>`, true)}${panel("sender", `<div class="report-grid"><section><h3>Forwarding sender</h3>${fields([["From", report.from_], ["Delivered-To", report.delivered_to], ["Return-Path", report.return_path], ["Reply-To", report.reply_to], ["Errors-To", report.errors_to], ["Importance", report.importance]])}</section>${forwardedIdentity}<section class="sender-consistency"><h3>Identity consistency</h3><ul class="auth-grid">${senderInconsistencies}</ul></section></div>`)}${panel("auth", `<section class="authentication-card"><div class="authentication-heading"><div><p class="page-kicker">MESSAGE AUTHENTICATION</p><h3>Authentication</h3><p>Routing context and header checks in one view.</p></div><div class="routing-summary" aria-label="Routing summary">${routingSummary}</div></div><div class="auth-evidence-grid">${authDetails}</div></section>`)}${panel("links", `<div class="report-grid"><section class="evidence-card"><h3>Web links</h3><ul>${links}</ul></section><section class="evidence-card"><h3>Email actions</h3><ul>${emailActions}</ul></section><section class="evidence-card"><h3>Lookalike / Typosquatting</h3><ul>${lookalikes}</ul></section></div>`)}${panel("files", `<section class="evidence-card"><h3>Attachments</h3><ul>${attachments}</ul></section>`)}${panel("content", `<div class="report-grid"><section><h3>Context</h3>${fields([["Source", report.body_source], ["Selection", report.body_context]])}</section><section><h3>Extracted body</h3><pre>${escapeHtml((report.body_ai || report.body_clean || "No extractable text.").slice(0, 12000))}</pre></section></div>`)}${panel("technical", `<section class="technical-report raw-eml-report"><div><h3>Raw EML</h3><p>Read-only source view. Attachment payloads are omitted to keep MIME evidence readable.</p></div><pre tabindex="0" aria-label="Raw EML source with attachment payloads omitted">${escapeHtml(report.raw_eml_preview || report.raw_eml_preview_error || "Raw EML preview unavailable for this saved report. Reanalyse the email to generate it.")}</pre></section><section class="technical-report"><div><h3>Structured report</h3><p>Export technical evidence as JSON, without the raw EML preview or original binary content.</p></div><button id="download-report" type="button">Download JSON</button><pre>${escapeHtml(JSON.stringify(structuredReport, null, 2))}</pre></section>`)}</section>`;
 }
 
 function reputationRows(items: Array<{ title: string; detail: string; result?: ReputationResult; copyValue?: string }>): string {
   return items.length ? items.map(({ title, detail, result, copyValue }) => {
     const status = result?.status || "skipped";
+    const isAbuseIpDb = detail.includes("AbuseIPDB");
     const score = result?.abuseConfidenceScore;
     const tone = status === "malicious" || (score !== undefined && score >= 50) ? "danger"
       : status === "suspicious" || (score !== undefined && score >= 25) ? "review"
         : status === "clean" || (status === "ok" && score !== undefined) ? "safe" : "neutral";
-    const displayStatus = status === "ok" && score === 0 ? "CLEAN" : status === "ok" ? (score !== undefined && score < 25 ? "LOW RISK" : "REVIEW") : status === "skipped" && result?.message?.startsWith("Domain resolution") ? "UNRESOLVED" : status.toUpperCase();
-    const metrics = result?.detection_ratio || (result?.abuseConfidenceScore !== undefined ? `${score === 0 ? "No abuse reports · " : ""}Abuse confidence ${result.abuseConfidenceScore}/100 · Reports ${result.totalReports || 0}` : result?.message || "No check available");
+    const displayStatus = isAbuseIpDb && !abuseIpDbAvailable(result) ? "UNAVAILABLE" : status === "ok" && score === 0 ? "CLEAN" : status === "ok" ? (score !== undefined && score < 25 ? "LOW RISK" : "REVIEW") : status === "skipped" && result?.message?.startsWith("Domain resolution") ? "UNRESOLVED" : status.toUpperCase();
+    const metrics = isAbuseIpDb && !abuseIpDbAvailable(result)
+      ? result?.message || "AbuseIPDB check unavailable"
+      : result?.detection_ratio || (result?.abuseConfidenceScore !== undefined ? `${score === 0 ? "No abuse reports · " : ""}Abuse confidence ${result.abuseConfidenceScore}/100 · Reports ${result.totalReports || 0}` : result?.message || "No check available");
     const extra = [result?.used_parent_fallback && `Fallback indicator analysed: ${result.used_parent_fallback}`, result?.threat_label && `Threat: ${result.threat_label}`, result?.file_type && `Type: ${result.file_type}`, result?.last_analysis && `Last analysis: ${result.last_analysis}`, result?.crowdsourced_context_summary && `Community context: ${result.crowdsourced_context_summary}`, result?.city || result?.country ? `Location: ${[result?.city, result?.region, result?.country].filter(Boolean).join(", ")}` : "", result?.isp && `ISP: ${result.isp}`].filter(Boolean).join(" · ");
     const external = result?.permalink || (result?.url?.startsWith("https://www.abuseipdb.com/") ? result.url : "");
     const canManuallySearchVirusTotal = status === "not_found" && detail === "VirusTotal URL" && /^https?:\/\//i.test(title);
@@ -1757,7 +1787,8 @@ function addReputationPanel(report: AnalysisReport): void {
   shell.insertAdjacentHTML("beforeend", `<section class="report-panel" data-report-panel="reputation"><div class="reputation-intro"><p class="page-kicker">EXTERNAL INTELLIGENCE</p><h3>Indicator reputation</h3><p>VirusTotal receives URLs, hashes and sender domains; AbuseIPDB and ipwho.is receive public IP addresses only. RDAP receives sender domains only. OTX Pulses are synchronized separately, then matched locally without contacting OTX during analysis.</p></div><div class="reputation-grid"><section class="evidence-card"><h3>Links · VirusTotal</h3><ul>${urls}</ul></section><section class="evidence-card"><h3>Attachments · VirusTotal</h3><ul>${files}</ul></section><section class="evidence-card"><h3>Hops · AbuseIPDB and geolocation</h3><ul>${hops}</ul></section><section class="evidence-card"><h3>Sender domains · VirusTotal, RDAP and infrastructure</h3><ul>${domains}</ul></section><section class="evidence-card reputation-otx"><div class="evidence-card-heading"><h3>OTX · synchronized locally</h3><small>${escapeHtml(otxMeta)}</small></div><ul>${otxContent}</ul></section></div></section>`);
 }
 
-type GlobeHop = { lat: number; lon: number; ip: string; fromHost: string; byHost: string; city: string; country: string; isp: string; score?: number; reports?: number; role: "sender" | "injection" | "relay" | "recipient"; routeIndices: number[]; checkpoints: AuthenticationCheckpoint[]; strongOtxIpMatch: boolean };
+type GlobeHop = { lat: number; lon: number; ip: string; fromHost: string; byHost: string; city: string; country: string; isp: string; score?: number; reports?: number; abuseSummary: string; role: "sender" | "injection" | "relay" | "recipient"; order: number; checkpoints: AuthenticationCheckpoint[]; strongOtxIpMatch: boolean };
+type GlobeLocation = { lat: number; lon: number; city: string; country: string; hops: GlobeHop[]; score?: number; strongOtxIpMatch: boolean };
 
 // Same D3 orthographic projection and Natural Earth topology used by the
 // Streamlit version. The atlas is bundled with the desktop app: no CDN call.
@@ -1769,7 +1800,6 @@ function renderEmailGlobe(report: AnalysisReport): void {
   const wrapper = canvas?.closest<HTMLElement>(".email-globe-wrap");
   const reportPanel = canvas?.closest<HTMLElement>("[data-report-panel]");
   if (!canvas || !tooltip || !toggle || !fit || !wrapper || !reportPanel || canvas.dataset.globeInitialized === "true") return;
-  const seen = new Map<string, GlobeHop>();
   const received = orderedReceivedHops(report.received_hops);
   const hops: GlobeHop[] = [];
   for (const [routeIndex, hop] of received.entries()) {
@@ -1782,22 +1812,35 @@ function renderEmailGlobe(report: AnalysisReport): void {
     const geo = report.geolocation_results?.[ip];
     if (!geo || geo.status !== "ok" || !Number.isFinite(geo.lat) || !Number.isFinite(geo.lon)) continue;
     const hopCheckpoints = (report.authentication_checkpoints || []).filter((checkpoint) => checkpoint.association === "exact" && checkpoint.linked_hop_index === routeIndex);
-    const existing = seen.get(ip);
-    if (existing) {
-      existing.routeIndices.push(routeIndex);
-      existing.checkpoints.push(...hopCheckpoints);
-      continue;
-    }
     const reputation = report.hop_reputation?.[ip];
     const role: GlobeHop["role"] = routeIndex === 0 ? "sender" : routeIndex === 1 ? "injection" : routeIndex === received.length - 1 ? "recipient" : "relay";
-    const globeHop: GlobeHop = { lat: Number(geo.lat), lon: Number(geo.lon), ip, fromHost: hop.from_host || "—", byHost: hop.by_host || "—", city: geo.city || "", country: geo.country || "", isp: geo.isp || "", score: reputation?.abuseConfidenceScore, reports: reputation?.totalReports, role, routeIndices: [routeIndex], checkpoints: hopCheckpoints, strongOtxIpMatch: otxMatchesForIp(report, ip).some(isStrongOtxMatch) };
-    seen.set(ip, globeHop);
+    const globeHop: GlobeHop = { lat: Number(geo.lat), lon: Number(geo.lon), ip, fromHost: hop.from_host || "—", byHost: hop.by_host || "—", city: geo.city || "", country: geo.country || "", isp: geo.isp || "", score: abuseIpDbAvailable(reputation) ? reputation?.abuseConfidenceScore : undefined, reports: abuseIpDbAvailable(reputation) ? reputation?.totalReports : undefined, abuseSummary: abuseIpDbSummary(reputation), role, order: routeIndex + 1, checkpoints: hopCheckpoints, strongOtxIpMatch: otxMatchesForIp(report, ip).some(isStrongOtxMatch) };
     hops.push(globeHop);
   }
   if (!hops.length) {
     wrapper.innerHTML = `<div class="globe-empty"><b>Globe unavailable for this report</b><span>The hops have no geographic coordinates. Reanalyse the email to update geolocation.</span></div>`;
     return;
   }
+  const coincidentGroups = new Map<string, GlobeHop[]>();
+  hops.forEach((hop) => {
+    // Geolocation is approximate. Coordinates within roughly one city block
+    // represent one visual location rather than separate infrastructure dots.
+    const key = `${hop.lat.toFixed(3)},${hop.lon.toFixed(3)}`;
+    const group = coincidentGroups.get(key) || [];
+    group.push(hop);
+    coincidentGroups.set(key, group);
+  });
+  const locations: GlobeLocation[] = [...coincidentGroups.values()].map((group) => ({
+    lat: group.reduce((sum, hop) => sum + hop.lat, 0) / group.length,
+    lon: group.reduce((sum, hop) => sum + hop.lon, 0) / group.length,
+    city: group.find((hop) => hop.city)?.city || "",
+    country: group.find((hop) => hop.country)?.country || "",
+    hops: [...group].sort((left, right) => left.order - right.order),
+    score: group.some((hop) => hop.score !== undefined)
+      ? Math.max(...group.map((hop) => hop.score ?? 0))
+      : undefined,
+    strongOtxIpMatch: group.some((hop) => hop.strongOtxIpMatch),
+  }));
   canvas.dataset.globeInitialized = "true";
   const context = canvas.getContext("2d");
   if (!context) return;
@@ -1820,7 +1863,7 @@ function renderEmailGlobe(report: AnalysisReport): void {
   };
   let width = 0, height = 0, radius = 0;
   let [lambda, phi] = routeCenter();
-  let rotating = false, dragging = false, pointerX = 0, pointerY = 0, dragX = 0, dragY = 0, dragLambda = lambda, dragPhi = phi, hoveredIndex = -1, selectedIndex = -1;
+  let rotating = false, dragging = false, pointerX = 0, pointerY = 0, dragX = 0, dragY = 0, dragLambda = lambda, dragPhi = phi, hoveredIndex = -1;
   const projection = geoOrthographic().clipAngle(90);
   const path = geoPath(projection, context);
   const riskColor = (score?: number, strongOtxIpMatch = false) => strongOtxIpMatch ? "#e24b4a" : score === undefined ? "#888780" : score >= 50 ? "#e24b4a" : score >= 25 ? "#ef9f27" : "#1d9e75";
@@ -1834,8 +1877,15 @@ function renderEmailGlobe(report: AnalysisReport): void {
     const priority: Record<CheckTone, number> = { fail: 3, warn: 2, neutral: 1, pass: 0 };
     return matches.sort((left, right) => priority[authCheckTone(right.status)] - priority[authCheckTone(left.status)])[0];
   };
+  const checkpointForLocation = (location: GlobeLocation, protocol: AuthenticationCheckpoint["protocol"]) => {
+    const matches = location.hops.flatMap((hop) => hop.checkpoints).filter((checkpoint) => checkpoint.protocol === protocol);
+    const priority: Record<CheckTone, number> = { fail: 3, warn: 2, neutral: 1, pass: 0 };
+    return matches.sort((left, right) => priority[authCheckTone(right.status)] - priority[authCheckTone(left.status)])[0];
+  };
+  const markerPoint = (location: GlobeLocation): [number, number] | null => {
+    return projection([location.lon, location.lat]);
+  };
   const roleLabel: Record<GlobeHop["role"], string> = { sender: "Earliest observed hop", injection: "Observed relay", relay: "Intermediate relay", recipient: "Latest public hop" };
-  const roleMark: Record<GlobeHop["role"], string> = { sender: "E", injection: "R", relay: "R", recipient: "L" };
   const isVisible = (longitude: number, latitude: number) => {
     const rotation = projection.rotate();
     return geoDistance(
@@ -1872,38 +1922,47 @@ function renderEmailGlobe(report: AnalysisReport): void {
       context.beginPath(); path(line); context.strokeStyle = riskColor(origin.score, origin.strongOtxIpMatch); context.globalAlpha = .72; context.lineWidth = 1.8; context.setLineDash([6, 10]); context.stroke(); context.setLineDash([]); context.globalAlpha = 1;
     }
     hoveredIndex = -1;
-    hops.forEach((hop, index) => {
-      const point = projection([hop.lon, hop.lat]);
-      if (!point || !isVisible(hop.lon, hop.lat)) return;
+    locations.forEach((location, index) => {
+      const point = markerPoint(location);
+      if (!point || !isVisible(location.lon, location.lat)) return;
       const hover = !dragging && Math.hypot(point[0] - pointerX, point[1] - pointerY) < 16;
       if (hover) hoveredIndex = index;
-      const selected = selectedIndex === index;
-      const color = riskColor(hop.score, hop.strongOtxIpMatch), markerRadius = hover || selected ? 11 : 8;
+      const multipleHops = location.hops.length > 1;
+      const color = riskColor(location.score, location.strongOtxIpMatch), markerRadius = hover ? 12 : multipleHops ? 10 : 8;
       context.beginPath(); context.arc(point[0], point[1], markerRadius + 3, 0, Math.PI * 2); context.fillStyle = `${color}30`; context.fill();
       context.beginPath(); context.arc(point[0], point[1], markerRadius, 0, Math.PI * 2); context.fillStyle = color; context.fill(); context.strokeStyle = "rgba(255,255,255,.8)"; context.lineWidth = hover ? 2 : 1.5; context.stroke();
-      if (hop.checkpoints.length) {
-        const ringRadius = markerRadius + 5;
-        protocolOrder.forEach((protocol, protocolIndex) => {
-          const checkpoint = checkpointForProtocol(hop, protocol);
-          const segment = (Math.PI * 2) / protocolOrder.length;
-          const start = -Math.PI / 2 + protocolIndex * segment + .09;
-          const end = -Math.PI / 2 + (protocolIndex + 1) * segment - .09;
-          context.beginPath(); context.arc(point[0], point[1], ringRadius, start, end); context.strokeStyle = authenticationColor(checkpoint?.status); context.lineWidth = 2.6; context.stroke();
-        });
-      }
-      context.fillStyle = "#fff"; context.font = `700 ${hover ? 11 : 10}px ui-sans-serif, system-ui`; context.textAlign = "center"; context.textBaseline = "middle"; context.fillText(roleMark[hop.role], point[0], point[1]);
-      if (hover && hop.city) { context.font = "11px ui-sans-serif, system-ui"; context.fillStyle = "#e6edf3"; context.fillText([hop.city, hop.country].filter(Boolean).join(", "), point[0], point[1] - markerRadius - 9); }
+      const ringRadius = markerRadius + 5;
+      const hasFailure = location.hops.some((hop) => hop.checkpoints.some((checkpoint) => authCheckTone(checkpoint.status) === "fail"));
+      context.beginPath(); context.arc(point[0], point[1], ringRadius, 0, Math.PI * 2); context.strokeStyle = hasFailure ? "rgba(255,107,96,.28)" : "rgba(113,137,131,.22)"; context.lineWidth = hasFailure ? 6 : 3; context.stroke();
+      protocolOrder.forEach((protocol, protocolIndex) => {
+        const checkpoint = checkpointForLocation(location, protocol);
+        const status = checkpoint?.status || "none";
+        const segment = (Math.PI * 2) / protocolOrder.length;
+        const start = -Math.PI / 2 + protocolIndex * segment + .09;
+        const end = -Math.PI / 2 + (protocolIndex + 1) * segment - .09;
+        const tone = authCheckTone(status);
+        context.beginPath(); context.arc(point[0], point[1], ringRadius, start, end); context.strokeStyle = authenticationColor(status); context.lineWidth = tone === "fail" ? 4.2 : 2.6; context.stroke();
+      });
+      const orders = location.hops.map((hop) => hop.order);
+      const markerLabel = orders.length <= 2 ? orders.join("·") : `${orders[0]}+${orders.length - 1}`;
+      context.fillStyle = "#fff"; context.font = `800 ${multipleHops ? hover ? 9 : 8 : hover ? 11 : 10}px "DM Mono", ui-monospace, monospace`; context.textAlign = "center"; context.textBaseline = "middle"; context.fillText(markerLabel, point[0], point[1]);
+      if (hover && location.city) { context.font = "11px ui-sans-serif, system-ui"; context.fillStyle = "#e6edf3"; context.fillText([location.city, location.country].filter(Boolean).join(", "), point[0], point[1] - markerRadius - 9); }
     });
-    const hovered = hops[hoveredIndex];
+    const hovered = locations[hoveredIndex];
     if (hovered && !dragging) {
       tooltip.hidden = false;
-      const authResults = protocolOrder.map((protocol) => {
-        const checkpoint = checkpointForProtocol(hovered, protocol);
-        return checkpoint ? `<i class="auth-${authCheckTone(checkpoint.status)}">${protocol} ${escapeHtml(checkpoint.status.toUpperCase())}</i>` : "";
+      const hopCards = hovered.hops.map((hop) => {
+        const authResults = protocolOrder.map((protocol) => {
+          const checkpoint = checkpointForProtocol(hop, protocol);
+          const status = checkpoint?.status || "none";
+          return `<i class="auth-${authCheckTone(status)}">${protocol} ${escapeHtml(status.toUpperCase())}</i>`;
+        }).join("");
+        const otxStatus = hop.strongOtxIpMatch ? " · OTX exact IP match" : "";
+        return `<section class="globe-hop-detail"><b>Hop ${hop.order} · ${escapeHtml(roleLabel[hop.role])}</b><span>${escapeHtml(hop.ip)}</span><small>${escapeHtml(hop.fromHost)} → ${escapeHtml(hop.byHost)}</small><small>${escapeHtml(hop.isp || "ISP unavailable")} · ${escapeHtml(hop.abuseSummary)}${escapeHtml(otxStatus)}</small><div class="globe-auth-results">${authResults}</div></section>`;
       }).join("");
-      const otxStatus = hovered.strongOtxIpMatch ? " · OTX exact IP match" : "";
-      tooltip.innerHTML = `<b>${escapeHtml(roleLabel[hovered.role])} · ${escapeHtml(hovered.ip)}</b><span>${escapeHtml([hovered.city, hovered.country].filter(Boolean).join(", ") || "Approximate location available")}</span><small>${escapeHtml(hovered.fromHost)} → ${escapeHtml(hovered.byHost)}</small><small>${escapeHtml(hovered.isp || "ISP unavailable")} · Abuse ${escapeHtml(String(hovered.score ?? "—"))}/100${escapeHtml(otxStatus)}</small>${authResults ? `<div class="globe-auth-results">${authResults}</div>` : ""}`;
-      tooltip.style.left = `${Math.max(12, Math.min(width - 257, pointerX + 14))}px`; tooltip.style.top = `${Math.max(12, Math.min(height - 150, pointerY + 14))}px`;
+      const locationName = [hovered.city, hovered.country].filter(Boolean).join(", ") || "Approximate location available";
+      tooltip.innerHTML = `<header><b>${hovered.hops.length} ${hovered.hops.length === 1 ? "hop" : "hops"} at this location</b><span>${escapeHtml(locationName)}</span></header>${hopCards}`;
+      tooltip.style.left = `${Math.max(12, Math.min(width - 332, pointerX + 14))}px`; tooltip.style.top = `${Math.max(12, Math.min(height - Math.min(300, 95 + hovered.hops.length * 105), pointerY + 14))}px`;
     } else tooltip.hidden = true;
     requestAnimationFrame(draw);
   };
@@ -1915,15 +1974,6 @@ function renderEmailGlobe(report: AnalysisReport): void {
   toggle.textContent = "Start rotation";
   toggle.addEventListener("click", () => { rotating = !rotating; toggle.textContent = rotating ? "Pause rotation" : "Start rotation"; });
   fit.addEventListener("click", centerRoute);
-  document.querySelectorAll<HTMLElement>("[data-auth-hop]").forEach((control) => control.addEventListener("click", () => {
-    const routeIndex = Number(control.dataset.authHop);
-    const index = hops.findIndex((hop) => hop.routeIndices.includes(routeIndex));
-    if (index < 0) return;
-    const hop = hops[index];
-    selectedIndex = index; rotating = false; toggle.textContent = "Start rotation";
-    lambda = -hop.lon; phi = -hop.lat; projection.rotate([lambda, phi]);
-    window.setTimeout(() => { if (selectedIndex === index) selectedIndex = -1; }, 2200);
-  }));
 }
 
 function integrateReputation(report: AnalysisReport): void {
@@ -1955,11 +2005,11 @@ function integrateReputation(report: AnalysisReport): void {
       const otxMatches = otxMatchesForIp(report, ip);
       const location = [geo.city, geo.region, geo.country].filter(Boolean).join(", ") || geo.message || "Geolocation unavailable";
       const copyAction = reputationCheckTone(reputation) === "fail" || otxMatches.length ? `<button class="copy-evidence" type="button" data-copy-ioc="${escapeHtml(ip)}">Copy IP</button>` : "";
-      return `<div class="hop-ip-detail"><strong>IP ${escapeHtml(ip)}</strong><small>${escapeHtml(location)} · ISP ${escapeHtml(geo.isp || "—")}</small><b>AbuseIPDB · ${escapeHtml(String(reputation.abuseConfidenceScore ?? "—"))}/100 · ${escapeHtml(String(reputation.totalReports ?? 0))} report</b>${otxInlineEvidence(otxMatches)}${copyAction}</div>`;
+      return `<div class="hop-ip-detail"><strong>IP ${escapeHtml(ip)}</strong><small>${escapeHtml(location)} · ISP ${escapeHtml(geo.isp || "—")}</small><b>${escapeHtml(abuseIpDbSummary(reputation))}</b>${otxInlineEvidence(otxMatches)}${copyAction}</div>`;
     }).join("") || `<p class="hop-empty">No public IP is available for this hop.</p>`;
     return `<details class="hop-card hop-card-${tone}"><summary><span><strong>Hop ${index + 1} · ${escapeHtml(hop.from_host || "unknown source")}</strong><small>${escapeHtml(hop.by_host || "unknown destination")} · ${escapeHtml(hop.received_at || "date unavailable")}</small></span><span class="hop-disclosure" aria-hidden="true"></span></summary><div class="hop-details">${details}${hop.raw ? `<pre>${escapeHtml(hop.raw)}</pre>` : ""}</div></details>`;
   }).join("") || "<p>No hops available.</p>";
-  auth?.insertAdjacentHTML("beforeend", `<section class="evidence-card geographic-route"><div class="route-heading"><div><h3>Email route</h3><p>IP locations are approximate. Node fill shows IP reputation; the outer ring shows authentication reported at an exactly matched checkpoint.</p></div><div class="globe-actions"><button type="button" data-globe-toggle>Start rotation</button><button type="button" data-globe-fit>Centre route</button></div></div><div class="email-globe-wrap"><canvas data-email-globe aria-label="Approximate email server route and authentication checkpoints"></canvas><div class="globe-tooltip" data-globe-tooltip hidden></div><div class="globe-legend"><span><i class="risk-low"></i>Low IP score</span><span><i class="risk-medium"></i>IP review</span><span><i class="risk-high"></i>IP threat</span><span class="auth-ring-key"><i></i>Auth: pass · fail · review</span></div></div>${authenticationCheckpointMarkup(report)}${hops}</section>`);
+  auth?.insertAdjacentHTML("beforeend", `<section class="evidence-card geographic-route"><div class="route-heading"><div><h3>Email route</h3><p>Numbers show chronological hop order. Hops at the same approximate location share one point and one detail card. Node fill shows the worst IP reputation there; the outer ring summarizes exactly mapped authentication.</p></div><div class="globe-actions"><button type="button" data-globe-toggle>Start rotation</button><button type="button" data-globe-fit>Centre route</button></div></div><div class="email-globe-wrap"><canvas data-email-globe aria-label="Chronological email route grouped by approximate location, with IP reputation and authentication results"></canvas><div class="globe-tooltip" data-globe-tooltip hidden></div><div class="globe-legend"><span><i class="risk-low"></i>Low IP score</span><span><i class="risk-medium"></i>IP review</span><span><i class="risk-high"></i>IP threat</span><span class="auth-pass-key"><i></i>Auth pass</span><span class="auth-fail-key"><i></i>Auth fail</span><span class="auth-review-key"><i></i>Auth review</span><span class="auth-none-key"><i></i>Auth none</span></div></div>${hops}</section>`);
   const content = panel("content");
   const rawHtml = report.body_html_safe || safeHtmlPreview(report.body_html || "");
   if (rawHtml) {
@@ -2037,12 +2087,12 @@ function bindReportInteractions(user: AuthUser, report: AnalysisReport): void {
 function renderAiPanels(container: HTMLElement): void {
   const contentPanel = container.querySelector<HTMLElement>('[data-report-panel="content"]');
   if (!contentPanel) return;
-  contentPanel.insertAdjacentHTML("afterbegin", `<section class="ai-panels"><article data-ai-panel="identity"><p class="page-kicker">LOCAL NER</p><h3>Identity intelligence</h3><p>Extracting identity entities…</p></article><article data-ai-panel="phi4"><p class="page-kicker">LOCAL AI</p><h3>Semantic analysis</h3><p>Preparing the model…</p></article></section>`);
+  contentPanel.insertAdjacentHTML("afterbegin", `<section class="ai-panels"><article data-ai-panel="identity"><p class="page-kicker">LOCAL AI</p><h3>Declared identity</h3><p>Reading who the message claims to represent…</p></article><article data-ai-panel="phi4"><p class="page-kicker">LOCAL AI</p><h3>Semantic analysis</h3><p>Preparing the model…</p></article></section>`);
 }
 
 function setAiPanel(container: HTMLElement, engine: "identity" | "phi4", title: string, message: string, state: "loading" | "ok" | "error"): void {
   const panel = container.querySelector<HTMLElement>(`[data-ai-panel="${engine}"]`);
-  if (panel) panel.innerHTML = `<p class="page-kicker">${engine === "identity" ? "LOCAL NER" : "LOCAL AI"}</p><h3>${escapeHtml(title)}</h3><p class="ai-${state}">${escapeHtml(message)}</p>`;
+  if (panel) panel.innerHTML = `<p class="page-kicker">LOCAL AI</p><h3>${escapeHtml(title)}</h3><p class="ai-${state}">${escapeHtml(message)}</p>`;
 }
 
 function setIdentityPanel(container: HTMLElement, analysis: NonNullable<AnalysisReport["identity_analysis"]>): void {
@@ -2067,7 +2117,7 @@ function setIdentityPanel(container: HTMLElement, analysis: NonNullable<Analysis
   const summary = organisations.length === 1
     ? "1 organisation candidate extracted locally."
     : `${organisations.length} organisation candidates extracted locally.`;
-  panel.innerHTML = `<p class="page-kicker">LOCAL NER</p><h3>Identity intelligence</h3><p class="identity-summary">${escapeHtml(summary)}</p>${chain}${coherenceMarkup}`;
+  panel.innerHTML = `<p class="page-kicker">LOCAL AI</p><h3>Declared identity</h3><p class="identity-summary">${escapeHtml(summary)}</p>${chain}${coherenceMarkup}`;
 }
 
 function semanticLabel(value: string | undefined): string {
@@ -2150,29 +2200,24 @@ async function runAiAnalysis(user: AuthUser, report: AnalysisReport, recordId: s
   const model = runtime?.model || DEFAULT_OLLAMA_MODEL;
   renderAiPanels(container);
   if (!isCurrent()) return;
-  await invoke<NonNullable<AnalysisReport["identity_analysis"]>>("analyze_identity", { report, analysisId }).then((value) => {
-    if (!isCurrent()) return;
-    report.identity_analysis = value;
-    setIdentityPanel(container, value);
-    onSettled?.("identity");
-  }).catch((error) => {
-    if (!isCurrent()) return;
-    report.identity_analysis = { status: "error", message: String(error) };
-    setAiPanel(container, "identity", "Analysis unavailable", String(error), "error");
-    onSettled?.("identity");
-  });
-  if (!isCurrent()) return;
-  if (runtime?.model_ready) setAiPanel(container, "phi4", "Preparing AI", "Loading the local model after identity analysis to avoid CPU and memory contention…", "loading");
+  if (runtime?.model_ready) setAiPanel(container, "phi4", "Preparing AI", "Loading the local model…", "loading");
   if (!isCurrent()) return;
   const phiStartedAt = performance.now();
-  await invoke<NonNullable<AnalysisReport["phi4_analysis"]>>("analyze_phi4", { report, analysisId }).then((value) => {
+  await invoke<AiAnalysisResult>("analyze_phi4", { report, analysisId }).then((value) => {
     if (!isCurrent()) return;
-    report.phi4_analysis = { ...value, model: value.model || model, duration_ms: Math.round(performance.now() - phiStartedAt) };
+    const { identity_analysis: identityAnalysis, ...phiValue } = value;
+    report.identity_analysis = identityAnalysis || { status: "ok", entities: [], coherence: [], backend: "ollama-semantic", model: value.model || model };
+    setIdentityPanel(container, report.identity_analysis);
+    onSettled?.("identity");
+    report.phi4_analysis = { ...phiValue, model: value.model || model, duration_ms: Math.round(performance.now() - phiStartedAt) };
     const analysis = value.analysis || {};
     setPhiSemanticPanel(container, analysis, value.model || model, report.phi4_analysis.duration_ms, report.ai_content_summary?.summary, report.phi4_analysis.performance);
     onSettled?.("phi4");
   }).catch((error) => {
     if (!isCurrent()) return;
+    report.identity_analysis = { status: "error", message: String(error) };
+    setAiPanel(container, "identity", "Analysis unavailable", String(error), "error");
+    onSettled?.("identity");
     report.phi4_analysis = { status: "error", message: String(error) };
     setAiPanel(container, "phi4", "Analysis unavailable", String(error), "error");
     onSettled?.("phi4");
@@ -2458,7 +2503,7 @@ function contentFor(section: Section, user: AuthUser): string {
     const keys = reputationKeys(user);
     const reputationReady = Boolean(keys.virustotal || keys.abuseipdb || keys.otx);
     const keyRow = (provider: "virustotal" | "abuseipdb" | "otx", name: string, value: string) => `<li class="${value ? "ready" : "missing"}" data-reputation-provider="${provider}"><i aria-hidden="true">${value ? "✓" : "—"}</i><div class="credential-static-copy"><strong>${name}</strong><small>${value ? `Stored locally · ${escapeHtml(maskedSecret(value))}` : "Key not configured"}</small></div><label class="credential-inline-field"><span>${name}</span><input form="reputation-settings" name="${provider}" type="password" autocomplete="new-password" aria-label="${name}" placeholder="${value ? "Enter a new key or leave unchanged" : `Enter the ${provider === "otx" ? "OTX" : provider === "virustotal" ? "VirusTotal" : "AbuseIPDB"} token`}" /></label><b>${value ? "Ready" : "Required"}</b></li>`;
-    return `<div class="page-heading"><div><p class="page-kicker">LOCAL CONFIGURATION</p><h1>Settings</h1><p>External intelligence and local analysis runtime.</p></div></div><div class="settings-grid"><section class="settings-card settings-reputation"><p class="page-kicker">EXTERNAL INTELLIGENCE</p><h2>Reputation</h2><p class="settings-note">FishStop uses a reputation-database engine to check technical indicators against known threats. Email content remains on your device.</p><ul class="credential-list">${keyRow("virustotal", "VirusTotal API key", keys.virustotal)}${keyRow("abuseipdb", "AbuseIPDB API key", keys.abuseipdb)}${keyRow("otx", "AlienVault OTX API key", keys.otx)}</ul><button class="soft-action edit-credentials" id="edit-reputation-keys" type="button">${reputationReady ? "Edit keys" : "Configure keys"}</button><form id="reputation-settings" ${reputationReady ? "hidden" : ""}><label>VirusTotal API key<input name="virustotal" type="password" autocomplete="new-password" placeholder="${keys.virustotal ? "Leave empty to keep the current key" : "Enter the VirusTotal token"}" /></label><label>AbuseIPDB API key<input name="abuseipdb" type="password" autocomplete="new-password" placeholder="${keys.abuseipdb ? "Leave empty to keep the current key" : "Enter the AbuseIPDB token"}" /></label><label>AlienVault OTX API key <small>Required</small><input name="otx" type="password" autocomplete="new-password" placeholder="${keys.otx ? "Leave empty to keep the current key" : "Enter the OTX token"}" /></label><div><button class="primary-action" type="submit">Save changes</button>${reputationReady ? `<button class="cancel-credentials" id="cancel-reputation-edit" type="button">Cancel</button>` : ""}<span id="settings-status" aria-live="polite"></span></div></form><section class="otx-sync-panel" data-status="checking" aria-live="polite"><span class="otx-sync-mark" aria-hidden="true"></span><div><strong>OTX Pulse database</strong><small id="otx-sync-status">Checking the local database…</small></div><div class="otx-database-actions"><button class="soft-action" id="sync-otx-intelligence" type="button" disabled>Checking…</button><button class="danger-action" id="clear-otx-intelligence" type="button" disabled>Delete database</button></div>${otxProgressMarkup()}</section></section><section class="settings-card ollama-lab"><p class="page-kicker">LOCAL AI ENVIRONMENT</p><h2>Machine and automatic model</h2><p class="settings-note">FishStop uses a local AI model to understand email context without sending sensitive data off the device.</p><div class="machine-profile" id="machine-profile" aria-live="polite"><p>Reading machine information…</p></div></section><section class="settings-card model-provenance model-provenance-card" aria-live="polite"><div><p class="page-kicker">CONTEXTUAL TEXT ANALYSIS</p><h2>Hugging Face model</h2></div><p id="bert-model-provenance">Loading model provenance…</p></section></div>`;
+    return `<div class="page-heading"><div><p class="page-kicker">LOCAL CONFIGURATION</p><h1>Settings</h1><p>External intelligence and local analysis runtime.</p></div></div><div class="settings-grid"><section class="settings-card settings-reputation"><p class="page-kicker">EXTERNAL INTELLIGENCE</p><h2>Reputation</h2><p class="settings-note">FishStop uses a reputation-database engine to check technical indicators against known threats. Email content remains on your device.</p><ul class="credential-list">${keyRow("virustotal", "VirusTotal API key", keys.virustotal)}${keyRow("abuseipdb", "AbuseIPDB API key", keys.abuseipdb)}${keyRow("otx", "AlienVault OTX API key", keys.otx)}</ul><button class="soft-action edit-credentials" id="edit-reputation-keys" type="button">${reputationReady ? "Edit keys" : "Configure keys"}</button><form id="reputation-settings" ${reputationReady ? "hidden" : ""}><label>VirusTotal API key<input name="virustotal" type="password" autocomplete="new-password" placeholder="${keys.virustotal ? "Leave empty to keep the current key" : "Enter the VirusTotal token"}" /></label><label>AbuseIPDB API key<input name="abuseipdb" type="password" autocomplete="new-password" placeholder="${keys.abuseipdb ? "Leave empty to keep the current key" : "Enter the AbuseIPDB token"}" /></label><label>AlienVault OTX API key <small>Required</small><input name="otx" type="password" autocomplete="new-password" placeholder="${keys.otx ? "Leave empty to keep the current key" : "Enter the OTX token"}" /></label><div><button class="primary-action" type="submit">Save changes</button>${reputationReady ? `<button class="cancel-credentials" id="cancel-reputation-edit" type="button">Cancel</button>` : ""}<span id="settings-status" aria-live="polite"></span></div></form><section class="otx-sync-panel" data-status="checking" aria-live="polite"><span class="otx-sync-mark" aria-hidden="true"></span><div><strong>OTX Pulse database</strong><small id="otx-sync-status">Checking the local database…</small></div><div class="otx-database-actions"><button class="soft-action" id="sync-otx-intelligence" type="button" disabled>Checking…</button><button class="danger-action" id="clear-otx-intelligence" type="button" disabled>Delete database</button></div>${otxProgressMarkup()}</section></section><section class="settings-card ollama-lab"><p class="page-kicker">LOCAL AI ENVIRONMENT</p><h2>Machine and automatic model</h2><p class="settings-note">FishStop uses a local AI model to understand email context and its declared identity without sending sensitive data off the device.</p><div class="machine-profile" id="machine-profile" aria-live="polite"><p>Reading machine information…</p></div></section></div>`;
   }
   const dashboardHighRiskCount = history.filter((record) => assessment(record.report).tone === "danger").length;
   const dashboardReviewCount = history.filter((record) => assessment(record.report).tone === "review").length;
@@ -2503,17 +2548,6 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
     if (result) {
       bindReportInteractions(user, active.report);
       restoreAiAnalysis(active.report, result);
-    }
-  }
-  if (section === "settings") {
-    const settingsGrid = document.querySelector<HTMLElement>(".settings-grid");
-    const reputation = document.querySelector<HTMLElement>(".settings-reputation");
-    const provenance = document.querySelector<HTMLElement>(".model-provenance-card");
-    if (settingsGrid && reputation && provenance) {
-      const leftStack = document.createElement("div");
-      leftStack.className = "settings-left-stack";
-      settingsGrid.insertBefore(leftStack, reputation);
-      leftStack.append(reputation, provenance);
     }
   }
   void migrateLegacyReputationKeys(user)
@@ -2804,22 +2838,6 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
     else void refreshProtectionStatus(user, true);
   });
   void refreshManagedModel();
-  const bertProvenance = document.querySelector<HTMLElement>("#bert-model-provenance");
-  if (bertProvenance) {
-    const card = bertProvenance.closest<HTMLElement>(".model-provenance-card");
-    const kicker = card?.querySelector<HTMLElement>(".page-kicker");
-    const title = card?.querySelector<HTMLElement>("h2");
-    if (kicker) kicker.textContent = "IDENTITY INTELLIGENCE";
-    if (title) title.textContent = "Organisation extraction model";
-    void invoke<HuggingFaceModelInfo>("huggingface_identity_model_info").then((info) => {
-    const runtimeRevision = info.runtime_revision.slice(0, 12);
-    const latestCommit = info.latest_commit?.slice(0, 12) || "unavailable";
-    const repositoryUrl = `https://huggingface.co/${info.repository.split("/").map(encodeURIComponent).join("/")}`;
-    bertProvenance.innerHTML = `<a href="${repositoryUrl}" target="_blank" rel="noopener noreferrer">${escapeHtml(info.repository)} ↗</a><span>Runtime commit ${escapeHtml(runtimeRevision)}</span><small>Latest repository update: ${escapeHtml(formatModelUpdatedAt(info.updated_at))} · commit ${escapeHtml(latestCommit)}</small>`;
-    }).catch((error) => {
-      bertProvenance.textContent = `Model provenance unavailable: ${String(error)}`;
-    });
-  }
   unlistenNativeEmlDrop?.(); unlistenNativeEmlDrop = null;
   const dropZone = document.querySelector<HTMLButtonElement>("#eml-drop"); const uploadStatus = document.querySelector<HTMLParagraphElement>("#upload-status");
   const emlInput = document.querySelector<HTMLInputElement>("#eml-input");

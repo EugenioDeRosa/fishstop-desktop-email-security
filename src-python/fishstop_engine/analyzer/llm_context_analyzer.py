@@ -3,6 +3,7 @@ import os
 import re
 import unicodedata
 from difflib import SequenceMatcher
+from email.utils import parseaddr
 from threading import Lock
 from time import monotonic
 
@@ -59,7 +60,7 @@ OLLAMA_AVAILABILITY_TTL = max(
     0.0,
     float(os.getenv("OLLAMA_AVAILABILITY_TTL", "5")),
 )
-PROMPT_VERSION = "semantic-policy-v36-qwen3-instruct-grounding"
+PROMPT_VERSION = "semantic-policy-v38-qwen3-claimed-identity"
 
 _OLLAMA_AVAILABILITY_LOCK = Lock()
 _OLLAMA_AVAILABILITY_CACHE: tuple[float, tuple, bool] | None = None
@@ -163,7 +164,7 @@ Important distinctions:
 
 Signals are secondary context: financial_pretext for a debt/invoice/charge or diversion pretext; incentive for a prize/bonus/refund; threat for suspension, penalty, loss, exposure, reputational or physical harm; urgency for deadline/scarcity pressure; impersonation for a claimed person, role, organization, or brand. Include only signals explicitly supported by the email; never populate signals as a generic checklist. If signals is non-empty, copy the strongest signal's shortest exact phrase into signal_evidence. If no exact supporting phrase exists, return signals=[] and signal_evidence="".
 
-When relevant, populate credential_type, payment_method, payment_asset, amount, payment destination change, coercion, threat_type, scam_type, and claimed_brand. Omit optional detail fields when they are not supported. Set ambiguity=high only when the requested outcome remains genuinely unclear after applying these rules. Summary is one concise factual English sentence with no risk verdict.
+When relevant, populate credential_type, payment_method, payment_asset, amount, payment destination change, coercion, threat_type, scam_type, and claimed_brand. claimed_brand is the primary organisation, company, institution, product, or service that the message explicitly presents itself as representing. Copy its shortest exact name from the visible sender display name, subject, or body. Do not use an email address, a technical domain extracted from headers or links, or a generic department/role such as a security team, support team, administration, or customer service. Return an empty claimed_brand when no specific identity is explicitly named. Omit optional detail fields when they are not supported. Set ambiguity=high only when the requested outcome remains genuinely unclear after applying these rules. Summary is one concise factual English sentence with no risk verdict.
 
 Before returning, verify that action, channel, and evidence agree; every quotation occurs in the email; and no field was inferred from isolated words. Return only the schema-conforming object.
 """
@@ -480,6 +481,23 @@ def _strongly_authenticated_sender(soc: dict) -> bool:
     )
 
 
+def _qualified_aligned_spf_sender(soc: dict) -> bool:
+    """Accept SPF-only identity only when both its domain and SMTP IP are proven."""
+    spf = _auth_status(soc, "SPF")
+    dkim = _auth_status(soc, "DKIM")
+    dmarc = _auth_status(soc, "DMARC")
+    spf_result = (soc.get("effective_auth_results") or {}).get("SPF") or {}
+    return bool(
+        spf == "pass"
+        and dkim in {"none", "unknown", "present"}
+        and dmarc in {"none", "unknown"}
+        and not spf_result.get("path_conflict")
+        and soc.get("injection_ip_spf_authorized") is True
+        and soc.get("spf_sender_aligned") is True
+        and not soc.get("return_path_domain_mismatch")
+    )
+
+
 def _requested_links_match_verified_organisation(soc: dict) -> bool:
     """Use Brand Intelligence evidence without embedding provider domains."""
     if not _strongly_authenticated_sender(soc):
@@ -629,6 +647,29 @@ def _attachment_anomaly_for_llm(att: dict) -> str:
     return "; ".join(parts) if parts else "none"
 
 
+def _mime_finding_category(finding: dict) -> str:
+    """Classify current and older reports consistently for verdict synthesis."""
+    explicit = str(finding.get("category") or "").lower()
+    if explicit:
+        return explicit
+    code = str(finding.get("code") or "")
+    if code in {
+        "DuplicateSingletonHeader", "NoBoundaryInMultipartDefect",
+        "StartBoundaryNotFoundDefect", "MultipartInvariantViolationDefect",
+        "InvalidMultipartContentTransferEncodingDefect",
+        "MissingHeaderBodySeparatorDefect", "FirstHeaderLineIsContinuationDefect",
+        "DiscardedLeadingNonHeaderLines",
+    }:
+        return "security_ambiguity"
+    if code in {
+        "InvalidBase64LengthDefect", "InvalidBase64CharactersDefect",
+        "InvalidBase64PaddingDefect", "CloseBoundaryNotFoundDefect",
+        "UndecodableBytesDefect",
+    } or finding.get("kind") == "decode_error":
+        return "damaged_content"
+    return "compatibility_notice"
+
+
 def _technical_context_lines(soc: dict, body_for_llm: str = "", link_reputation: dict | None = None) -> list[str]:
     spf_status = _auth_status(soc, "SPF")
     dkim_status = _auth_status(soc, "DKIM")
@@ -638,6 +679,14 @@ def _technical_context_lines(soc: dict, body_for_llm: str = "", link_reputation:
     lookalike_alerts = soc.get("lookalike_alerts") or []
     link_reputation = link_reputation if link_reputation is not None else (soc.get("link_reputation") or {})
     lines: list[str] = []
+
+    forwarded_identity = soc.get("forwarded_identity") or {}
+    if forwarded_identity.get("from"):
+        lines.append(
+            "Forwarded identity boundary: outer authentication applies only to "
+            f"the forwarding sender; embedded_from={forwarded_identity.get('from')} "
+            "embedded_authentication=unavailable"
+        )
 
     html_ctas = [
         link for link in links
@@ -682,17 +731,27 @@ def _technical_context_lines(soc: dict, body_for_llm: str = "", link_reputation:
         lines.append(f"Display name spoofing indicator: {soc.get('display_name_spoofing')}")
 
     mime_findings = soc.get("mime_findings") or []
-    mime_review_findings = [
+    mime_security_findings = [
         finding for finding in mime_findings
         if finding.get("level") in {"HIGH", "MEDIUM"}
+        and _mime_finding_category(finding) == "security_ambiguity"
     ]
-    if mime_review_findings:
+    mime_damaged_findings = [
+        finding for finding in mime_findings
+        if _mime_finding_category(finding) == "damaged_content"
+    ]
+    if mime_security_findings:
         lines.append(
             "MIME parser ambiguity detected: "
-            f"security_relevant_findings={int(soc.get('mime_review_finding_count') or len(mime_review_findings))} "
+            f"security_relevant_findings={len(mime_security_findings)} "
             f"defects={int(soc.get('mime_defect_count') or 0)} "
             f"duplicate_singleton_headers={int(soc.get('mime_duplicate_header_count') or 0)}; "
             "treat parsed fields and transfer-decoded content with caution"
+        )
+    if mime_damaged_findings:
+        lines.append(
+            f"Damaged MIME content detected: findings={len(mime_damaged_findings)}; "
+            "some content may be incomplete, but damage is not phishing evidence by itself"
         )
     alternative_analysis = soc.get("mime_alternative_analysis") or {}
     if alternative_analysis.get("status") == "divergent":
@@ -937,6 +996,64 @@ def _validated_evidence(soc: dict, value: str, action: str = "") -> str:
             _, _, grounded = min(partial_matches)
             return _clip_exact_span(grounded, 180)
     return ""
+
+
+def _claimed_brand_occurrences(soc: dict, value: object) -> list[dict]:
+    """Ground a model brand claim only in user-visible identity-bearing text."""
+    brand = _clip_exact_span(_normalize_obfuscated_text(value or ""), 80)
+    if not brand or "@" in brand or brand.lower().startswith(("http://", "https://")):
+        return []
+    normalized_brand = re.sub(r"\s+", " ", brand).strip()
+    if len(normalized_brand) < 2:
+        return []
+    escaped_brand = re.escape(normalized_brand).replace(r"\ ", r"\s+")
+    pattern = re.compile(
+        rf"(?<!\w){escaped_brand}(?!\w)",
+        re.IGNORECASE | re.UNICODE,
+    )
+    sender_name = parseaddr(str(soc.get("from_") or ""))[0].strip()
+    visible_sources = (
+        ("sender", sender_name),
+        ("subject", str(soc.get("subject") or "")),
+        ("body", compact_ai_body(_body_context_for_llm(soc))),
+    )
+    return [
+        {"source": source, "evidence": match.group(0)}
+        for source, text in visible_sources
+        if text and (match := pattern.search(_normalize_obfuscated_text(text)))
+    ]
+
+
+def _identity_analysis_from_semantic(soc: dict, semantic: dict) -> dict:
+    """Turn the grounded Qwen identity claim into the existing identity report."""
+    brand = _clip_exact_span(
+        _normalize_obfuscated_text(semantic.get("claimed_brand") or ""),
+        80,
+    )
+    occurrences = _claimed_brand_occurrences(soc, brand)
+    entities = []
+    if occurrences:
+        entities.append({
+            "name": brand,
+            "confidence": semantic.get("confidence", 0.5),
+            "entity_type": "ORG",
+            "entity_types": ["ORG"],
+            "verified_claim": True,
+            "occurrences": occurrences,
+        })
+    else:
+        semantic["claimed_brand"] = ""
+
+    from fishstop_engine.brand_intelligence import assess_brand_coherence
+
+    return {
+        "status": "ok",
+        "model": OLLAMA_MODEL,
+        "backend": "ollama-semantic",
+        "segments_analyzed": 3,
+        "entities": entities,
+        "coherence": assess_brand_coherence(soc, entities),
+    }
 
 
 def _evidence_segments(soc: dict) -> list[str]:
@@ -1278,6 +1395,7 @@ def _email_prompt_from_body(
 ) -> str:
     links = _actionable_links(soc)
     attachments = _actionable_attachments(soc)
+    visible_sender_name = parseaddr(str(soc.get("from_") or ""))[0].strip()
     section_meta = (
         f"; section={section_number}/{section_total}"
         if section_total > 1
@@ -1287,6 +1405,7 @@ def _email_prompt_from_body(
     return "\n".join([
         _CONTENT_BEGIN_MARKER,
         f"SUBJECT: {_neutralize_prompt_boundaries(_clip(subject, 240))}",
+        f"VISIBLE SENDER NAME: {_neutralize_prompt_boundaries(_clip(visible_sender_name, 160))}",
         (
             f"META: links={len(links)}; attachments={len(attachments)}; "
             f"types={attachment_meta}; context={soc.get('body_context') or 'normal'}{section_meta}"
@@ -1575,6 +1694,8 @@ def normalize_semantic_extraction(raw: dict, soc: dict | None = None) -> dict:
         _normalize_obfuscated_text(raw.get("claimed_brand") or ""),
         80,
     )
+    if soc is not None and not _claimed_brand_occurrences(soc, claimed_brand):
+        claimed_brand = ""
     sensitive_information = (
         requested_action == "provide_information"
         or "sensitive_info" in signals
@@ -2101,6 +2222,14 @@ def _identity_risk(
     semantic: dict | None = None,
 ) -> tuple[str, list[str]]:
     reasons = []
+    forwarded_identity = soc.get("forwarded_identity") or {}
+    supplied_forwarded_action = bool(
+        forwarded_identity.get("from")
+        and semantic
+        and semantic.get("action_channel") in {
+            "supplied_link", "external_form", "supplied_attachment", "email_reply",
+        }
+    )
     if soc.get("display_name_spoofing"):
         return "spoofing_evidence", ["display-name spoofing was detected"]
     if soc.get("reply_to_mismatch") and not soc.get("reply_to_mismatch_legitimate"):
@@ -2149,11 +2278,22 @@ def _identity_risk(
     ) or (
         statuses["SPF"] == "pass" and statuses["DKIM"] == "pass"
     )
-    if authentication_passed:
-        reasons = ["sender authentication passed"]
+    qualified_spf_only = _qualified_aligned_spf_sender(soc)
+    if supplied_forwarded_action:
+        return "uncertain", [
+            "sender authentication applies to the forwarder, while the embedded sender identity is not authenticated by the available headers"
+        ]
+    if authentication_passed or qualified_spf_only:
+        reasons = [
+            "sender authentication passed"
+            if authentication_passed
+            else "sender IP and visible domain are aligned with SPF"
+        ]
         for name, status in statuses.items():
             if name == "DKIM" and status == "none":
                 reasons.append("DKIM signature is absent")
+            elif name == "DMARC" and status == "none":
+                reasons.append("DMARC result is absent")
             elif status in {"fail", "temperror", "permerror", "policy", "softfail", "neutral"}:
                 reasons.append(f"{name} did not pass ({status})")
         return_path_context = _return_path_mismatch_context(soc)
@@ -2366,8 +2506,9 @@ def _technical_risk(soc: dict, semantic: dict | None = None) -> tuple[str, list[
 
     if any(link.get("is_ip") for link in (soc.get("links") or [])):
         suspicious.append("the message contains a direct-IP URL")
-    if soc.get("mime_status") == "review" and any(
+    if any(
         finding.get("level") in {"HIGH", "MEDIUM"}
+        and _mime_finding_category(finding) == "security_ambiguity"
         for finding in (soc.get("mime_findings") or [])
     ):
         suspicious.append("the email has ambiguous or malformed MIME structure")
@@ -2482,10 +2623,48 @@ def apply_email_risk_policy(soc: dict, semantic: dict) -> dict:
     supplied_action = semantic["action_channel"] in {
         "supplied_link", "external_form", "supplied_attachment",
     }
+    message_supplied_action = semantic["action_channel"] in {
+        "supplied_link", "external_form", "supplied_attachment", "email_reply",
+    }
+    all_authentication_failed = all(
+        _auth_status(soc, protocol) == "fail"
+        for protocol in ("SPF", "DKIM", "DMARC")
+    )
+    grounded_risky_action = bool(semantic.get("evidence_phrase")) and (
+        semantic.get("asks_for_credentials")
+        or semantic.get("asks_for_sensitive_information")
+        or semantic.get("asks_for_payment")
+        or semantic.get("asks_to_bypass_procedure")
+        or (
+            message_supplied_action
+            and semantic.get("requested_action") not in {"none", "informational"}
+        )
+    )
+    failed_authentication_with_risky_action = (
+        all_authentication_failed and grounded_risky_action
+    )
+    failed_authentication_with_impersonation = (
+        all_authentication_failed and identity_risk == "spoofing_evidence"
+    )
+    if failed_authentication_with_risky_action:
+        identity_reasons.append(
+            "SPF, DKIM and DMARC failed while the message requests a concrete risky action"
+        )
+    elif failed_authentication_with_impersonation:
+        identity_reasons.append(
+            "SPF, DKIM and DMARC failed together with verified identity inconsistency"
+        )
 
     if technical_risk == "malicious" or content_risk == "malicious":
         verdict = "phishing"
     elif identity_risk == "spoofing_evidence" and supplied_action:
+        verdict = "phishing"
+    elif failed_authentication_with_impersonation:
+        verdict = "phishing"
+    elif failed_authentication_with_risky_action:
+        # Authentication failure alone is not a phishing verdict. Three hard
+        # failures do, however, independently corroborate a grounded sensitive
+        # request or an action through a channel supplied by the message.
         verdict = "phishing"
     elif (
         content_risk == "suspicious"
@@ -2513,7 +2692,7 @@ def apply_email_risk_policy(soc: dict, semantic: dict) -> dict:
         and (identity_risk != "verified" or technical_risk != "clean")
     ):
         verdict = "review"
-    elif content_risk == "suspicious" or identity_risk == "spoofing_evidence" or technical_risk == "uncertain":
+    elif content_risk == "suspicious" or identity_risk == "spoofing_evidence" or (identity_risk == "uncertain" and supplied_action) or technical_risk == "uncertain":
         verdict = "review"
     else:
         # Authentication failures alone describe uncertain identity, not malicious content.
@@ -2646,8 +2825,10 @@ def _format_evidence(values: list) -> str:
 def _translate_evidence(values: list) -> list[str]:
     translations = {
         "sender authentication passed": "the sender is authenticated",
+        "sender IP and visible domain are aligned with SPF": "SPF authorizes the observed sender IP and aligns with the visible sender domain",
         "sender authentication is incomplete or unavailable": "sender authentication is incomplete",
         "DKIM signature is absent": "the message has no DKIM signature",
+        "DMARC result is absent": "the message has no DMARC result",
         "Return-Path differs from the visible sender domain": "the Return-Path differs from the visible sender",
         "Reply-To differs unexpectedly from the sender identity": "the Reply-To differs from the sender",
         "display-name spoofing was detected": "possible display-name spoofing was detected",
@@ -3866,6 +4047,8 @@ def stream_phi4_email_analysis(
             if _valid_content_summary(model_summary)
             else _fallback_content_summary(soc, semantic)
         )
+        identity_analysis = _identity_analysis_from_semantic(soc, semantic)
+        soc["identity_analysis"] = identity_analysis
         analysis = apply_email_risk_policy(soc, semantic)
     except (ValueError, json.JSONDecodeError) as exc:
         yield {
@@ -3885,6 +4068,7 @@ def stream_phi4_email_analysis(
         "status": "ok",
         "text": format_email_risk_analysis(analysis),
         "analysis": analysis,
+        "identity_analysis": identity_analysis,
         "raw_model_output": raw_model_output,
         "analyzed_sections": total_sections,
         "performance": {

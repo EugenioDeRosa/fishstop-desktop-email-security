@@ -21,7 +21,6 @@ from .constants import DANGEROUS_ATTACHMENT_EXTENSIONS
 from fishstop_engine.analysis_limits import EmailAnalysisLimitError, MAX_LINKS
 from fishstop_engine.domain_utils import (
     registered_domain,
-    registrable_label,
     same_registered_domain,
 )
 
@@ -152,21 +151,6 @@ def _extract_display_destination(display: str) -> tuple[str, str]:
     return candidate, (parsed.hostname or "").lower()
 
 
-def _possible_shortener(host: str, path: str) -> tuple[bool, str]:
-    sld = registrable_label(host) or host
-    token = (path or "").strip("/").split("/", 1)[0]
-    compact_host = len(sld) <= 5 and len(host or "") <= 12
-    compact_token = 4 <= len(token) <= 12 and bool(re.fullmatch(r"[A-Za-z0-9_-]+", token))
-    mixed_token = any(ch.isalpha() for ch in token) and any(ch.isdigit() for ch in token)
-
-    if compact_host and compact_token:
-        reason = "compact host with short opaque path"
-        if mixed_token:
-            reason += " containing letters and digits"
-        return True, reason
-    return False, ""
-
-
 def _decode_repeated(value: str) -> str:
     decoded = value
     for _ in range(3):
@@ -280,7 +264,14 @@ def _html_anchor_is_call_to_action(anchor) -> bool:
     ])
     if _BUTTON_CLASS_RE.search(markers):
         return True
-    for node in [anchor, *list(anchor.descendants)]:
+    # Email buttons are commonly built as a styled table cell/div around an
+    # otherwise plain anchor. Inspect a short ancestor chain as well as the
+    # anchor contents, without depending on the language of its label.
+    ancestors = [
+        node for node in list(anchor.parents)[:4]
+        if str(getattr(node, "name", "") or "").lower() in {"div", "p", "td"}
+    ]
+    for node in [anchor, *list(anchor.descendants), *ancestors]:
         attrs = getattr(node, "attrs", None)
         if attrs is None:
             continue
@@ -292,6 +283,23 @@ def _html_anchor_is_call_to_action(anchor) -> bool:
         ):
             return True
     return False
+
+
+def _fallback_anchor_is_call_to_action(html: str, anchor_start: int, anchor_markup: str) -> bool:
+    """Preserve structural CTA detection when BeautifulSoup is unavailable."""
+    context = f"{(html or '')[max(0, anchor_start - 700):anchor_start]}{anchor_markup}"
+    styled_nodes = re.findall(
+        r"<(?:a|div|p|td|span)\b[^>]*\bstyle\s*=\s*[\"'](?P<style>[^\"']+)[\"'][^>]*>",
+        context,
+        re.IGNORECASE,
+    )
+    for raw_style in reversed(styled_nodes[-8:]):
+        style = raw_style.lower().replace(" ", "")
+        if "padding:" in style and any(
+            marker in style for marker in ("background:", "background-color:", "border:")
+        ):
+            return True
+    return bool(_BUTTON_CLASS_RE.search(anchor_markup))
 
 
 def _download_filename(path: str) -> tuple[str, str]:
@@ -380,7 +388,6 @@ def extract_links(
         # destination and must never be treated as a masked-domain mismatch.
         if scheme == "mailto":
             display_url, display_host = "", ""
-        is_shortener, shortener_reason = _possible_shortener(host, parsed.path) if scheme in _WEB_SCHEMES else (False, "")
         intelligence = _url_intelligence(parsed, url, host) if scheme in _WEB_SCHEMES else {
             "has_userinfo": False, "has_credentials": False, "nonstandard_port": False,
             "port": None, "nested_redirect_count": 0, "redirect_targets": [], "redirect_hosts": [],
@@ -448,8 +455,6 @@ def extract_links(
             "resolved_display_destination": resolved_display_destination,
             "signature_tracking_redirect": signature_tracking_redirect,
             "is_ip": is_ip_url(host),
-            "is_possible_shortener": is_shortener,
-            "shortener_reason": shortener_reason,
             "download_filename": download_filename,
             "download_extension": download_extension,
             "download_source": (
@@ -506,7 +511,14 @@ def extract_links(
             matched_spans = []
             for m in _ANCHOR_RE.finditer(body_html):
                 matched_spans.append(m.span())
-                _add(m.group("href"), strip_html(m.group("text")), "html_href")
+                _add(
+                    m.group("href"),
+                    strip_html(m.group("text")),
+                    "html_href",
+                    html_call_to_action=_fallback_anchor_is_call_to_action(
+                        body_html, m.start(), m.group(0)
+                    ),
+                )
             for m in _HREF_RE.finditer(body_html):
                 if any(start <= m.start() < end for start, end in matched_spans):
                     continue

@@ -34,7 +34,7 @@ from fishstop_engine.analysis_limits import (
 from fishstop_engine.domain_utils import registered_domain, same_registered_domain
 from .archive_analysis import ArchiveAnalysisBudget
 from .attachment      import analyze_attachment
-from .body_context    import select_body_for_ai
+from .body_context    import extract_forwarded_identity, select_body_for_ai
 from .html_deception  import analyze_html_copy_deception
 from .html_form_analysis import analyze_html_forms
 from .html_utils      import (
@@ -231,6 +231,34 @@ _MIME_INFORMATIONAL_DEFECTS = {
     "NonASCIILocalPartDefect",
     "ObsoleteHeaderDefect",
 }
+
+_MIME_SECURITY_AMBIGUITY_CODES = {
+    "DuplicateSingletonHeader",
+    "NoBoundaryInMultipartDefect",
+    "StartBoundaryNotFoundDefect",
+    "MultipartInvariantViolationDefect",
+    "InvalidMultipartContentTransferEncodingDefect",
+    "MissingHeaderBodySeparatorDefect",
+    "FirstHeaderLineIsContinuationDefect",
+    "DiscardedLeadingNonHeaderLines",
+}
+_MIME_DAMAGED_CONTENT_CODES = {
+    "InvalidBase64LengthDefect",
+    "InvalidBase64CharactersDefect",
+    "InvalidBase64PaddingDefect",
+    "CloseBoundaryNotFoundDefect",
+    "UndecodableBytesDefect",
+}
+
+
+def _mime_finding_category(finding: dict) -> str:
+    """Separate interpretation conflicts from damaged data and format quirks."""
+    code = str(finding.get("code") or "")
+    if code in _MIME_SECURITY_AMBIGUITY_CODES:
+        return "security_ambiguity"
+    if code in _MIME_DAMAGED_CONTENT_CODES or finding.get("kind") == "decode_error":
+        return "damaged_content"
+    return "compatibility_notice"
 
 
 def _mime_defect_level(code: str) -> str:
@@ -485,6 +513,7 @@ def _collect_mime_findings(msg) -> tuple[list[dict], int, int, int, int]:
         if key in seen:
             return False
         seen.add(key)
+        finding.setdefault("category", _mime_finding_category(finding))
         if finding.get("level") in {"HIGH", "MEDIUM"}:
             review_count += 1
         else:
@@ -719,6 +748,64 @@ def _is_public_ip(value: str | None) -> bool:
         return False
 
 
+def _injection_ip_has_passing_spf(report: dict) -> bool:
+    """Return whether SPF explicitly authorizes the observed sender IP.
+
+    SPF is evaluated per SMTP connection. A PASS produced for a later relay
+    must therefore not clear a warning about the IP that injected the message.
+    Require an exact client-IP match and retain the warning when that same IP
+    has conflicting SPF observations.
+    """
+    raw_injection_ip = str(report.get("injection_sender_ip") or "").strip("[]")
+    try:
+        injection_ip = str(ipaddress.ip_address(raw_injection_ip))
+    except ValueError:
+        return False
+
+    matching_statuses: list[str] = []
+    for checkpoint in report.get("authentication_checkpoints") or []:
+        if str(checkpoint.get("protocol") or "").upper() != "SPF":
+            continue
+        if (
+            checkpoint.get("association") != "exact"
+            or checkpoint.get("link_basis") != "client-ip"
+        ):
+            continue
+        raw_client_ip = str(checkpoint.get("client_ip") or "").strip("[]")
+        try:
+            client_ip = str(ipaddress.ip_address(raw_client_ip))
+        except ValueError:
+            continue
+        if client_ip == injection_ip:
+            matching_statuses.append(
+                str(checkpoint.get("status") or "unknown").lower()
+            )
+
+    passing = {"pass", "bestguesspass"}
+    return bool(matching_statuses) and all(
+        status in passing for status in matching_statuses
+    )
+
+
+def _spf_identity_aligns_visible_sender(report: dict) -> bool:
+    """Return whether the selected SPF MAIL FROM belongs to the visible domain."""
+    spf = (report.get("effective_auth_results") or {}).get("SPF") or {}
+    identity = str((
+        spf.get("origin_identity")
+        if spf.get("sender_boundary_selected")
+        else spf.get("identity")
+    ) or "").strip("<> ")
+    identity_domain = _extract_domain(identity)
+    if not identity_domain and re.fullmatch(r"[A-Za-z0-9.-]+", identity):
+        identity_domain = identity.lower().rstrip(".")
+    visible_domain = str(report.get("from_registered_domain") or "")
+    return bool(
+        identity_domain
+        and visible_domain
+        and same_registered_domain(identity_domain, visible_domain)
+    )
+
+
 class EmlSOCAnalyzer:
     """
     Parsa un file .eml grezzo e restituisce un report strutturato per il triage SOC.
@@ -857,6 +944,8 @@ class EmlSOCAnalyzer:
             received_spf_headers,
             hops,
         )
+        report["injection_ip_spf_authorized"] = _injection_ip_has_passing_spf(report)
+        report["spf_sender_aligned"] = _spf_identity_aligns_visible_sender(report)
 
         # ── 8. Firma DKIM ─────────────────────────────────────────────────
         dkim_headers = self._headers(msg, "DKIM-Signature")
@@ -986,6 +1075,7 @@ class EmlSOCAnalyzer:
         )
         report["html_copy_deception"] = analyze_html_copy_deception(combined_html)
         report["body_clean"] = body_clean
+        report["forwarded_identity"] = extract_forwarded_identity(body_clean)
 
         report["body_source"] = (
             "text/html (preferred over link-heavy plain text)"
@@ -1072,7 +1162,12 @@ class EmlSOCAnalyzer:
             mime_notice_finding_count,
         ) = _collect_mime_findings(msg)
         if source_mime_findings:
-            mime_findings.extend(dict(finding) for finding in source_mime_findings)
+            normalized_source_findings = []
+            for source_finding in source_mime_findings:
+                normalized = dict(source_finding)
+                normalized.setdefault("category", _mime_finding_category(normalized))
+                normalized_source_findings.append(normalized)
+            mime_findings.extend(normalized_source_findings)
             mime_review_finding_count += sum(
                 1 for finding in source_mime_findings
                 if finding.get("level") in {"HIGH", "MEDIUM"}
@@ -1245,7 +1340,7 @@ class EmlSOCAnalyzer:
         # SPF: useful for triage, but auth-only findings should not dominate verdicts.
         effective = report.get("effective_auth_results") or {}
         spf = effective.get("SPF") or report["auth_results"].get("SPF") or report["arc_auth_results"].get("SPF")
-        if spf:
+        if spf and not _injection_ip_has_passing_spf(report):
             spf_status = (spf.get("status") or "unknown").lower()
             if spf.get("sender_boundary_selected") and spf.get("path_conflict"):
                 delivery_status = str(spf.get("delivery_status") or "unknown").upper()
@@ -1263,7 +1358,7 @@ class EmlSOCAnalyzer:
         # headers.  Absence of an SPF result is not equivalent to an SPF
         # failure, so keep it informational and let the UI show it as
         # unavailable rather than turning it into a risk signal.
-        else:
+        elif not spf:
             flag("INFO", "SPF", "No SPF result is available in this EML export")
 
         # DKIM: missing/none is an absence of evidence, not a strong malicious signal.

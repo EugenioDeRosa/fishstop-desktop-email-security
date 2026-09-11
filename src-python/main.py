@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import hashlib
-import importlib.util
 import os
 import sys
 import tempfile
@@ -24,61 +23,6 @@ from fishstop_engine.otx_intelligence import (
 )
 from fishstop_engine.parser import _sanitize_eml_bytes_with_findings
 from fishstop_engine.reputation import enrich as enrich_reputation
-
-_IDENTITY_RUNTIME: dict[str, Any] | None = None
-IDENTITY_MODEL_ID = "urchade/gliner_multi-v2.1"
-IDENTITY_MODEL_REVISION = "443d26d654e0324125a96bebd8e796c14ff2efe6"
-
-
-def _identity_onnx_directory() -> Path | None:
-    configured = os.getenv("FISHSTOP_IDENTITY_ONNX_PATH", "").strip()
-    candidates = [Path(configured).expanduser()] if configured else []
-    bundled_root = Path(getattr(sys, "_MEIPASS", ENGINE_ROOT))
-    candidates.extend([
-        bundled_root / "identity-model",
-        ENGINE_ROOT.parent / "build" / "identity-model" / "onnx",
-    ])
-    for candidate in candidates:
-        if candidate.is_dir() and any(candidate.glob("*.onnx")):
-            return candidate.resolve()
-    return None
-
-
-def _load_identity_runtime() -> dict[str, Any]:
-    from gliner import GLiNER
-
-    onnx_directory = _identity_onnx_directory()
-    if onnx_directory is not None:
-        try:
-            onnx_files = sorted(onnx_directory.glob("*.onnx"))
-            onnx_file = onnx_files[0]
-            return {
-                "pipeline": GLiNER.from_pretrained(
-                    str(onnx_directory),
-                    local_files_only=True,
-                    load_onnx_model=True,
-                    onnx_model_file=onnx_file.name,
-                    map_location="cpu",
-                ),
-                "backend": "onnxruntime-fp32",
-            }
-        except (ImportError, IndexError, KeyError, OSError, RuntimeError, ValueError):
-            # A missing or incompatible generated artifact must not disable the
-            # identity safety check. Source builds retain the PyTorch fallback.
-            pass
-
-    model = GLiNER.from_pretrained(
-        IDENTITY_MODEL_ID,
-        revision=IDENTITY_MODEL_REVISION,
-        map_location="cpu",
-        low_cpu_mem_usage=True,
-    )
-    model.eval()
-    return {
-        "pipeline": model,
-        "backend": "pytorch",
-    }
-
 
 def _json_safe(value: Any) -> Any:
     """Remove binary-only fields while preserving the full report structure."""
@@ -154,33 +98,6 @@ def analyze(path_value: str) -> dict[str, Any]:
     return _json_safe(report)
 
 
-def analyze_identity(report_path: str) -> dict[str, Any]:
-    """Run local multilingual organisation extraction for impersonation evidence."""
-    global _IDENTITY_RUNTIME
-    try:
-        from fishstop_engine.brand_intelligence import assess_brand_coherence
-        from fishstop_engine.identity_analysis import extract_organisations
-    except ImportError as error:
-        raise RuntimeError(
-            "Identity analysis requires AI dependencies. Install src-python/requirements.txt."
-        ) from error
-
-    report = json.loads(Path(report_path).read_text(encoding="utf-8"))
-    if _IDENTITY_RUNTIME is None:
-        try:
-            _IDENTITY_RUNTIME = _load_identity_runtime()
-        except ImportError as error:
-            raise RuntimeError(
-                "Identity analysis requires the configured local AI dependencies."
-            ) from error
-    result = extract_organisations(report, _IDENTITY_RUNTIME["pipeline"])
-    if result.get("status") == "ok":
-        result["coherence"] = assess_brand_coherence(report, result.get("entities") or [])
-    result["model"] = f"{IDENTITY_MODEL_ID}@{IDENTITY_MODEL_REVISION}"
-    result["backend"] = _IDENTITY_RUNTIME.get("backend", "pytorch")
-    return result
-
-
 def analyze_phi4(report_path: str) -> dict[str, Any]:
     """Run the original structured Phi-4-mini policy pipeline."""
     from fishstop_engine.analyzer.llm_context_analyzer import stream_phi4_email_analysis
@@ -198,6 +115,7 @@ def analyze_phi4(report_path: str) -> dict[str, Any]:
         "backend": last_event.get("backend"), "model": last_event.get("model"),
         "analyzed_sections": last_event.get("analyzed_sections"),
         "performance": last_event.get("performance"),
+        "identity_analysis": last_event.get("identity_analysis"),
     })
 
 
@@ -220,36 +138,10 @@ def analyze_content_summary(report_path: str) -> dict[str, Any]:
     return _json_safe(generate_content_summary(report))
 
 
-def identity_worker() -> None:
-    """Keep the NER weights in memory and handle JSON-line requests."""
-    for raw_line in _stdin_lines():
-        report_path: Path | None = None
-        try:
-            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", suffix=".json", delete=False) as handle:
-                handle.write(raw_line)
-                report_path = Path(handle.name)
-            result = analyze_identity(str(report_path))
-            _write_json({"ok": True, "result": result}, flush=True)
-        except Exception as error:
-            _write_json({"ok": False, "error": str(error)}, flush=True)
-        finally:
-            if report_path:
-                report_path.unlink(missing_ok=True)
-
-
 def health_check(component: str | None = None) -> None:
-    """Report that the packaged engine can start, optionally checking AI imports."""
-    if component not in (None, "identity"):
+    """Report that the packaged engine can start."""
+    if component is not None:
         raise ValueError(f"Unsupported health-check component: {component}")
-    if component == "identity":
-        required = (
-            ("gliner", "huggingface_hub", "transformers", "onnxruntime", "sentencepiece")
-            if _identity_onnx_directory() is not None
-            else ("gliner", "huggingface_hub", "torch", "transformers", "sentencepiece")
-        )
-        missing = [name for name in required if importlib.util.find_spec(name) is None]
-        if missing:
-            raise RuntimeError(f"Missing identity dependencies: {', '.join(missing)}")
     _write_json({"ok": True, "component": component or "engine"})
 
 
@@ -271,21 +163,17 @@ def main() -> None:
     if len(sys.argv) in (2, 3) and sys.argv[1] == "--health":
         health_check(sys.argv[2] if len(sys.argv) == 3 else None)
         return
-    if len(sys.argv) == 2 and sys.argv[1] == "identity-worker":
-        identity_worker()
-        return
     if len(sys.argv) == 2:
         command, value = "static", sys.argv[1]
     elif len(sys.argv) == 3:
         command, value = sys.argv[1], sys.argv[2]
     else:
         raise SystemExit(
-            "Usage: main.py [static|identity|phi4|content-summary|summary|otx-sync|otx-status] <file>"
+            "Usage: main.py [static|phi4|content-summary|summary|otx-sync|otx-status] <file>"
         )
     try:
         result = {
             "static": analyze,
-            "identity": analyze_identity,
             "phi4": analyze_phi4,
             "content-summary": analyze_content_summary,
             "summary": analyze_summary,

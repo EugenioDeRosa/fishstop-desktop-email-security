@@ -7,6 +7,7 @@ should see the most relevant layer only.
 """
 
 import re
+from email.utils import parseaddr
 
 from fishstop_engine.ai_input import compact_ai_body
 
@@ -40,6 +41,17 @@ _FORWARDED_HEADER_RE = re.compile(
     r")\s*:",
     re.IGNORECASE,
 )
+
+_FORWARDED_HEADER_CAPTURE_RE = re.compile(
+    r"^\s*(?P<label>from|da|de|sent|inviato|date|data|to|a|cc|bcc|subject|oggetto)\s*:\s*(?P<value>.*)$",
+    re.IGNORECASE,
+)
+_FORWARDED_HEADER_KEYS = {
+    "from": "from", "da": "from", "de": "from",
+    "sent": "date", "inviato": "date", "date": "date", "data": "date",
+    "to": "to", "a": "to", "cc": "cc", "bcc": "bcc",
+    "subject": "subject", "oggetto": "subject",
+}
 
 _OUTLOOK_REPLY_FROM_RE = re.compile(r"^\s*(?:from|da|de)\s*:", re.IGNORECASE)
 _OUTLOOK_REPLY_HEADER_RE = re.compile(
@@ -267,6 +279,54 @@ def _strip_forwarded_headers(lines: list[str]) -> tuple[list[str], int]:
             continue
         break
     return lines[index:], stripped
+
+
+def extract_forwarded_identity(body_clean: str) -> dict:
+    """Extract the nearest embedded sender block without treating it as RFC headers.
+
+    Authentication headers belong to the outer message.  Keeping this identity
+    separate prevents an authenticated forwarder from authenticating the quoted
+    author by implication.
+    """
+    lines = _normalize_lines(body_clean)
+    marker_index = next(
+        (index for index, line in enumerate(lines) if _FORWARD_MARKER_RE.match(line)),
+        None,
+    )
+    if marker_index is None:
+        return {}
+
+    fields: dict[str, str] = {}
+    started = False
+    for line in lines[marker_index + 1:marker_index + 24]:
+        stripped = line.strip()
+        if not stripped:
+            if started:
+                break
+            continue
+        match = _FORWARDED_HEADER_CAPTURE_RE.match(line)
+        if not match:
+            if started:
+                break
+            continue
+        started = True
+        key = _FORWARDED_HEADER_KEYS[match.group("label").casefold()]
+        value = re.sub(r"\s+", " ", match.group("value")).strip()
+        if value and key not in fields:
+            fields[key] = value
+
+    if not fields.get("from"):
+        return {}
+    display_name, address = parseaddr(fields["from"])
+    domain = address.rsplit("@", 1)[-1].lower() if "@" in address else ""
+    return {
+        **fields,
+        "display_name": display_name,
+        "address": address,
+        "domain": domain,
+        "authentication_status": "unavailable",
+        "authentication_scope": "embedded_forward",
+    }
 
 
 def _latest_forwarded_turns(lines: list[str], max_boundaries: int = 3) -> tuple[list[str], int]:

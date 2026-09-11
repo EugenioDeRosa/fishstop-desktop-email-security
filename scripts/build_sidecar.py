@@ -13,7 +13,6 @@ ROOT = Path(__file__).resolve().parents[1]
 ENGINE_ENTRYPOINT = ROOT / "src-python" / "main.py"
 BINARIES_DIRECTORY = ROOT / "src-tauri" / "binaries"
 BUILD_DIRECTORY = ROOT / "build" / "sidecar"
-IDENTITY_ONNX_DIRECTORY = ROOT / "build" / "identity-model" / "onnx"
 ENGINE_DATA_DIRECTORY = ROOT / "src-python" / "fishstop_engine" / "data"
 
 
@@ -39,12 +38,14 @@ def main() -> None:
         str(ROOT / "src-python"),
         "--collect-submodules",
         "fishstop_engine",
-        "--hidden-import",
-        "gliner",
-        "--collect-data",
-        "gliner",
         "--add-data",
         f"{ENGINE_DATA_DIRECTORY}{os.pathsep}fishstop_engine/data",
+        "--exclude-module",
+        "torch",
+        "--exclude-module",
+        "transformers",
+        "--exclude-module",
+        "onnxruntime",
         "--workpath",
         str(BUILD_DIRECTORY / "work"),
         "--distpath",
@@ -52,21 +53,6 @@ def main() -> None:
         "--specpath",
         str(BUILD_DIRECTORY / "spec"),
     ]
-    if IDENTITY_ONNX_DIRECTORY.is_dir() and any(IDENTITY_ONNX_DIRECTORY.glob("*.onnx")):
-        pyinstaller_args.extend([
-            "--add-data",
-            f"{IDENTITY_ONNX_DIRECTORY}{os.pathsep}identity-model",
-            # The packaged application always uses the generated ONNX model.
-            # Optimum belonged to the previous Davlan exporter and is not
-            # required by GLiNER.
-            "--exclude-module",
-            "optimum",
-        ])
-    else:
-        print(
-            "Identity ONNX artifact not found; the sidecar will retain the "
-            "PyTorch fallback. Run scripts/export_identity_onnx.py first."
-        )
     pyinstaller_args.append(str(ENGINE_ENTRYPOINT))
     subprocess.run(pyinstaller_args, check=True)
 

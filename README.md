@@ -48,12 +48,11 @@ Il pacchetto include il motore Python come sidecar e il runtime Ollama richiesto
 
 ```bash
 .venv/bin/pip install -r src-python/requirements.txt pyinstaller
-.venv/bin/python scripts/export_identity_onnx.py
 FISHSTOP_TARGET_TRIPLE=$(rustc --print host-tuple) .venv/bin/python scripts/build_sidecar.py
 npm run tauri build
 ```
 
-L'export genera in `build/identity-model/onnx` il modello multilingue GLiNER ONNX; il sidecar lo include automaticamente e mantiene un fallback PyTorch per lo sviluppo senza artefatto. GLiNER riceve etichette mirate a brand, aziende, servizi e istituzioni e analizza insieme mittente, oggetto e corpo. Il modello resta FP32 perché la quantizzazione dinamica di questa specifica variante degrada sensibilmente il riconoscimento dei brand. Il sidecar evita di richiedere Python all'utente finale. Qwen viene scaricato localmente solo quando l'utente lo installa dalle impostazioni.
+Il sidecar evita di richiedere Python all'utente finale. Il modello AI locale viene scaricato solo quando l'utente lo installa dalle impostazioni e identifica anche l'organizzazione dichiarata dal messaggio durante la normale analisi semantica.
 
 ## Accesso e dati locali
 

@@ -308,14 +308,17 @@ def _entity_is_location_context(entity: dict) -> bool:
 
 
 def _entity_is_brand_candidate(entity: dict) -> bool:
-    """Allow only sender-anchored candidates to be linked to public domains."""
+    """Allow sender identities or exact AI claims grounded in visible text."""
     entity_types = {
         str(value or "").upper()
         for value in (entity.get("entity_types") or [entity.get("entity_type")])
     }
     sources = {str(item.get("source") or "").lower() for item in (entity.get("occurrences") or [])}
     sender_anchored = "domain" in entity_types or bool(sources & {"sender", "sender domain"})
-    return sender_anchored and bool(entity_types & {"ORG", "DOMAIN"}) and not (
+    grounded_claim = entity.get("verified_claim") is True and bool(
+        sources & {"sender", "subject", "body"}
+    )
+    return (sender_anchored or grounded_claim) and bool(entity_types & {"ORG", "DOMAIN"}) and not (
         _entity_is_only_postal_address_context(entity) or _entity_is_location_context(entity)
     )
 

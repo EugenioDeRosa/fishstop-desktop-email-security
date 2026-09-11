@@ -5,14 +5,11 @@ mod ollama_runtime;
 use std::{
     collections::{HashMap, HashSet},
     fs,
-    io::{BufRead, BufReader, BufWriter, Read, Write},
+    io::{BufRead, BufReader, Read, Write},
     net::TcpListener,
     path::{Path, PathBuf},
-    process::{Child, ChildStdin, Command, Output, Stdio},
-    sync::{
-        mpsc::{self, Receiver, RecvTimeoutError},
-        Arc, Mutex,
-    },
+    process::{Command, Output, Stdio},
+    sync::{Arc, Mutex},
     thread,
     time::{Duration, Instant},
 };
@@ -53,14 +50,11 @@ const MICROSOFT_PROFILE_ENDPOINT: &str =
 const MICROSOFT_SCOPES: &str = "openid profile email User.Read";
 const MICROSOFT_MAILBOX_SCOPES: &str = "openid profile email offline_access User.Read Mail.Read";
 const MICROSOFT_GRAPH_ROOT: &str = "https://graph.microsoft.com/v1.0";
-const IDENTITY_MODEL_ID: &str = "urchade/gliner_multi-v2.1";
-const IDENTITY_MODEL_REVISION: &str = "443d26d654e0324125a96bebd8e796c14ff2efe6";
 const KEYRING_SERVICE: &str = "it.fishstop.desktop";
 // Covers the MIME expansion of a typical provider's 25 MB attachment limit while
 // keeping a hard boundary before handing untrusted input to the local pipeline.
 const MAX_EML_BYTES: usize = 40 * 1024 * 1024;
 const STATIC_ENGINE_TIMEOUT: Duration = Duration::from_secs(180);
-const IDENTITY_ENGINE_TIMEOUT: Duration = Duration::from_secs(180);
 const ACCELERATED_AI_ENGINE_TIMEOUT: Duration = Duration::from_secs(300);
 const CPU_AI_ENGINE_TIMEOUT: Duration = Duration::from_secs(21 * 60);
 // Allow the Python synchronizer's 20-minute soft budget to publish its
@@ -1940,145 +1934,6 @@ fn run_otx_sync_with_progress(
     Ok(Output { status, stdout, stderr })
 }
 
-#[derive(Default)]
-struct IdentityWorker {
-    child: Option<Child>,
-    stdin: Option<BufWriter<ChildStdin>>,
-    responses: Option<Receiver<Result<String, String>>>,
-}
-
-impl IdentityWorker {
-    fn start(&mut self) -> Result<(), String> {
-        if self.child.is_some() {
-            return Ok(());
-        }
-        let mut command = engine_command()?;
-        let mut child = command
-            .arg("identity-worker")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|error| format!("Could not start the identity worker: {error}"))?;
-        let stdin = child.stdin.take().ok_or("Identity worker has no stdin")?;
-        let stdout = child.stdout.take().ok_or("Identity worker has no stdout")?;
-        let (response_sender, response_receiver) = mpsc::channel();
-        thread::spawn(move || {
-            let mut stdout = BufReader::new(stdout);
-            loop {
-                let mut response = String::new();
-                match stdout.read_line(&mut response) {
-                    Ok(0) => break,
-                    Ok(_) => {
-                        if response_sender.send(Ok(response)).is_err() {
-                            break;
-                        }
-                    }
-                    Err(error) => {
-                        let _ = response_sender.send(Err(error.to_string()));
-                        break;
-                    }
-                }
-            }
-        });
-        self.stdin = Some(BufWriter::new(stdin));
-        self.responses = Some(response_receiver);
-        self.child = Some(child);
-        Ok(())
-    }
-
-    fn stop(&mut self) {
-        self.stdin = None;
-        self.responses = None;
-        if let Some(mut child) = self.child.take() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-    }
-
-    fn analyze(
-        &mut self,
-        report: serde_json::Value,
-        analysis_id: &str,
-        cancellation: &AnalysisCancellation,
-    ) -> Result<serde_json::Value, String> {
-        self.start()?;
-        let request = serde_json::to_string(&report)
-            .map_err(|error| format!("Could not serialize the identity report: {error}"))?;
-        let stdin = self.stdin.as_mut().ok_or("Identity worker unavailable")?;
-        if let Err(error) = stdin
-            .write_all(request.as_bytes())
-            .and_then(|_| stdin.write_all(b"\n"))
-            .and_then(|_| stdin.flush())
-        {
-            self.stop();
-            return Err(format!(
-                "Could not send the report to identity analysis: {error}"
-            ));
-        }
-        let started_at = Instant::now();
-        let response = loop {
-            if cancellation.is_cancelled(analysis_id) {
-                self.stop();
-                return Err("Analysis cancelled.".to_string());
-            }
-            let remaining = IDENTITY_ENGINE_TIMEOUT.saturating_sub(started_at.elapsed());
-            if remaining.is_zero() {
-                self.stop();
-                return Err(format!(
-                    "Identity analysis exceeded the {} second safety timeout and was stopped.",
-                    IDENTITY_ENGINE_TIMEOUT.as_secs()
-                ));
-            }
-            let wait = remaining.min(Duration::from_millis(50));
-            match self
-                .responses
-                .as_ref()
-                .ok_or("Identity worker unavailable")?
-                .recv_timeout(wait)
-            {
-                Ok(Ok(response)) => break response,
-                Ok(Err(error)) => {
-                    self.stop();
-                    return Err(format!("Could not read the identity response: {error}"));
-                }
-                Err(RecvTimeoutError::Timeout) => continue,
-                Err(RecvTimeoutError::Disconnected) => {
-                    self.stop();
-                    return Err("The identity worker stopped. Try the analysis again.".to_string());
-                }
-            }
-        };
-        if response.trim().is_empty() {
-            self.stop();
-            return Err("The identity worker stopped. Try the analysis again.".to_string());
-        }
-        let payload: serde_json::Value = match serde_json::from_str(&response) {
-            Ok(payload) => payload,
-            Err(_) => {
-                self.stop();
-                return Err("The identity worker returned an invalid response.".to_string());
-            }
-        };
-        if payload.get("ok").and_then(|value| value.as_bool()) != Some(true) {
-            return Err(payload
-                .get("error")
-                .and_then(|value| value.as_str())
-                .unwrap_or("Identity analysis failed.")
-                .to_string());
-        }
-        payload
-            .get("result")
-            .cloned()
-            .ok_or_else(|| "Identity result is missing.".to_string())
-    }
-}
-
-impl Drop for IdentityWorker {
-    fn drop(&mut self) {
-        self.stop();
-    }
-}
 
 fn run_eml_engine(
     temporary_eml: PathBuf,
@@ -2330,25 +2185,6 @@ fn analyze_ai_with_engine(
 }
 
 #[tauri::command]
-async fn analyze_identity(
-    report: serde_json::Value,
-    analysis_id: String,
-    worker: tauri::State<'_, Arc<Mutex<IdentityWorker>>>,
-    cancellation: tauri::State<'_, Arc<AnalysisCancellation>>,
-) -> Result<serde_json::Value, String> {
-    let worker = Arc::clone(&worker);
-    let cancellation = Arc::clone(&cancellation);
-    tauri::async_runtime::spawn_blocking(move || {
-        worker
-            .lock()
-            .map_err(|_| "Identity worker unavailable.".to_string())?
-            .analyze(report, &analysis_id, &cancellation)
-    })
-    .await
-    .map_err(|error| format!("Identity analysis interrupted: {error}"))?
-}
-
-#[tauri::command]
 async fn analyze_phi4(
     report: serde_json::Value,
     analysis_id: String,
@@ -2415,21 +2251,6 @@ async fn warm_ollama_model(
         .map_err(|error| format!("AI model warm-up interrupted: {error}"))?
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct HuggingFaceModelResponse {
-    sha: Option<String>,
-    last_modified: Option<String>,
-}
-
-#[derive(Serialize)]
-struct HuggingFaceModelInfo {
-    repository: String,
-    runtime_revision: String,
-    latest_commit: Option<String>,
-    updated_at: Option<String>,
-}
-
 #[tauri::command]
 async fn ollama_runtime_status(
     app: tauri::AppHandle,
@@ -2467,37 +2288,10 @@ async fn remove_default_ollama_model(
     .map_err(|error| format!("AI model removal interrupted: {error}"))?
 }
 
-#[tauri::command]
-async fn huggingface_identity_model_info() -> Result<HuggingFaceModelInfo, String> {
-    tauri::async_runtime::spawn_blocking(|| {
-        let response: HuggingFaceModelResponse = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(6))
-            .build()
-            .map_err(|error| format!("Could not prepare the Hugging Face request: {error}"))?
-            .get(format!(
-                "https://huggingface.co/api/models/{IDENTITY_MODEL_ID}"
-            ))
-            .send()
-            .and_then(|response| response.error_for_status())
-            .map_err(|error| format!("Hugging Face is unavailable: {error}"))?
-            .json()
-            .map_err(|error| format!("Invalid Hugging Face model response: {error}"))?;
-        Ok(HuggingFaceModelInfo {
-            repository: IDENTITY_MODEL_ID.to_string(),
-            runtime_revision: IDENTITY_MODEL_REVISION.to_string(),
-            latest_commit: response.sha,
-            updated_at: response.last_modified,
-        })
-    })
-    .await
-    .map_err(|error| format!("Hugging Face model lookup interrupted: {error}"))?
-}
-
 #[derive(Serialize)]
 struct LocalEngineStatus {
     static_engine: bool,
     python_runtime: bool,
-    identity_dependencies: bool,
 }
 
 #[tauri::command]
@@ -2515,30 +2309,15 @@ async fn local_engine_status() -> LocalEngineStatus {
             })
             .map(|status| status.success())
             .unwrap_or(false);
-        let identity_dependencies = static_engine
-            && python_runtime
-            && engine_command()
-                .and_then(|mut command| {
-                    command
-                        .args(["--health", "identity"])
-                        .stdout(Stdio::null())
-                        .stderr(Stdio::null())
-                        .status()
-                        .map_err(|error| format!("Could not start the FishStop engine: {error}"))
-                })
-                .map(|status| status.success())
-                .unwrap_or(false);
         LocalEngineStatus {
             static_engine,
             python_runtime,
-            identity_dependencies,
         }
     })
     .await
     .unwrap_or(LocalEngineStatus {
         static_engine: false,
         python_runtime: false,
-        identity_dependencies: false,
     })
 }
 
@@ -2574,7 +2353,6 @@ fn save_analysis_report(path: String, report: serde_json::Value) -> Result<(), S
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .manage(Arc::new(Mutex::new(IdentityWorker::default())))
         .manage(Arc::new(AnalysisCancellation::default()))
         .manage(Arc::new(Mutex::new(OllamaRuntime::default())))
         .manage(Arc::new(Mutex::new(ReputationCredentialCache::default())))
@@ -2610,13 +2388,11 @@ fn main() {
             analyze_eml_contents,
             cancel_analysis,
             finish_analysis,
-            analyze_identity,
             analyze_phi4,
             warm_ollama_model,
             ollama_runtime_status,
             install_default_ollama_model,
             remove_default_ollama_model,
-            huggingface_identity_model_info,
             local_engine_status,
             open_external_url,
             save_analysis_report

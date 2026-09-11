@@ -84,6 +84,20 @@ class LinkExtractionUrlTests(unittest.TestCase):
         self.assertEqual("com", link["download_extension"])
         self.assertTrue(link["dangerous_download"])
 
+    def test_table_styled_anchor_is_recognized_as_primary_call_to_action(self):
+        links = extract_links(
+            "",
+            """
+            <table><tr><td style="background:#087;padding:12px">
+              <a href="https://documents.example/item">Apri il documento qui</a>
+            </td></tr></table>
+            """,
+        )
+
+        self.assertEqual(1, len(links))
+        self.assertTrue(links[0]["html_call_to_action"])
+        self.assertEqual("body_action", links[0]["role"])
+
     def test_mailto_dot_com_does_not_emit_high_soc_flag(self):
         raw = (
             "From: sender@example.com\r\n"

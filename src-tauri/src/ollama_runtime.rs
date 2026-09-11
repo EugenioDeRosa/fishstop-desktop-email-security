@@ -380,6 +380,8 @@ fn ensure_server(
                 .env("OLLAMA_KEEP_ALIVE", MODEL_KEEP_ALIVE)
                 .env("OLLAMA_MAX_LOADED_MODELS", "1")
                 .env("OLLAMA_NUM_PARALLEL", "1")
+                .env("OLLAMA_FLASH_ATTENTION", "1")
+                .env("OLLAMA_KV_CACHE_TYPE", "q8_0")
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null());

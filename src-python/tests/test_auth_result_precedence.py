@@ -1,12 +1,112 @@
 import unittest
+import tempfile
+from pathlib import Path
 
 from fishstop_engine.analyzer.received_parser import (
     build_authentication_checkpoints,
     select_effective_auth_results,
 )
+from fishstop_engine.analyzer.soc_analyzer import (
+    EmlSOCAnalyzer,
+    _injection_ip_has_passing_spf,
+    _spf_identity_aligns_visible_sender,
+)
 
 
 class AuthenticationResultPrecedenceTests(unittest.TestCase):
+    @staticmethod
+    def analyze_headers(*headers: str) -> dict:
+        message = "\r\n".join([
+            "From: Sender <sender@example.com>",
+            "To: Recipient <recipient@example.net>",
+            "Subject: SPF boundary test",
+            *headers,
+            "Content-Type: text/plain; charset=utf-8",
+            "",
+            "Routine message.",
+        ]).encode("utf-8")
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "message.eml"
+            path.write_bytes(message)
+            return EmlSOCAnalyzer().analyze(str(path))
+
+    def test_matching_injection_spf_pass_suppresses_conflicting_medium_flag(self):
+        report = self.analyze_headers(
+            "Authentication-Results: mx.receiver; spf=softfail smtp.mailfrom=example.com",
+            "Received-SPF: pass client-ip=8.8.8.8; envelope-from=sender@example.com",
+            "Received: from mail.example (mail.example [8.8.8.8]) by mx.receiver; Wed, 10 Sep 2026 10:00:00 +0000",
+        )
+
+        self.assertEqual("8.8.8.8", report["injection_sender_ip"])
+        self.assertTrue(report["injection_ip_spf_authorized"])
+        self.assertTrue(report["spf_sender_aligned"])
+        self.assertFalse(any(
+            flag["field"] == "SPF" and flag["level"] == "MEDIUM"
+            for flag in report["flags"]
+        ))
+
+    def test_spf_mail_from_must_align_with_visible_sender(self):
+        report = {
+            "from_registered_domain": "example.com",
+            "effective_auth_results": {
+                "SPF": {"status": "pass", "identity": "bounce@unrelated.test"},
+            },
+        }
+
+        self.assertFalse(_spf_identity_aligns_visible_sender(report))
+
+    def test_spf_pass_for_another_ip_keeps_medium_flag(self):
+        report = self.analyze_headers(
+            "Authentication-Results: mx.receiver; spf=softfail smtp.mailfrom=example.com",
+            "Received-SPF: pass client-ip=1.1.1.1; envelope-from=sender@example.com",
+            "Received: from mail.example (mail.example [8.8.8.8]) by mx.receiver; Wed, 10 Sep 2026 10:00:00 +0000",
+        )
+
+        self.assertEqual("1.1.1.1", report["injection_sender_ip"])
+        self.assertTrue(any(
+            flag["field"] == "SPF" and flag["level"] == "MEDIUM"
+            for flag in report["flags"]
+        ))
+
+    def test_matching_injection_ip_with_spf_pass_is_authorized(self):
+        report = {
+            "injection_sender_ip": "2001:db8::25",
+            "authentication_checkpoints": [{
+                "protocol": "SPF",
+                "status": "pass",
+                "client_ip": "2001:0db8:0:0:0:0:0:25",
+                "association": "exact",
+                "link_basis": "client-ip",
+            }],
+        }
+
+        self.assertTrue(_injection_ip_has_passing_spf(report))
+
+    def test_spf_pass_for_a_different_relay_does_not_authorize_injection_ip(self):
+        report = {
+            "injection_sender_ip": "203.0.113.25",
+            "authentication_checkpoints": [{
+                "protocol": "SPF",
+                "status": "pass",
+                "client_ip": "203.0.113.26",
+                "association": "exact",
+                "link_basis": "client-ip",
+            }],
+        }
+
+        self.assertFalse(_injection_ip_has_passing_spf(report))
+
+    def test_conflicting_spf_for_same_injection_ip_keeps_warning(self):
+        report = {
+            "injection_sender_ip": "203.0.113.25",
+            "authentication_checkpoints": [
+                {"protocol": "SPF", "status": "pass", "client_ip": "203.0.113.25", "association": "exact", "link_basis": "client-ip"},
+                {"protocol": "SPF", "status": "softfail", "client_ip": "203.0.113.25", "association": "exact", "link_basis": "client-ip"},
+            ],
+        }
+
+        self.assertFalse(_injection_ip_has_passing_spf(report))
+
     def test_checkpoints_link_only_explicit_authentication_evidence(self):
         hops = [
             {

@@ -136,8 +136,10 @@ class ArchiveLimitTests(unittest.TestCase):
 
     def test_member_is_decompressed_only_once_for_all_checks(self):
         relation = (
+            b'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
             b'<Relationship TargetMode="External" '
-            b'Target="https://example.test"/> DDEAUTO'
+            b'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/attachedTemplate" '
+            b'Target="https://example.test/template.dotm"/></Relationships>'
         )
         budget = ArchiveAnalysisBudget()
 
@@ -149,7 +151,86 @@ class ArchiveLimitTests(unittest.TestCase):
 
         self.assertEqual(len(relation), budget.decompressed_bytes)
         self.assertIn("external_relationship", self.finding_keys(result))
+
+    def test_normal_office_hyperlink_is_not_an_archive_threat(self):
+        relation = (
+            b'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            b'<Relationship TargetMode="External" '
+            b'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" '
+            b'Target="https://example.test/report"/></Relationships>'
+        )
+
+        result = analyze_archive_security(
+            make_zip([("word/_rels/document.xml.rels", relation)]),
+            "document.docx",
+        )
+
+        self.assertEqual("clean", result["risk_level"])
+        self.assertNotIn("external_relationship", self.finding_keys(result))
+        self.assertEqual(["https://example.test/report"], result["urls"])
+        self.assertFalse(any("schemas.openxmlformats.org" in url for url in result["urls"]))
+
+    def test_dde_word_in_document_prose_is_not_a_dde_instruction(self):
+        document = (
+            b'<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            b'<w:body><w:p><w:r><w:t>This thesis explains DDE detection.</w:t>'
+            b'</w:r></w:p></w:body></w:document>'
+        )
+
+        result = analyze_archive_security(
+            make_zip([("word/document.xml", document)]),
+            "thesis.docx",
+        )
+
+        self.assertEqual("clean", result["risk_level"])
+        self.assertNotIn("dde_instruction", self.finding_keys(result))
+
+    def test_real_ooxml_dde_field_is_high_risk(self):
+        document = (
+            b'<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            b'<w:body><w:p><w:r><w:instrText>DDEAUTO cmd | calc</w:instrText>'
+            b'</w:r></w:p></w:body></w:document>'
+        )
+
+        result = analyze_archive_security(
+            make_zip([("word/document.xml", document)]),
+            "document.docx",
+        )
+
+        self.assertEqual("high", result["risk_level"])
         self.assertIn("dde_instruction", self.finding_keys(result))
+
+    def test_ooxml_hyperlink_field_is_reported_as_an_attachment_link(self):
+        document = (
+            b'<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            b'<w:body><w:p><w:r><w:instrText>'
+            b'HYPERLINK "https://example.test/from-field?source=docx"'
+            b'</w:instrText></w:r></w:p></w:body></w:document>'
+        )
+        docx = make_zip([("word/document.xml", document)])
+        message = EmailMessage()
+        message["From"] = "sender@example.test"
+        message["To"] = "recipient@example.test"
+        message["Subject"] = "Document hyperlink"
+        message.set_content("The link is inside the attached document.")
+        message.add_attachment(
+            docx,
+            maintype="application",
+            subtype="vnd.openxmlformats-officedocument.wordprocessingml.document",
+            filename="report.docx",
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "document-link.eml"
+            path.write_bytes(message.as_bytes())
+            report = EmlSOCAnalyzer().analyze(str(path))
+
+        link = next(
+            item for item in report["links"]
+            if item.get("url") == "https://example.test/from-field?source=docx"
+        )
+        self.assertEqual("attachment", link["source"])
+        self.assertFalse(link["display_mismatch"])
 
     def test_depth_limit_cancels_remaining_nested_work(self):
         nested = make_zip([("payload.py", b"print('unsafe')")])

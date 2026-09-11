@@ -80,10 +80,51 @@ class BalancedPipelineTests(unittest.TestCase):
             patch.object(llm, "ANALYSIS_MODE", "balanced"),
             patch.object(llm, "_use_ollama", return_value=True),
             patch.object(llm, "_stream_ollama", side_effect=fake),
+            patch(
+                "fishstop_engine.brand_intelligence.assess_brand_coherence",
+                return_value=[],
+            ),
         ):
             events = list(llm.stream_phi4_email_analysis(soc))
         self.assertEqual(events[-1]["status"], "ok")
         return events[-1], calls
+
+    def test_declared_organisation_is_reused_from_the_semantic_pass(self):
+        result, calls = self._analyze(
+            {
+                "from_": "Account Service <notice@example.net>",
+                "subject": "Your PayPal newsletter",
+                "body_for_ai": "News from PayPal.",
+                "links": [],
+                "attachments": [],
+            },
+            _primary(claimed_brand="PayPal"),
+        )
+
+        self.assertEqual(calls, ["primary:1"])
+        self.assertEqual(
+            result["identity_analysis"]["entities"][0]["name"],
+            "PayPal",
+        )
+        self.assertEqual(
+            {item["source"] for item in result["identity_analysis"]["entities"][0]["occurrences"]},
+            {"subject", "body"},
+        )
+
+    def test_hallucinated_organisation_is_discarded(self):
+        result, _ = self._analyze(
+            {
+                "from_": "Account Service <notice@example.net>",
+                "subject": "Account update",
+                "body_for_ai": "Review the latest account notice.",
+                "links": [],
+                "attachments": [],
+            },
+            _primary(claimed_brand="PayPal"),
+        )
+
+        self.assertEqual(result["identity_analysis"]["entities"], [])
+        self.assertEqual(result["analysis"]["claimed_brand"], "")
 
     def test_benign_information_uses_only_primary_pass(self):
         result, calls = self._analyze(
@@ -119,6 +160,77 @@ class BalancedPipelineTests(unittest.TestCase):
             },
         }))
 
+    def test_three_authentication_failures_escalate_a_grounded_link_action(self):
+        evidence = "Review the scheduled transfer"
+        analysis = llm.apply_email_risk_policy(
+            {
+                "subject": "Scheduled transfer",
+                "body_for_ai": evidence,
+                "links": [{
+                    "url": "https://example.net/review",
+                    "host": "example.net",
+                    "display_text": evidence,
+                    "scheme": "https",
+                    "role": "body_action",
+                    "actionable": True,
+                }],
+                "attachments": [],
+                "effective_auth_results": {
+                    "SPF": {"status": "fail"},
+                    "DKIM": {"status": "fail"},
+                    "DMARC": {"status": "fail"},
+                },
+            },
+            _primary(
+                action="visit_link",
+                channel="link",
+                evidence=evidence,
+            ),
+        )
+
+        self.assertEqual("phishing", analysis["final_verdict"])
+        self.assertIn(
+            "SPF, DKIM and DMARC failed while the message requests a concrete risky action",
+            analysis["evidence"]["identity"],
+        )
+
+    def test_three_authentication_failures_alone_do_not_become_phishing(self):
+        analysis = llm.apply_email_risk_policy(
+            {
+                "subject": "Scheduled transfer notification",
+                "body_for_ai": "A transfer has been scheduled.",
+                "links": [],
+                "attachments": [],
+                "effective_auth_results": {
+                    "SPF": {"status": "fail"},
+                    "DKIM": {"status": "fail"},
+                    "DMARC": {"status": "fail"},
+                },
+            },
+            _primary(),
+        )
+
+        self.assertNotEqual("phishing", analysis["final_verdict"])
+
+    def test_three_authentication_failures_with_identity_spoofing_are_phishing(self):
+        analysis = llm.apply_email_risk_policy(
+            {
+                "subject": "Ordinary notification",
+                "body_for_ai": "An informational account notification.",
+                "links": [],
+                "attachments": [],
+                "display_name_spoofing": True,
+                "effective_auth_results": {
+                    "SPF": {"status": "fail"},
+                    "DKIM": {"status": "fail"},
+                    "DMARC": {"status": "fail"},
+                },
+            },
+            _primary(),
+        )
+
+        self.assertEqual("phishing", analysis["final_verdict"])
+
     def test_dkim_pass_can_preserve_strong_authentication_despite_spf_conflict(self):
         self.assertTrue(llm._strongly_authenticated_sender({
             "effective_auth_results": {
@@ -132,6 +244,56 @@ class BalancedPipelineTests(unittest.TestCase):
                 "DMARC": {"status": "pass"},
             },
         }))
+
+    def test_aligned_spf_only_can_verify_a_benign_attachment_message(self):
+        body = "Review the attached operational guide to complete VPN activation."
+        analysis = llm.apply_email_risk_policy(
+            {
+                "from_": "Support <support@example.com>",
+                "from_registered_domain": "example.com",
+                "subject": "VPN activation",
+                "body_for_ai": body,
+                "links": [],
+                "attachments": [{
+                    "filename": "guide.docx",
+                    "actionable": True,
+                    "attachment_security": {"risk_level": "clean"},
+                    "archive_security": {"risk_level": "clean"},
+                }],
+                "effective_auth_results": {
+                    "SPF": {"status": "pass", "identity": "support@example.com"},
+                    "DKIM": {"status": "none"},
+                    "DMARC": {"status": "none"},
+                },
+                "injection_ip_spf_authorized": True,
+                "spf_sender_aligned": True,
+            },
+            _primary(
+                summary="The recipient is asked to review an attached VPN guide.",
+                action="open_attachment",
+                channel="supplied_attachment",
+                evidence=body,
+            ),
+        )
+
+        self.assertEqual("benign", analysis["content_risk"])
+        self.assertEqual("verified", analysis["identity_risk"])
+        self.assertEqual("clean", analysis["technical_risk"])
+        self.assertEqual("legitimate", analysis["final_verdict"])
+
+    def test_spf_only_is_not_verified_when_the_injection_ip_is_not_authorized(self):
+        soc = {
+            "from_": "Support <support@example.com>",
+            "effective_auth_results": {
+                "SPF": {"status": "pass", "identity": "support@example.com"},
+                "DKIM": {"status": "none"},
+                "DMARC": {"status": "none"},
+            },
+            "injection_ip_spf_authorized": False,
+            "spf_sender_aligned": True,
+        }
+
+        self.assertFalse(llm._qualified_aligned_spf_sender(soc))
 
     def test_spf_path_conflict_prevents_verified_identity_without_dkim(self):
         analysis = llm.apply_email_risk_policy(
@@ -500,6 +662,40 @@ class BalancedPipelineTests(unittest.TestCase):
             ),
         )
 
+        self.assertEqual("review", analysis["final_verdict"])
+
+    def test_authenticated_forwarder_does_not_authenticate_embedded_link_request(self):
+        evidence = "Apri il documento qui"
+        analysis = llm.apply_email_risk_policy(
+            {
+                "from_": "Forwarder <forwarder@example.com>",
+                "subject": "Fwd: Shared document",
+                "body_context": "forwarded",
+                "body_for_ai": evidence,
+                "forwarded_identity": {
+                    "from": "Original Sender <original@example.org>",
+                    "address": "original@example.org",
+                    "authentication_status": "unavailable",
+                },
+                "links": [{
+                    "url": "https://documents.example/item",
+                    "host": "documents.example",
+                    "role": "body_action",
+                    "actionable": True,
+                    "html_call_to_action": True,
+                    "display_text": evidence,
+                }],
+                "attachments": [],
+                "effective_auth_results": {
+                    "SPF": {"status": "pass"},
+                    "DKIM": {"status": "pass"},
+                    "DMARC": {"status": "pass"},
+                },
+            },
+            _primary(action="visit_link", channel="link", evidence=evidence),
+        )
+
+        self.assertEqual("uncertain", analysis["identity_risk"])
         self.assertEqual("review", analysis["final_verdict"])
 
     def test_otx_indicator_match_is_high_risk_without_other_signals(self):

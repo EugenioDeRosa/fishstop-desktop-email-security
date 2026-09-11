@@ -59,8 +59,8 @@ _BLOCK_TEXT_TAGS = {
     "header", "hr", "li", "main", "nav", "ol", "p", "pre", "section",
     "table", "tbody", "td", "tfoot", "th", "thead", "tr", "ul",
 }
-_HIDDEN_STYLE_RE = re.compile(
-    r"(?is)(?:display\s*:\s*none|visibility\s*:\s*hidden|opacity\s*:\s*0(?:\D|$)|font-size\s*:\s*0(?:\D|$))"
+_ZERO_CSS_SIZE_RE = re.compile(
+    r"(?is)^[+-]?(?:0+(?:\.0*)?|\.0+)(?:[a-z%]+)?$"
 )
 _SIGNATURE_MARKER_RE = re.compile(
     r"(?:^|[-_])(?:email[-_]?signature|mail[-_]?signature|signature)(?:$|[-_])",
@@ -104,6 +104,54 @@ def _parse_html_for_preview(html: str):
         return BeautifulSoup(html, "lxml")
     except Exception:
         return BeautifulSoup(html, "html.parser")
+
+
+def _inline_style_properties(style: str) -> dict[str, str]:
+    """Parse the small inline-CSS subset needed for visibility decisions."""
+    properties: dict[str, str] = {}
+    for declaration in str(style or "").split(";"):
+        name, separator, value = declaration.partition(":")
+        if not separator:
+            continue
+        properties[name.strip().lower()] = re.sub(
+            r"\s*!important\s*$", "", value, flags=re.IGNORECASE
+        ).strip().lower()
+    return properties
+
+
+def _is_zero_css_size(value: str) -> bool:
+    """Recognise CSS zero lengths without mistaking values such as 0.5px for zero."""
+    return bool(_ZERO_CSS_SIZE_RE.fullmatch(re.sub(r"\s+", "", str(value or ""))))
+
+
+def _subtree_is_hidden_by_inline_style(style: str) -> bool:
+    """Return whether inline CSS makes an element and every child invisible."""
+    properties = _inline_style_properties(style)
+    return (
+        properties.get("display") == "none"
+        or properties.get("visibility") in {"hidden", "collapse"}
+        or _is_zero_css_size(properties.get("opacity", ""))
+    )
+
+
+def _text_has_zero_inline_font_size(text_node) -> bool:
+    """Resolve the nearest inline font size inherited by a text node.
+
+    Email templates commonly place ``font-size: 0`` on a layout container to
+    remove whitespace between inline blocks, then restore a visible size on
+    descendants. Removing the container would therefore discard visible mail
+    content. Inspecting the nearest declaration preserves those descendants
+    while still excluding text that really inherits a zero font size.
+    """
+    parent = text_node.parent
+    while parent is not None:
+        if getattr(parent, "attrs", None) is not None:
+            properties = _inline_style_properties(parent.get("style") or "")
+            font_size = properties.get("font-size")
+            if font_size is not None and font_size not in {"inherit", "unset"}:
+                return _is_zero_css_size(font_size)
+        parent = parent.parent
+    return False
 
 
 def _sanitize_preview_soup(html: str, block_images: bool = True) -> str:
@@ -185,8 +233,18 @@ def strip_html(html: str) -> str:
             if str(tag.get("aria-hidden") or "").strip().lower() == "true":
                 tag.decompose()
                 continue
-            if _HIDDEN_STYLE_RE.search(str(tag.get("style") or "")):
+            if _subtree_is_hidden_by_inline_style(tag.get("style") or ""):
                 tag.decompose()
+
+        # ``font-size: 0`` is inherited but descendants can override it. Remove
+        # only text whose nearest inline declaration is still zero rather than
+        # decomposing the entire layout container.
+        for text_node in list(soup.find_all(string=True)):
+            if (
+                text_node.parent is not None
+                and _text_has_zero_inline_font_size(text_node)
+            ):
+                text_node.extract()
 
         for image in soup.find_all("img"):
             alt = str(image.get("alt") or "").strip()

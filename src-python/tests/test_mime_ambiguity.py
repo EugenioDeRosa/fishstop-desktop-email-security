@@ -24,6 +24,11 @@ class MimeAmbiguityTests(unittest.TestCase):
             if finding["kind"] == "duplicate_header"
         }
         self.assertEqual({"From", "Subject"}, duplicate_headers)
+        self.assertTrue(all(
+            finding.get("category") == "security_ambiguity"
+            for finding in report["mime_findings"]
+            if finding["kind"] == "duplicate_header"
+        ))
         self.assertEqual(2, report["mime_duplicate_header_count"])
         self.assertEqual("review", report["mime_status"])
         self.assertTrue(any(
@@ -54,6 +59,13 @@ class MimeAmbiguityTests(unittest.TestCase):
         levels = {finding["code"]: finding["level"] for finding in report["mime_findings"]}
         self.assertEqual("MEDIUM", levels["InvalidBase64CharactersDefect"])
         self.assertEqual("LOW", levels["InvalidBase64PaddingDefect"])
+        self.assertTrue(all(
+            finding.get("category") == "damaged_content"
+            for finding in report["mime_findings"]
+        ))
+        technical_status, reasons = _technical_risk(report)
+        self.assertEqual("clean", technical_status)
+        self.assertEqual(["no strong technical threat was detected"], reasons)
 
     def test_metadata_only_defect_is_a_notice_not_phishing_evidence(self):
         report = self._analyze(
@@ -93,6 +105,7 @@ class MimeAmbiguityTests(unittest.TestCase):
             if finding["code"] == "CloseBoundaryNotFoundDefect"
         )
         self.assertEqual("LOW", finding["level"])
+        self.assertEqual("damaged_content", finding["category"])
         self.assertEqual("notice", report["mime_status"])
         self.assertIn("truncated in transit", report["body_for_ai"])
 
@@ -119,6 +132,7 @@ class MimeAmbiguityTests(unittest.TestCase):
             )
 
         self.assertEqual("review", report["mime_status"])
+        self.assertEqual("security_ambiguity", report["mime_findings"][0]["category"])
         self.assertEqual(1, report["mime_review_finding_count"])
         self.assertTrue(any(
             finding["code"] == "DiscardedLeadingNonHeaderLines"

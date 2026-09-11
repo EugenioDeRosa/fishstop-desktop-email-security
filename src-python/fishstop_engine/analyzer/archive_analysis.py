@@ -8,6 +8,8 @@ import zipfile
 from collections import Counter
 from dataclasses import dataclass, field
 from time import monotonic
+from urllib.parse import urlsplit
+from xml.etree import ElementTree
 
 from fishstop_engine.analysis_limits import (
     MAX_ARCHIVE_ANALYSIS_SECONDS,
@@ -25,9 +27,22 @@ MAX_COMPRESSION_RATIO = 100
 _READ_CHUNK_BYTES = 64 * 1024
 
 _ARCHIVE_EXTENSIONS = {"zip", "docx", "xlsx", "pptx", "xlsm", "docm", "pptm"}
-_DDE_RE = re.compile(rb"(?:\bDDE(?:AUTO)?\b|\bCMD\s*\|)", re.IGNORECASE)
-_EXTERNAL_REL_RE = re.compile(rb"TargetMode\s*=\s*[\"']External[\"']|Target\s*=\s*[\"'](?:https?:|file:|\\\\)", re.IGNORECASE)
-_WEB_URL_RE = re.compile(rb"https?://[^\s<>()\[\]{}\"']+", re.IGNORECASE)
+_OOXML_EXTENSIONS = {"docx", "xlsx", "pptx", "xlsm", "docm", "pptm"}
+_DDE_FIELD_RE = re.compile(r"(?:\bDDE(?:AUTO)?\b|\bCMD\s*\|)", re.IGNORECASE)
+_HYPERLINK_FIELD_RE = re.compile(
+    r"""\bHYPERLINK\s*(?:\(\s*)?(?:"(?P<double>https?://[^"]+)"|'(?P<single>https?://[^']+)'|(?P<bare>https?://[^\s,;)]+))""",
+    re.IGNORECASE,
+)
+
+# External hyperlinks and linked images are common in legitimate Office files. They
+# are still returned as URLs for the reputation pipeline, but only relationship
+# types capable of loading active content are archive-level threats.
+_ACTIVE_EXTERNAL_RELATIONSHIP_TYPES = {
+    "attachedtemplate",
+    "externallinkpath",
+    "oleobject",
+    "package",
+}
 
 
 @dataclass
@@ -126,6 +141,70 @@ def _is_double_extension(name: str) -> bool:
     )
 
 
+def _local_xml_name(value: str) -> str:
+    return value.rsplit("}", 1)[-1].rsplit("/", 1)[-1].lower()
+
+
+def _relationship_is_active_external(element: ElementTree.Element) -> bool:
+    attributes = {_local_xml_name(key): value for key, value in element.attrib.items()}
+    if str(attributes.get("targetmode", "")).lower() != "external":
+        return False
+    relationship_type = _local_xml_name(str(attributes.get("type", "")))
+    if relationship_type not in _ACTIVE_EXTERNAL_RELATIONSHIP_TYPES:
+        return False
+
+    target = str(attributes.get("target", "")).strip()
+    scheme = urlsplit(target).scheme.lower()
+    is_remote = scheme in {"http", "https", "ftp"} or target.startswith(("\\\\", "//"))
+    return is_remote
+
+
+def _inspect_relationships(data: bytes) -> tuple[bool, list[str]]:
+    """Return active external-content status and ordinary web targets."""
+    try:
+        root = ElementTree.fromstring(data)
+    except (ElementTree.ParseError, ValueError):
+        return False, []
+
+    active_external = False
+    urls: list[str] = []
+    for element in root.iter():
+        if _local_xml_name(element.tag) != "relationship":
+            continue
+        attributes = {_local_xml_name(key): value for key, value in element.attrib.items()}
+        target = str(attributes.get("target", "")).strip()
+        if target.lower().startswith(("http://", "https://")) and target not in urls:
+            urls.append(target)
+        if _relationship_is_active_external(element):
+            active_external = True
+    return active_external, urls
+
+
+def _inspect_ooxml_fields(data: bytes) -> tuple[bool, list[str]]:
+    """Inspect executable Office fields without treating document prose as code."""
+    try:
+        root = ElementTree.fromstring(data)
+    except (ElementTree.ParseError, ValueError):
+        return False, []
+
+    instructions: list[str] = []
+    for element in root.iter():
+        local_name = _local_xml_name(element.tag)
+        if local_name in {"instrtext", "f"} and element.text:
+            instructions.append(element.text)
+        for key, value in element.attrib.items():
+            if _local_xml_name(key) == "instr":
+                instructions.append(str(value))
+
+    combined = " ".join(instructions)
+    urls: list[str] = []
+    for match in _HYPERLINK_FIELD_RE.finditer(combined):
+        url = next((value for value in match.groupdict().values() if value), "")
+        if url and url not in urls:
+            urls.append(url)
+    return bool(_DDE_FIELD_RE.search(combined)), urls
+
+
 def _empty() -> dict:
     return {
         "is_archive": True,
@@ -211,7 +290,7 @@ def _finalize(
         "rtl_override": "right-to-left override filename",
         "office_macro": "Office VBA macro project",
         "dde_instruction": "DDE instruction",
-        "external_relationship": "external Office relationship/template",
+        "external_relationship": "active external Office content/template",
         "nested_risky_content": "risky content in nested archive",
         "nested_depth_limit": "nested archive depth budget reached",
         "member_read_limit": "archive member exceeds the safe inspection size",
@@ -363,14 +442,23 @@ def analyze_archive_security(
                         break
 
             if member_data is not None and lowered.endswith(".rels"):
-                if _EXTERNAL_REL_RE.search(member_data):
+                active_external, relationship_urls = _inspect_relationships(member_data)
+                if active_external:
                     add("external_relationship", name)
-                for value in _WEB_URL_RE.findall(member_data):
-                    url = value.decode("utf-8", errors="ignore")
+                for url in relationship_urls:
                     if url and url not in result["urls"]:
                         result["urls"].append(url[:500])
-            if member_data is not None and needs_text and _DDE_RE.search(member_data):
-                add("dde_instruction", name)
+            if (
+                member_data is not None
+                and _extension(filename) in _OOXML_EXTENSIONS
+                and lowered.endswith(".xml")
+            ):
+                has_dde_field, field_urls = _inspect_ooxml_fields(member_data)
+                if has_dde_field:
+                    add("dde_instruction", name)
+                for url in field_urls:
+                    if url not in result["urls"]:
+                        result["urls"].append(url[:500])
 
             if is_nested:
                 result["nested_archive_count"] += 1

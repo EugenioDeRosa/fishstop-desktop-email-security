@@ -68,6 +68,23 @@ class DomainPolicyTests(unittest.TestCase):
         )
         self.assertFalse(clickable["display_mismatch"])
 
+    def test_attachment_filename_is_not_treated_as_visible_link_text(self):
+        links = extract_links(
+            "",
+            "",
+            embedded_urls=[{
+                "url": "https://sites.google.com/view/10931222245678/home/",
+                "label": "pdf.pdf",
+                "source": "attachment",
+            }],
+        )
+
+        extracted = links[0]
+        self.assertEqual("attachment", extracted["source"])
+        self.assertEqual("", extracted["display_text"])
+        self.assertEqual("", extracted["display_host"])
+        self.assertFalse(extracted["display_mismatch"])
+
     def test_co_uk_lookalike_uses_registrable_label(self):
         alerts = check_lookalike_domains(
             [{"url": "https://paypa1.co.uk", "host": "paypa1.co.uk"}],

@@ -476,7 +476,7 @@ fn read_otx_cache_status(path: &Path, configured: bool) -> Result<OtxCacheStatus
             lookback_days: 365,
             database_bytes: 0,
             message: if configured {
-                "OTX is configured. Synchronize Pulses to enable local matching."
+                "Synchronize Pulses to enable local matching. This may take several minutes."
             } else {
                 "Add an OTX API key to enable local Pulse intelligence."
             }

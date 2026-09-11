@@ -368,6 +368,12 @@ def extract_links(
         seen.add(dedupe_key)
 
         display_text = (display or "").strip()
+        # For URLs extracted from an attachment, ``display`` is the container
+        # filename supplied by the analysis pipeline, not clickable anchor
+        # text. Comparing it with the destination would manufacture a masked-
+        # link signal (for example ``pdf.pdf`` versus ``sites.google.com``).
+        if source == "attachment":
+            display_text = ""
         display_url, display_host = _extract_display_destination(display_text)
         # A mailto label is often just a display name or the local part of an
         # email address (e.g. ``eugenio.derosa``). It is not a web

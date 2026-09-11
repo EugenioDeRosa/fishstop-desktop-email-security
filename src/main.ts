@@ -869,6 +869,10 @@ function searchIconMarkup(): string {
   return `<svg class="search-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="10.5" cy="10.5" r="6.25"></circle><path d="m15.1 15.1 4.4 4.4"></path></svg>`;
 }
 
+function inboxIconMarkup(): string {
+  return `<svg class="inbox-nav-icon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false" style="display:block;overflow:visible"><rect x="3.25" y="5.25" width="17.5" height="13.5" rx="2.4"></rect><path d="m4.35 7.05 6.05 4.65a2.6 2.6 0 0 0 3.2 0l6.05-4.65"></path></svg>`;
+}
+
 function analysisLoadingMarkup(fileName: string, completedChecks: number[] = []): string {
   const checks = ["Static checks and reputation", "Identity intelligence", "Intent analysis", "Content summary", "Verdict explanation", "Final report"];
   const completed = new Set(completedChecks);
@@ -1554,12 +1558,12 @@ function reportMarkup(report: AnalysisReport): string {
     const strongOtxMatch = otxMatches.some(isStrongOtxMatch);
     const supportingOtxMatch = otxMatches.length > 0 && !strongOtxMatch;
     const invoiceDeliveryMismatch = Boolean(link.financial_attachment_mismatch);
-    const tone = dangerous || structuralDanger || link.display_mismatch || invoiceDeliveryMismatch || reputation === "fail" || strongOtxMatch
+    const tone = dangerous || structuralDanger || invoiceDeliveryMismatch || reputation === "fail" || strongOtxMatch
       ? "fail"
-      : reputation === "warn" || structuralWarning || link.is_possible_shortener
+      : link.display_mismatch || reputation === "warn" || structuralWarning || link.is_possible_shortener
         ? "warn"
         : safeSignatureTracking || reputation === "pass" ? "pass" : "neutral";
-    const status = invoiceDeliveryMismatch ? (link.dangerous_download ? "Invoice link points to a script/executable" : "Invoice delivery is unrelated to sender domain") : dangerous ? (link.is_ip ? "Direct IP" : link.dangerous_download ? "Executable or script download" : "Lookalike domain") : structuralDanger ? "Hidden destination userinfo" : link.display_mismatch ? "Destination differs from visible text" : reputation === "fail" ? "Detected by VirusTotal" : strongOtxMatch ? "Matched in OTX threat intelligence" : reputation === "warn" ? "Review required" : safeSignatureTracking ? "Signature tracking redirect" : reputation === "pass" ? "VirusTotal clean" : supportingOtxMatch ? "Shared service appears in OTX context" : link.nested_redirect_count ? "Nested redirect destination" : link.nonstandard_port ? "Non-standard port" : link.unicode_path_or_query ? "Unicode path or query" : link.is_possible_shortener ? "Possible URL shortener" : "Valid URL structure";
+    const status = reputation === "fail" ? "Detected by VirusTotal" : invoiceDeliveryMismatch ? (link.dangerous_download ? "Invoice link points to a script/executable" : "Invoice delivery is unrelated to sender domain") : dangerous ? (link.is_ip ? "Direct IP" : link.dangerous_download ? "Executable or script download" : "Lookalike domain") : structuralDanger ? "Hidden destination userinfo" : link.display_mismatch ? "Destination differs from visible text" : strongOtxMatch ? "Matched in OTX threat intelligence" : reputation === "warn" ? "Review required" : safeSignatureTracking ? "Signature tracking redirect" : reputation === "pass" ? "VirusTotal clean" : supportingOtxMatch ? "Shared service appears in OTX context" : link.nested_redirect_count ? "Nested redirect destination" : link.nonstandard_port ? "Non-standard port" : link.unicode_path_or_query ? "Unicode path or query" : link.is_possible_shortener ? "Possible URL shortener" : "Valid URL structure";
     const host = link.host || "URL without host";
     const vtUrl = reputationResult?.permalink || `https://www.virustotal.com/gui/domain/${encodeURIComponent(host)}`;
     const whoisUrl = `https://www.whois.com/whois/${encodeURIComponent(host)}`;
@@ -1570,7 +1574,7 @@ function reportMarkup(report: AnalysisReport): string {
       : reputationResult?.status === "not_found"
       ? `<a class="manual-vt-action" href="https://www.virustotal.com/gui/home/url" target="_blank" rel="noopener noreferrer" data-vt-manual-url="${escapeHtml(link.url || "")}">Copy URL &amp; open VirusTotal ↗</a>`
       : `<a href="${escapeHtml(vtUrl)}" target="_blank" rel="noopener noreferrer">${reputationResult?.permalink ? "VirusTotal report ↗" : "VirusTotal ↗"}</a>`;
-    const copyAction = tone === "fail" && link.url ? `<button class="copy-evidence" type="button" data-copy-ioc="${escapeHtml(link.url)}">Copy URL</button>` : "";
+    const copyAction = (tone === "fail" || link.display_mismatch) && link.url ? `<button class="copy-evidence" type="button" data-copy-ioc="${escapeHtml(link.url)}">Copy URL</button>` : "";
     return `<li class="static-check static-check-${tone} link-evidence"><div><strong>${escapeHtml(host)}</strong><span>${escapeHtml(status)}</span></div><small>${escapeHtml((link.url || "").replace("://", "[://]").replaceAll(".", "[.]"))}</small>${metadata ? `<em>${escapeHtml(metadata)}</em>` : ""}${notes ? `<em>${escapeHtml(notes)}</em>` : ""}${otxInlineEvidence(otxMatches)}${copyAction}${isWebLink ? `<p>${virusTotalAction}<a href="${escapeHtml(whoisUrl)}" target="_blank" rel="noopener noreferrer">WHOIS ↗</a></p>` : ""}</li>`;
   }).join("") || staticCheckItem("neutral", "No extracted links", "No URLs are present in the message.", "Not applicable");
   const mailtoGroups = new Map<string, { recipient: string; subjects: string[]; count: number }>();
@@ -2118,7 +2122,7 @@ function aiThreatLabels(report: AnalysisReport): string[] {
       change_account_settings: "Account takeover",
       bypass_procedure: "Social engineering",
     };
-    labels.add(actionLabels[requestedAction] || "AI threat");
+    labels.add(actionLabels[requestedAction] || "AI risk signal");
   }
   return [...labels].slice(0, 3);
 }
@@ -2486,7 +2490,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
     });
   }
   const labels: Record<Section, string> = { dashboard: "Dashboard", analyse: "Analyse", inbox: "Analyse from inbox", history: "History", statistics: "Statistics", settings: "Settings" };
-  const icons: Record<Section, string> = { dashboard: "⌂", analyse: searchIconMarkup(), inbox: "✉", history: "◴", statistics: "◔", settings: "⚙" };
+  const icons: Record<Section, string> = { dashboard: "⌂", analyse: searchIconMarkup(), inbox: inboxIconMarkup(), history: "◴", statistics: "◔", settings: "⚙" };
   const initial = escapeHtml((user.name || user.email).trim().charAt(0).toUpperCase());
   const safeName = escapeHtml(user.name || (user.provider === "microsoft" ? "Microsoft account" : "Google account"));
   const safeEmail = escapeHtml(user.email);

@@ -53,8 +53,8 @@ const MICROSOFT_PROFILE_ENDPOINT: &str =
 const MICROSOFT_SCOPES: &str = "openid profile email User.Read";
 const MICROSOFT_MAILBOX_SCOPES: &str = "openid profile email offline_access User.Read Mail.Read";
 const MICROSOFT_GRAPH_ROOT: &str = "https://graph.microsoft.com/v1.0";
-const IDENTITY_MODEL_ID: &str = "Davlan/distilbert-base-multilingual-cased-ner-hrl";
-const IDENTITY_MODEL_REVISION: &str = "d421f57d5b1d36b375408588669e9340f9b11a89";
+const IDENTITY_MODEL_ID: &str = "urchade/gliner_multi-v2.1";
+const IDENTITY_MODEL_REVISION: &str = "443d26d654e0324125a96bebd8e796c14ff2efe6";
 const KEYRING_SERVICE: &str = "it.fishstop.desktop";
 // Covers the MIME expansion of a typical provider's 25 MB attachment limit while
 // keeping a hard boundary before handing untrusted input to the local pipeline.

@@ -22,6 +22,27 @@ _FOOTER_ENTITY_RE = re.compile(r"\b(?:all\s+rights?|copyright|automated\s+messag
 _EMAIL_RE = re.compile(r"[A-Z0-9._%+\-]+@([A-Z0-9.\-]+\.[A-Z]{2,})", re.IGNORECASE)
 _NON_BRAND_TOKENS = {"com", "net", "org", "www", "mail", "email", "support", "noreply", "no-reply"}
 _ENTITY_TYPES = {"ORG", "LOC", "PER"}
+GLINER_LABELS = (
+    "brand",
+    "company",
+    "organization",
+    "financial institution",
+    "online service",
+    "government agency",
+    "person",
+    "location",
+)
+GLINER_THRESHOLD = 0.35
+_GLINER_TYPE_MAP = {
+    "brand": "ORG",
+    "company": "ORG",
+    "organization": "ORG",
+    "financial institution": "ORG",
+    "online service": "ORG",
+    "government agency": "ORG",
+    "person": "PER",
+    "location": "LOC",
+}
 
 
 def _clip(value: object, limit: int = MAX_SEGMENT_CHARS) -> str:
@@ -94,6 +115,37 @@ def _is_low_quality_entity(raw_value: object, name: str, text: str, start: int, 
     return False
 
 
+def _predict_entities(model: Any, texts: list[str]) -> list[list[dict[str, Any]]]:
+    """Run GLiNER in one CPU batch and retain the legacy entity schema."""
+    if hasattr(model, "inference"):
+        batches = model.inference(
+            [_latin_skeleton(text) for text in texts],
+            list(GLINER_LABELS),
+            threshold=GLINER_THRESHOLD,
+            flat_ner=True,
+        )
+        normalized: list[list[dict[str, Any]]] = []
+        for predictions in batches:
+            normalized.append([
+                {
+                    "entity_group": _GLINER_TYPE_MAP.get(
+                        str(prediction.get("label") or "").casefold(),
+                        "",
+                    ),
+                    "word": prediction.get("text"),
+                    "start": prediction.get("start"),
+                    "end": prediction.get("end"),
+                    "score": prediction.get("score"),
+                }
+                for prediction in predictions
+            ])
+        return normalized
+
+    # Preserve a small compatibility seam for unit tests and older local
+    # development environments while the experimental branch is evaluated.
+    return [model(_latin_skeleton(text)) for text in texts]
+
+
 def extract_organisations(report: dict[str, Any], pipeline) -> dict[str, Any]:
     """Extract identity candidates without treating each entity as a brand claim.
 
@@ -111,11 +163,10 @@ def extract_organisations(report: dict[str, Any], pipeline) -> dict[str, Any]:
         }
 
     texts = [text for _, text in segments]
-    # The token-classification pipeline in the bundled Transformers runtime
-    # does not accept a truncation argument.  Segments are deliberately kept
-    # below a conservative character limit so each remains within the model
-    # context window without silently dropping a brand mention.
-    raw_batches = [pipeline(_latin_skeleton(text)) for text in texts]
+    # Segments remain below GLiNER's configured context window. Running them
+    # together avoids repeating the label-encoding and model-call overhead on
+    # CPU-only computers.
+    raw_batches = _predict_entities(pipeline, texts)
 
     entities: dict[str, dict[str, Any]] = {}
     for (source, text), predictions in zip(segments, raw_batches):

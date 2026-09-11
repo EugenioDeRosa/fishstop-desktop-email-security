@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 ENGINE_ENTRYPOINT = ROOT / "src-python" / "main.py"
 BINARIES_DIRECTORY = ROOT / "src-tauri" / "binaries"
 BUILD_DIRECTORY = ROOT / "build" / "sidecar"
-IDENTITY_ONNX_DIRECTORY = ROOT / "build" / "identity-model" / "int8"
+IDENTITY_ONNX_DIRECTORY = ROOT / "build" / "identity-model" / "onnx"
 ENGINE_DATA_DIRECTORY = ROOT / "src-python" / "fishstop_engine" / "data"
 
 
@@ -39,6 +39,10 @@ def main() -> None:
         str(ROOT / "src-python"),
         "--collect-submodules",
         "fishstop_engine",
+        "--hidden-import",
+        "gliner",
+        "--collect-data",
+        "gliner",
         "--add-data",
         f"{ENGINE_DATA_DIRECTORY}{os.pathsep}fishstop_engine/data",
         "--workpath",
@@ -53,10 +57,8 @@ def main() -> None:
             "--add-data",
             f"{IDENTITY_ONNX_DIRECTORY}{os.pathsep}identity-model",
             # The packaged application always uses the generated ONNX model.
-            # Keeping the training-only stacks out avoids a large one-file
-            # extraction cost every time the sidecar starts.
-            "--exclude-module",
-            "torch",
+            # Optimum belonged to the previous Davlan exporter and is not
+            # required by GLiNER.
             "--exclude-module",
             "optimum",
         ])

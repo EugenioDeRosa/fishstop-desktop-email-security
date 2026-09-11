@@ -53,7 +53,7 @@ FISHSTOP_TARGET_TRIPLE=$(rustc --print host-tuple) .venv/bin/python scripts/buil
 npm run tauri build
 ```
 
-L'export genera in `build/identity-model/int8` il NER ONNX quantizzato per l'architettura di build; il sidecar lo include automaticamente e mantiene un fallback PyTorch per lo sviluppo senza artefatto. Il sidecar evita di richiedere Python all'utente finale. Qwen viene scaricato localmente solo quando l'utente lo installa dalle impostazioni.
+L'export genera in `build/identity-model/onnx` il modello multilingue GLiNER ONNX; il sidecar lo include automaticamente e mantiene un fallback PyTorch per lo sviluppo senza artefatto. GLiNER riceve etichette mirate a brand, aziende, servizi e istituzioni e analizza insieme mittente, oggetto e corpo. Il modello resta FP32 perché la quantizzazione dinamica di questa specifica variante degrada sensibilmente il riconoscimento dei brand. Il sidecar evita di richiedere Python all'utente finale. Qwen viene scaricato localmente solo quando l'utente lo installa dalle impostazioni.
 
 ## Accesso e dati locali
 

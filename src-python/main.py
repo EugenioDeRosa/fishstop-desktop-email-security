@@ -26,8 +26,8 @@ from fishstop_engine.parser import _sanitize_eml_bytes_with_findings
 from fishstop_engine.reputation import enrich as enrich_reputation
 
 _IDENTITY_RUNTIME: dict[str, Any] | None = None
-IDENTITY_MODEL_ID = "Davlan/distilbert-base-multilingual-cased-ner-hrl"
-IDENTITY_MODEL_REVISION = "d421f57d5b1d36b375408588669e9340f9b11a89"
+IDENTITY_MODEL_ID = "urchade/gliner_multi-v2.1"
+IDENTITY_MODEL_REVISION = "443d26d654e0324125a96bebd8e796c14ff2efe6"
 
 
 def _identity_onnx_directory() -> Path | None:
@@ -36,7 +36,7 @@ def _identity_onnx_directory() -> Path | None:
     bundled_root = Path(getattr(sys, "_MEIPASS", ENGINE_ROOT))
     candidates.extend([
         bundled_root / "identity-model",
-        ENGINE_ROOT.parent / "build" / "identity-model" / "int8",
+        ENGINE_ROOT.parent / "build" / "identity-model" / "onnx",
     ])
     for candidate in candidates:
         if candidate.is_dir() and any(candidate.glob("*.onnx")):
@@ -45,55 +45,37 @@ def _identity_onnx_directory() -> Path | None:
 
 
 def _load_identity_runtime() -> dict[str, Any]:
-    from transformers import AutoTokenizer
-    from transformers.utils import logging as transformers_logging
-
-    def load_tokenizer(model_path, **kwargs):
-        previous_verbosity = transformers_logging.get_verbosity()
-        transformers_logging.set_verbosity_error()
-        try:
-            return AutoTokenizer.from_pretrained(
-                model_path,
-                use_fast=True,
-                **kwargs,
-            )
-        finally:
-            transformers_logging.set_verbosity(previous_verbosity)
+    from gliner import GLiNER
 
     onnx_directory = _identity_onnx_directory()
     if onnx_directory is not None:
         try:
-            from fishstop_engine.onnx_token_pipeline import OnnxTokenClassificationPipeline
-
-            tokenizer = load_tokenizer(onnx_directory)
+            onnx_files = sorted(onnx_directory.glob("*.onnx"))
+            onnx_file = onnx_files[0]
             return {
-                "pipeline": OnnxTokenClassificationPipeline(onnx_directory, tokenizer),
-                "backend": "onnxruntime-int8",
+                "pipeline": GLiNER.from_pretrained(
+                    str(onnx_directory),
+                    local_files_only=True,
+                    load_onnx_model=True,
+                    onnx_model_file=onnx_file.name,
+                    map_location="cpu",
+                ),
+                "backend": "onnxruntime-fp32",
             }
-        except (ImportError, KeyError, OSError, RuntimeError, ValueError):
+        except (ImportError, IndexError, KeyError, OSError, RuntimeError, ValueError):
             # A missing or incompatible generated artifact must not disable the
             # identity safety check. Source builds retain the PyTorch fallback.
             pass
 
-    from transformers import AutoModelForTokenClassification, pipeline
-
-    tokenizer = load_tokenizer(
+    model = GLiNER.from_pretrained(
         IDENTITY_MODEL_ID,
         revision=IDENTITY_MODEL_REVISION,
-    )
-    model = AutoModelForTokenClassification.from_pretrained(
-        IDENTITY_MODEL_ID,
-        revision=IDENTITY_MODEL_REVISION,
+        map_location="cpu",
+        low_cpu_mem_usage=True,
     )
     model.eval()
     return {
-        "pipeline": pipeline(
-            "token-classification",
-            model=model,
-            tokenizer=tokenizer,
-            aggregation_strategy="simple",
-            device=-1,
-        ),
+        "pipeline": model,
         "backend": "pytorch",
     }
 
@@ -261,9 +243,9 @@ def health_check(component: str | None = None) -> None:
         raise ValueError(f"Unsupported health-check component: {component}")
     if component == "identity":
         required = (
-            ("huggingface_hub", "transformers", "onnxruntime")
+            ("gliner", "huggingface_hub", "transformers", "onnxruntime", "sentencepiece")
             if _identity_onnx_directory() is not None
-            else ("huggingface_hub", "torch", "transformers")
+            else ("gliner", "huggingface_hub", "torch", "transformers", "sentencepiece")
         )
         missing = [name for name in required if importlib.util.find_spec(name) is None]
         if missing:

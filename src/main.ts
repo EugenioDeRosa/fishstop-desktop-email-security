@@ -49,7 +49,7 @@ type AuthenticationCheckpoint = {
 };
 type ReceivedHop = { from_host?: string; by_host?: string; sender_ip?: string; all_ips?: string[]; received_at?: string; raw?: string };
 type OtxPulseSummary = { id?: string; name?: string; author?: string; modified?: string; tags?: string[]; tlp?: string; url?: string };
-type OtxMatch = { indicator?: string; indicator_type?: string; source?: string; confidence?: "strong" | "supporting"; shared_infrastructure?: boolean; pulse_count?: number; pulses?: OtxPulseSummary[] };
+type OtxMatch = { indicator?: string; matched_indicator?: string; indicator_type?: string; match_type?: "exact" | "url_scope"; source?: string; confidence?: "strong" | "supporting"; shared_infrastructure?: boolean; pulse_count?: number; pulses?: OtxPulseSummary[] };
 type OtxIntelligence = { status?: "match" | "no_match" | "unavailable"; synced_at?: string; pulse_count?: number; subscribed_pulse_count?: number; public_phishing_pulse_count?: number; indicator_count?: number; skipped_pulse_count?: number; lookback_days?: number; truncated?: boolean; strong_match_count?: number; supporting_match_count?: number; matches?: OtxMatch[]; message?: string };
 type AnalysisReport = {
   subject?: string; from_?: string; from_registered_domain?: string; reply_to?: string; return_path?: string; flags?: SocFlag[];
@@ -1371,18 +1371,10 @@ function normalizedOtxUrl(value?: string): string {
 
 function otxMatchesForLink(report: AnalysisReport, link: NonNullable<AnalysisReport["links"]>[number]): OtxMatch[] {
   const url = normalizedOtxUrl(link.url);
-  const host = normalizedDomain(link.host);
-  const registered = normalizedDomain(link.registered_domain);
-  return (report.otx_intelligence?.matches || []).filter((match) => {
-    const indicator = String(match.indicator || "").trim();
-    if (match.indicator_type === "url") return normalizedOtxUrl(indicator) === url;
-    if (match.indicator_type === "hostname") return normalizedDomain(indicator) === host;
-    if (match.indicator_type === "domain") {
-      const domain = normalizedDomain(indicator);
-      return domain === host || Boolean(registered && domain === registered);
-    }
-    return false;
-  });
+  return (report.otx_intelligence?.matches || []).filter((match) =>
+    match.indicator_type === "url"
+    && normalizedOtxUrl(match.indicator) === url,
+  );
 }
 
 function otxMatchesForAttachment(report: AnalysisReport, hash?: string): OtxMatch[] {
@@ -1453,7 +1445,8 @@ function otxInlineEvidence(matches: OtxMatch[]): string {
   const pulseLinks = otxPulseLinks(pulses);
   const pulseCount = Math.max(0, ...matches.map((match) => Number(match.pulse_count || 0)));
   const detail = `${pulseCount || matches.length} synchronized Pulse${(pulseCount || matches.length) === 1 ? "" : "s"}`;
-  const label = strong ? "OTX threat match" : "OTX context match · shared service";
+  const scoped = matches.some((match) => match.match_type === "url_scope");
+  const label = strong ? scoped ? "OTX threat match · specific URL scope" : "OTX threat match · exact indicator" : "OTX context match · shared service";
   return `<em class="inline-otx inline-otx-${strong ? "strong" : "supporting"}"><b>${label}</b><span>${pulseLinks || escapeHtml(detail)}</span></em>`;
 }
 
@@ -1739,7 +1732,11 @@ function addReputationPanel(report: AnalysisReport): void {
   const otxRows = (otx?.matches || []).map((match) => {
     const strong = isStrongOtxMatch(match);
     const pulseLinks = otxPulseLinks(match.pulses || [], 5);
-    const detail = strong ? "High-risk OTX indicator match" : "Shared service referenced by OTX · not a malicious-domain verdict";
+    const detail = strong
+      ? match.match_type === "url_scope"
+        ? `High-risk match inside specific OTX URL scope ${match.matched_indicator || ""}`.trim()
+        : "High-risk exact OTX indicator match"
+      : "Shared service referenced by OTX · not a malicious-domain verdict";
     return `<li class="static-check static-check-${strong ? "fail" : "neutral"}"><strong>${escapeHtml((match.indicator_type || "indicator").toUpperCase())} · ${escapeHtml(match.indicator || "Unknown indicator")}</strong><small>${detail} · ${escapeHtml(match.source || "email evidence")}</small>${pulseLinks ? `<p class="otx-pulse-links">${pulseLinks}</p>` : ""}</li>`;
   }).join("");
   const otxNoMatch = otx?.truncated

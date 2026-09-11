@@ -165,6 +165,40 @@ def _normalized_url(value: str) -> str:
     return urlunsplit((parsed.scheme.lower(), host, parsed.path or "/", parsed.query, ""))
 
 
+def _url_exact_variants(value: str) -> list[str]:
+    """Return only harmless URL spelling equivalents for exact IOC lookup."""
+    normalized = _normalized_url(value)
+    try:
+        parsed = urlsplit(normalized)
+    except ValueError:
+        return [normalized] if normalized else []
+    variants = [normalized]
+    if not parsed.query and parsed.path != "/":
+        alternate_path = parsed.path[:-1] if parsed.path.endswith("/") else f"{parsed.path}/"
+        variants.append(urlunsplit((parsed.scheme, parsed.netloc, alternate_path, "", "")))
+    return list(dict.fromkeys(variant for variant in variants if variant))
+
+
+def _url_scope_ancestors(value: str) -> list[str]:
+    """Return specific parent URLs, never a hostname or a one-segment root.
+
+    Requiring at least two complete path segments prevents a broad IOC such as
+    ``https://sites.example/view`` from matching every tenant below it.
+    """
+    normalized = _normalized_url(value)
+    try:
+        parsed = urlsplit(normalized)
+    except ValueError:
+        return []
+    segments = [segment for segment in parsed.path.split("/") if segment]
+    ancestors: list[str] = []
+    for length in range(len(segments) - 1, 1, -1):
+        path = "/" + "/".join(segments[:length])
+        base = urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
+        ancestors.extend((base, f"{base}/"))
+    return list(dict.fromkeys(ancestors))
+
+
 def _normalize_indicator(kind: str, value: str) -> str:
     value = str(value or "").strip().replace("[.]", ".")
     if kind in {"domain", "hostname"}:
@@ -192,26 +226,26 @@ def _indicator_key(kind: str, value: str) -> str:
     return f"{kind}:{normalized}" if normalized else ""
 
 
-def _indicator_variants(kind: str, value: str) -> list[tuple[str, str]]:
-    """Normalize an IOC and derive locally useful phishing lookup keys."""
+def _indicator_variants(kind: str, value: str) -> list[tuple[str, str, str, str, int]]:
+    """Return native and derived keys while preserving their OTX provenance."""
     normalized = _normalize_indicator(kind, value)
     if not normalized:
         return []
-    variants = [(kind, normalized)]
+    variants = [(kind, normalized, kind, normalized, 0)]
     if kind == "url":
         try:
             hostname = normalize_hostname(urlsplit(normalized).hostname or "")
         except ValueError:
             hostname = ""
         if hostname:
-            variants.append(("hostname", hostname))
+            variants.append(("hostname", hostname, kind, normalized, 1))
             parent = registered_domain(hostname)
             if parent:
-                variants.append(("domain", parent))
+                variants.append(("domain", parent, kind, normalized, 1))
     elif kind == "email":
         domain = normalize_hostname(normalized.rpartition("@")[2])
         if domain:
-            variants.append(("domain", domain))
+            variants.append(("domain", domain, kind, normalized, 1))
     return list(dict.fromkeys(variants))
 
 
@@ -372,7 +406,7 @@ def _public_pulse_details(session, pulse: dict) -> dict | None:
     return details if isinstance(details.get("indicators"), list) else None
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 def _database_connection(path: Path, *, readonly: bool = False) -> sqlite3.Connection:
@@ -424,6 +458,18 @@ def _initialize_database(connection: sqlite3.Connection) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_pulse_indicators_indicator
             ON pulse_indicators(indicator_id, pulse_id);
+        CREATE TABLE IF NOT EXISTS indicator_origins (
+            pulse_id TEXT NOT NULL,
+            indicator_id INTEGER NOT NULL,
+            origin_kind TEXT NOT NULL,
+            origin_value TEXT NOT NULL,
+            is_derived INTEGER NOT NULL CHECK(is_derived IN (0, 1)),
+            PRIMARY KEY (pulse_id, indicator_id, origin_kind, origin_value),
+            FOREIGN KEY (pulse_id, indicator_id)
+                REFERENCES pulse_indicators(pulse_id, indicator_id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_indicator_origins_native
+            ON indicator_origins(indicator_id, is_derived, pulse_id);
         CREATE TABLE IF NOT EXISTS public_pulse_queue (
             pulse_id TEXT PRIMARY KEY REFERENCES pulses(id) ON DELETE CASCADE,
             next_url TEXT NOT NULL,
@@ -532,7 +578,7 @@ def _store_indicator_batch(
     pulse_id: str,
     indicators: list,
 ) -> int:
-    prepared: dict[tuple[str, str], str] = {}
+    prepared: dict[tuple[str, str, str, str], tuple[str, int]] = {}
     for indicator in indicators:
         if not isinstance(indicator, dict) or not _active_indicator(indicator):
             continue
@@ -541,40 +587,61 @@ def _store_indicator_batch(
             continue
         expiration = _otx_datetime(indicator.get("expiration"))
         expiration_at = _utc_iso(expiration, expiration) if expiration else ""
-        for normalized_kind, value in _indicator_variants(
+        for normalized_kind, value, origin_kind, origin_value, is_derived in _indicator_variants(
             kind, str(indicator.get("indicator") or "")
         ):
-            prepared[(normalized_kind, value)] = expiration_at
+            prepared[(normalized_kind, value, origin_kind, origin_value)] = (
+                expiration_at,
+                is_derived,
+            )
     if not prepared:
         return 0
     connection.execute(
         """CREATE TEMP TABLE IF NOT EXISTS otx_indicator_batch (
                kind TEXT NOT NULL,
                value TEXT NOT NULL,
+               origin_kind TEXT NOT NULL,
+               origin_value TEXT NOT NULL,
+               is_derived INTEGER NOT NULL,
                expiration_at TEXT NOT NULL,
-               PRIMARY KEY(kind, value)
+               PRIMARY KEY(kind, value, origin_kind, origin_value)
            ) WITHOUT ROWID"""
     )
     connection.execute("DELETE FROM otx_indicator_batch")
     connection.executemany(
-        "INSERT INTO otx_indicator_batch(kind, value, expiration_at) VALUES(?, ?, ?)",
-        ((kind, value, expiration) for (kind, value), expiration in prepared.items()),
+        """INSERT INTO otx_indicator_batch(
+               kind, value, origin_kind, origin_value, is_derived, expiration_at
+           ) VALUES(?, ?, ?, ?, ?, ?)""",
+        (
+            (kind, value, origin_kind, origin_value, is_derived, expiration)
+            for (kind, value, origin_kind, origin_value), (expiration, is_derived)
+            in prepared.items()
+        ),
     )
     connection.execute(
         """INSERT OR IGNORE INTO indicators(kind, value)
-           SELECT kind, value FROM otx_indicator_batch"""
+           SELECT DISTINCT kind, value FROM otx_indicator_batch"""
     )
     connection.execute(
         """INSERT INTO pulse_indicators(pulse_id, indicator_id, expiration_at)
-           SELECT ?, i.id, b.expiration_at
+           SELECT ?, i.id, MAX(b.expiration_at)
            FROM otx_indicator_batch b
            JOIN indicators i ON i.kind = b.kind AND i.value = b.value
-           WHERE 1
+           GROUP BY i.id
            ON CONFLICT(pulse_id, indicator_id) DO UPDATE SET
              expiration_at=excluded.expiration_at""",
         (pulse_id,),
     )
-    return len(prepared)
+    connection.execute(
+        """INSERT OR REPLACE INTO indicator_origins(
+               pulse_id, indicator_id, origin_kind, origin_value, is_derived
+           )
+           SELECT ?, i.id, b.origin_kind, b.origin_value, b.is_derived
+           FROM otx_indicator_batch b
+           JOIN indicators i ON i.kind = b.kind AND i.value = b.value""",
+        (pulse_id,),
+    )
+    return len({(kind, value) for kind, value, _, _ in prepared})
 
 
 def _database_counts(connection: sqlite3.Connection) -> dict:
@@ -607,8 +674,15 @@ def otx_cache_status(cache_path: str) -> dict:
         }
     try:
         with _database_connection(path, readonly=True) as connection:
-            if _metadata(connection, "schema_version") not in {"2", "3", str(SCHEMA_VERSION)}:
-                raise RuntimeError("The local OTX database format is not supported.")
+            if _metadata(connection, "schema_version") != str(SCHEMA_VERSION):
+                return {
+                    "status": "not_synced", "synced_at": "", "pulse_count": 0,
+                    "subscribed_pulse_count": 0, "public_phishing_pulse_count": 0,
+                    "indicator_count": 0, "pending_pulse_count": 0,
+                    "coverage_days": 0, "skipped_pulse_count": 0,
+                    "truncated": False, "lookback_days": INITIAL_LOOKBACK_DAYS,
+                    "database_bytes": path.stat().st_size, "limit_reason": "schema",
+                }
             counts = _database_counts(connection)
             queue_exists = connection.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='public_pulse_queue'"
@@ -866,9 +940,7 @@ def sync_subscribed_pulses(
     if path.is_file():
         try:
             with _database_connection(path, readonly=True) as current:
-                valid_existing = _metadata(current, "schema_version") in {
-                    "2", "3", str(SCHEMA_VERSION),
-                }
+                valid_existing = _metadata(current, "schema_version") == str(SCHEMA_VERSION)
         except (OSError, sqlite3.Error):
             valid_existing = False
         if valid_existing:
@@ -1343,14 +1415,8 @@ def _report_candidates(report: dict) -> list[tuple[str, str, str]]:
         if str(link.get("scheme") or "").lower() not in {"http", "https"}:
             continue
         url = str(link.get("url") or "")
-        host = str(link.get("host") or "")
         if url:
             candidates.append(("url", url, "link"))
-        if host:
-            candidates.extend((("hostname", host, "link host"), ("domain", host, "link host")))
-            parent = registered_domain(host)
-            if parent and parent != host.lower().rstrip("."):
-                candidates.append(("domain", parent, "link domain"))
     for field in ("from_", "return_path", "reply_to"):
         value = str(report.get(field) or "")
         for _, address in getaddresses([value]):
@@ -1394,7 +1460,7 @@ def apply_local_otx_intelligence(report: dict, cache_path: str | None = None) ->
     seen: set[tuple[str, str, str]] = set()
     try:
         with _database_connection(path, readonly=True) as connection:
-            if _metadata(connection, "schema_version") not in {"2", "3", str(SCHEMA_VERSION)}:
+            if _metadata(connection, "schema_version") != str(SCHEMA_VERSION):
                 raise sqlite3.DatabaseError("unsupported schema")
             cache_status = {**_database_counts(connection),
                 "synced_at": _metadata(connection, "synced_at"),
@@ -1408,16 +1474,50 @@ def apply_local_otx_intelligence(report: dict, cache_path: str | None = None) ->
                 if not normalized or dedupe in seen:
                     continue
                 seen.add(dedupe)
-                rows = connection.execute(
-                    """SELECT p.id, p.name, p.author, p.modified_at, p.tags_json, p.tlp,
-                              COUNT(*) OVER() AS match_count
-                       FROM indicators i
-                       JOIN pulse_indicators pi ON pi.indicator_id = i.id
-                       JOIN pulses p ON p.id = pi.pulse_id
-                       WHERE i.kind = ? AND i.value = ?
-                       ORDER BY p.modified_at DESC LIMIT ?""",
-                    (kind, normalized, MAX_PULSES_PER_INDICATOR),
-                ).fetchall()
+                lookup_values = (
+                    _url_exact_variants(normalized)
+                    if kind == "url"
+                    else [normalized]
+                )
+                match_type = "exact"
+                matched_indicator = normalized
+                rows = []
+                for lookup_value in lookup_values:
+                    rows = connection.execute(
+                        """SELECT p.id, p.name, p.author, p.modified_at, p.tags_json, p.tlp,
+                                  COUNT(*) OVER() AS match_count
+                           FROM indicators i
+                           JOIN pulse_indicators pi ON pi.indicator_id = i.id
+                           JOIN indicator_origins io
+                             ON io.pulse_id = pi.pulse_id
+                            AND io.indicator_id = pi.indicator_id
+                           JOIN pulses p ON p.id = pi.pulse_id
+                           WHERE i.kind = ? AND i.value = ? AND io.is_derived = 0
+                           ORDER BY p.modified_at DESC LIMIT ?""",
+                        (kind, lookup_value, MAX_PULSES_PER_INDICATOR),
+                    ).fetchall()
+                    if rows:
+                        matched_indicator = lookup_value
+                        break
+                if not rows and kind == "url":
+                    for ancestor in _url_scope_ancestors(normalized):
+                        rows = connection.execute(
+                            """SELECT p.id, p.name, p.author, p.modified_at,
+                                      p.tags_json, p.tlp, COUNT(*) OVER() AS match_count
+                               FROM indicators i
+                               JOIN pulse_indicators pi ON pi.indicator_id = i.id
+                               JOIN indicator_origins io
+                                 ON io.pulse_id = pi.pulse_id
+                                AND io.indicator_id = pi.indicator_id
+                               JOIN pulses p ON p.id = pi.pulse_id
+                               WHERE i.kind = 'url' AND i.value = ? AND io.is_derived = 0
+                               ORDER BY p.modified_at DESC LIMIT ?""",
+                            (ancestor, MAX_PULSES_PER_INDICATOR),
+                        ).fetchall()
+                        if rows:
+                            match_type = "url_scope"
+                            matched_indicator = ancestor
+                            break
                 if not rows:
                     continue
                 pulses = [{
@@ -1432,7 +1532,9 @@ def apply_local_otx_intelligence(report: dict, cache_path: str | None = None) ->
                 )
                 matches.append({
                     "indicator": normalized,
+                    "matched_indicator": matched_indicator,
                     "indicator_type": kind,
+                    "match_type": match_type,
                     "source": source,
                     "confidence": "supporting" if shared_infrastructure else "strong",
                     "shared_infrastructure": shared_infrastructure,
@@ -1486,13 +1588,22 @@ def apply_local_otx_intelligence(report: dict, cache_path: str | None = None) ->
     }
     if strong_matches:
         strongest = strong_matches[0]
+        if strongest.get("match_type") == "url_scope":
+            evidence = (
+                f"URL indicator '{strongest['indicator']}' is inside the specific OTX URL scope "
+                f"'{strongest['matched_indicator']}'"
+            )
+        else:
+            evidence = (
+                f"{strongest['indicator_type'].upper()} indicator "
+                f"'{strongest['indicator']}' appears"
+            )
         report.setdefault("flags", []).append({
             "level": "HIGH",
             "field": "OTX Threat Intelligence",
             "message": (
-                f"{strongest['indicator_type'].upper()} indicator '{strongest['indicator']}' appears in "
-                f"{strongest['pulse_count']} synchronized OTX Pulse(s). "
-                "An exact OTX indicator match is treated as high-risk threat intelligence."
+                f"{evidence} in {strongest['pulse_count']} synchronized OTX Pulse(s). "
+                "Only native OTX indicators and specific URL scopes are treated as high-risk intelligence."
             ),
         })
     return report

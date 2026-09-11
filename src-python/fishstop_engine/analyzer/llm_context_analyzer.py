@@ -783,6 +783,8 @@ def _technical_context_lines(soc: dict, body_for_llm: str = "", link_reputation:
             f"OTX synchronized Pulse match ({evidence_label}): "
             f"type={match.get('indicator_type') or '-'} "
             f"indicator={_clip(match.get('indicator', ''), 180)} "
+            f"match_type={match.get('match_type') or 'exact'} "
+            f"matched_indicator={_clip(match.get('matched_indicator', ''), 180) or '-'} "
             f"source={match.get('source') or '-'} "
             f"confidence={match.get('confidence') or 'strong'} "
             f"pulse_count={match.get('pulse_count') or '-'}"

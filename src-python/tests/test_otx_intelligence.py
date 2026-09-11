@@ -37,6 +37,23 @@ PULSE = {
 
 
 class LocalOtxIntelligenceTests(unittest.TestCase):
+    def test_previous_schema_requires_a_safe_rebuild(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "otx.sqlite3"
+            with _database_connection(path) as connection:
+                _initialize_database(connection)
+                _set_metadata(connection, "schema_version", 4)
+                connection.commit()
+
+            status = otx_cache_status(str(path))
+            report = {"links": [], "flags": []}
+            apply_local_otx_intelligence(report, str(path))
+
+        self.assertEqual("not_synced", status["status"])
+        self.assertEqual("schema", status["limit_reason"])
+        self.assertGreater(status["database_bytes"], 0)
+        self.assertEqual("unavailable", report["otx_intelligence"]["status"])
+
     def test_public_indicator_queue_resumes_from_saved_page(self):
         pulse_id = "0123456789abcdef01234567"
         now = datetime.now(timezone.utc)
@@ -213,7 +230,7 @@ class LocalOtxIntelligenceTests(unittest.TestCase):
         self.assertEqual("HIGH", report["flags"][-1]["level"])
         self.assertEqual("malicious", _technical_risk(report)[0])
 
-    def test_domain_match_is_high_risk_evidence(self):
+    def test_link_does_not_inherit_a_domain_level_otx_match(self):
         directory, path = self._cache({
             "domain:malicious.com": [PULSE],
         })
@@ -229,9 +246,52 @@ class LocalOtxIntelligenceTests(unittest.TestCase):
 
         apply_local_otx_intelligence(report, path)
 
-        self.assertEqual("strong", report["otx_intelligence"]["matches"][0]["confidence"])
+        self.assertEqual("no_match", report["otx_intelligence"]["status"])
+        self.assertEqual([], report["flags"])
+        self.assertNotEqual("malicious", _technical_risk(report)[0])
+
+    def test_specific_parent_url_scope_is_high_risk_evidence(self):
+        directory, path = self._cache({
+            "url:https://sites.google.com/view/known-phishing-site": [PULSE],
+        })
+        self.addCleanup(directory.cleanup)
+        report = {
+            "links": [{
+                "url": "https://sites.google.com/view/known-phishing-site/home",
+                "host": "sites.google.com",
+                "scheme": "https",
+            }],
+            "flags": [],
+        }
+
+        apply_local_otx_intelligence(report, path)
+
+        match = report["otx_intelligence"]["matches"][0]
+        self.assertEqual("url_scope", match["match_type"])
+        self.assertEqual(
+            "https://sites.google.com/view/known-phishing-site",
+            match["matched_indicator"],
+        )
         self.assertEqual("HIGH", report["flags"][-1]["level"])
-        self.assertEqual("malicious", _technical_risk(report)[0])
+
+    def test_google_sites_link_does_not_inherit_other_tenants_pulses(self):
+        directory, path = self._cache({
+            "url:https://sites.google.com/view/facturacion2026mx": [PULSE],
+        })
+        self.addCleanup(directory.cleanup)
+        report = {
+            "links": [{
+                "url": "https://sites.google.com/view/1099812345/home",
+                "host": "sites.google.com",
+                "scheme": "https",
+            }],
+            "flags": [],
+        }
+
+        apply_local_otx_intelligence(report, path)
+
+        self.assertEqual("no_match", report["otx_intelligence"]["status"])
+        self.assertEqual([], report["flags"])
 
     def test_public_mailbox_domain_match_is_context_only(self):
         directory, path = self._cache({
@@ -342,10 +402,21 @@ class LocalOtxIntelligenceTests(unittest.TestCase):
             progress = []
             with patch("fishstop_engine.otx_intelligence.requests.Session", Session):
                 result = sync_subscribed_pulses(str(path), "test-key", progress.append)
+            with _database_connection(path, readonly=True) as connection:
+                origins = connection.execute(
+                    """SELECT i.kind, io.origin_kind, io.is_derived
+                       FROM indicator_origins io
+                       JOIN indicators i ON i.id = io.indicator_id
+                       ORDER BY i.kind"""
+                ).fetchall()
 
         self.assertEqual("ready", result["status"])
         # The URL plus its derived hostname and registrable domain are indexed.
         self.assertEqual(3, result["indicator_count"])
+        self.assertEqual(
+            [("domain", "url", 1), ("hostname", "url", 1), ("url", "url", 0)],
+            [(row["kind"], row["origin_kind"], row["is_derived"]) for row in origins],
+        )
         self.assertFalse(result["truncated"])
         self.assertEqual("preparing", progress[0]["phase"])
         self.assertEqual(100, progress[-1]["percentage"])
@@ -389,8 +460,8 @@ class LocalOtxIntelligenceTests(unittest.TestCase):
                     return Response({
                         "next": None,
                         "results": [{
-                            "type": "hostname",
-                            "indicator": "guncel.mariobet-resmiadresi.vip",
+                            "type": "url",
+                            "indicator": "https://guncel.mariobet-resmiadresi.vip/",
                         }],
                     })
                 raise AssertionError(f"Unexpected OTX URL: {url}")
@@ -631,8 +702,8 @@ class LocalOtxIntelligenceTests(unittest.TestCase):
                     return Response({
                         "next": None,
                         "results": [{
-                            "type": "hostname",
-                            "indicator": "detected.example",
+                            "type": "url",
+                            "indicator": "https://detected.example/",
                         }],
                     })
                 raise AssertionError(f"Unexpected OTX URL: {url}")

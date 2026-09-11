@@ -17,6 +17,7 @@ import html as html_lib
 import ipaddress
 import re
 import unicodedata
+from collections import Counter
 from difflib import SequenceMatcher
 from email import policy
 from typing import Optional
@@ -45,6 +46,7 @@ from .html_utils      import (
 from .link_extractor  import extract_links
 from .lookalike       import check_lookalike_domains
 from .received_parser import (
+    build_authentication_checkpoints,
     parse_auth_results,
     parse_received_hop,
     parse_received_spf_results,
@@ -170,7 +172,7 @@ _ATTACHMENT_CLAIM_RE = re.compile(
     re.IGNORECASE,
 )
 _MIME_ROOT_SINGLETON_HEADERS = {
-    "from", "subject", "date", "message-id", "reply-to", "return-path",
+    "from", "sender", "subject", "date", "message-id", "reply-to", "return-path",
     "mime-version", "content-type", "content-transfer-encoding",
 }
 _MIME_PART_SINGLETON_HEADERS = {
@@ -188,7 +190,74 @@ _MIME_DEFECT_DESCRIPTIONS = {
     "NoBoundaryInMultipartDefect": "Multipart content type does not declare a boundary.",
     "MissingHeaderBodySeparatorDefect": "A MIME part has no valid header/body separator.",
     "MalformedHeaderDefect": "A malformed header line was encountered.",
+    "InvalidBase64LengthDefect": "Base64 payload length is invalid and could not be decoded reliably.",
+    "FirstHeaderLineIsContinuationDefect": "A MIME part starts with an orphaned folded header line.",
+    "MisplacedEnvelopeHeaderDefect": "A Unix envelope line appears inside the header block.",
+    "InvalidDateDefect": "The Date header could not be parsed; its original value was retained.",
+    "InvalidHeaderDefect": "A structured header contains invalid syntax.",
+    "HeaderMissingRequiredValue": "A structured header is missing a required value.",
+    "NonASCIILocalPartDefect": "An address contains a non-ASCII local part.",
+    "NonPrintableDefect": "A header contains non-printable characters.",
+    "ObsoleteHeaderDefect": "A header uses obsolete but parseable syntax.",
+    "UndecodableBytesDefect": "A header contains bytes that could not be decoded cleanly.",
 }
+
+# Only defects that can change where headers stop, how parts are separated, or
+# what transfer-decoded bytes a scanner sees should influence the risk verdict.
+# The email package also reports interoperability/metadata defects (for example
+# an invalid Date); surfacing those is useful, but treating them as phishing
+# evidence creates avoidable false positives.
+_MIME_REVIEW_DEFECTS = {
+    "NoBoundaryInMultipartDefect",
+    "StartBoundaryNotFoundDefect",
+    "MultipartInvariantViolationDefect",
+    "InvalidMultipartContentTransferEncodingDefect",
+    "MissingHeaderBodySeparatorDefect",
+    "FirstHeaderLineIsContinuationDefect",
+    "InvalidBase64LengthDefect",
+    "InvalidBase64CharactersDefect",
+}
+_MIME_LOW_DEFECTS = {
+    "CloseBoundaryNotFoundDefect",
+    "InvalidBase64PaddingDefect",
+    "MisplacedEnvelopeHeaderDefect",
+    "InvalidHeaderDefect",
+    "HeaderMissingRequiredValue",
+    "NonPrintableDefect",
+    "UndecodableBytesDefect",
+}
+_MIME_INFORMATIONAL_DEFECTS = {
+    "InvalidDateDefect",
+    "NonASCIILocalPartDefect",
+    "ObsoleteHeaderDefect",
+}
+
+
+def _mime_defect_level(code: str) -> str:
+    if code in _MIME_REVIEW_DEFECTS:
+        return "MEDIUM"
+    if code in _MIME_LOW_DEFECTS:
+        return "LOW"
+    if code in _MIME_INFORMATIONAL_DEFECTS:
+        return "INFO"
+    # Unknown defects remain visible but cannot affect the verdict until their
+    # parser semantics have been reviewed explicitly.
+    return "LOW"
+
+
+def _duplicate_mime_header_level(header_name: str, path: str) -> str:
+    if path == "1":
+        if header_name in {
+            "from", "sender", "subject", "reply-to", "return-path",
+            "content-type", "content-transfer-encoding",
+        }:
+            return "MEDIUM"
+        if header_name in {"date", "message-id"}:
+            return "LOW"
+        return "INFO"
+    if header_name in {"content-type", "content-transfer-encoding", "content-disposition"}:
+        return "MEDIUM"
+    return "LOW"
 
 
 def _extract_domain(email_or_addr: str) -> str:
@@ -396,14 +465,17 @@ def _iter_mime_parts(part, path: str = "1"):
             yield from _iter_mime_parts(child, f"{path}.{index}")
 
 
-def _collect_mime_findings(msg) -> tuple[list[dict], int, int]:
+def _collect_mime_findings(msg) -> tuple[list[dict], int, int, int, int]:
     """Collect parser defects and security-relevant duplicate singleton headers."""
     findings: list[dict] = []
     defect_count = 0
     duplicate_count = 0
+    review_count = 0
+    notice_count = 0
     seen: set[tuple[str, str, str, str]] = set()
 
     def add(finding: dict) -> bool:
+        nonlocal review_count, notice_count
         key = (
             str(finding.get("part_path") or ""),
             str(finding.get("kind") or ""),
@@ -413,8 +485,11 @@ def _collect_mime_findings(msg) -> tuple[list[dict], int, int]:
         if key in seen:
             return False
         seen.add(key)
-        if len(findings) < _MIME_FINDING_LIMIT:
-            findings.append(finding)
+        if finding.get("level") in {"HIGH", "MEDIUM"}:
+            review_count += 1
+        else:
+            notice_count += 1
+        findings.append(finding)
         return True
 
     for part, path in _iter_mime_parts(msg):
@@ -448,7 +523,7 @@ def _collect_mime_findings(msg) -> tuple[list[dict], int, int]:
             if add({
                 "kind": "duplicate_header",
                 "code": "DuplicateSingletonHeader",
-                "level": "MEDIUM",
+                "level": _duplicate_mime_header_level(header_name, path),
                 "part_path": path,
                 "header": display_name,
                 "count": count,
@@ -474,14 +549,16 @@ def _collect_mime_findings(msg) -> tuple[list[dict], int, int]:
             if add({
                 "kind": "parser_defect",
                 "code": code,
-                "level": "MEDIUM",
+                "level": _mime_defect_level(code),
                 "part_path": path,
                 "header": None if source == "message" else source,
                 "message": f"MIME part {path}: {description}",
             }):
                 defect_count += 1
 
-    return findings, defect_count, duplicate_count
+    severity_order = {"HIGH": 0, "MEDIUM": 1, "LOW": 2, "INFO": 3}
+    findings.sort(key=lambda item: severity_order.get(str(item.get("level") or ""), 4))
+    return findings[:_MIME_FINDING_LIMIT], defect_count, duplicate_count, review_count, notice_count
 
 
 def _alternative_comparison_tokens(value: str) -> list[str]:
@@ -500,6 +577,26 @@ def _alternative_pair_is_divergent(left: dict, right: dict, similarity: float) -
     smallest = min(int(left.get("token_count") or 0), int(right.get("token_count") or 0))
     severe_length_gap = smallest / max(largest, 1) < 0.30
     return similarity < 0.55 or (severe_length_gap and similarity < 0.72)
+
+
+def _alternative_similarity(left_tokens: list[str], right_tokens: list[str]) -> float:
+    """Compare meaning-bearing tokens without over-penalising HTML reordering.
+
+    Sequence similarity catches substitutions, while multiset Dice overlap
+    recognizes equivalent text whose layout changes token order. Taking the
+    stronger score reduces false positives without hiding a large extra lure
+    inserted into only one alternative.
+    """
+    if not left_tokens and not right_tokens:
+        return 1.0
+    if not left_tokens or not right_tokens:
+        return 0.0
+    left_counts = Counter(left_tokens)
+    right_counts = Counter(right_tokens)
+    shared = sum((left_counts & right_counts).values())
+    dice = (2.0 * shared) / (len(left_tokens) + len(right_tokens))
+    sequence = SequenceMatcher(None, left_tokens, right_tokens).ratio()
+    return max(sequence, dice)
 
 
 def _analyze_mime_alternatives(body_variants: list[dict]) -> tuple[dict, set[str]]:
@@ -535,7 +632,7 @@ def _analyze_mime_alternatives(body_variants: list[dict]) -> tuple[dict, set[str
                 if not left_tokens and not right_tokens:
                     similarity = 1.0
                 else:
-                    similarity = SequenceMatcher(None, left_tokens, right_tokens).ratio()
+                    similarity = _alternative_similarity(left_tokens, right_tokens)
                 minimum_similarity = min(minimum_similarity, similarity)
                 if _alternative_pair_is_divergent(left, right, similarity):
                     divergent = True
@@ -629,7 +726,11 @@ class EmlSOCAnalyzer:
     legato a messaggi specifici.
     """
 
-    def analyze(self, eml_path: str) -> dict:
+    def analyze(
+        self,
+        eml_path: str,
+        source_mime_findings: Optional[list[dict]] = None,
+    ) -> dict:
         with open(eml_path, "rb") as f:
             raw_bytes = f.read()
         msg = email.message_from_bytes(raw_bytes, policy=policy.default)
@@ -749,6 +850,12 @@ class EmlSOCAnalyzer:
             auth_headers,
             arc_auth_headers,
             received_spf_headers,
+        )
+        report["authentication_checkpoints"] = build_authentication_checkpoints(
+            auth_headers,
+            arc_auth_headers,
+            received_spf_headers,
+            hops,
         )
 
         # ── 8. Firma DKIM ─────────────────────────────────────────────────
@@ -957,14 +1064,37 @@ class EmlSOCAnalyzer:
                 report["body_context"] = "mime_alternatives"
                 report["body_source"] = "multipart/alternative (all divergent variants)"
 
-        mime_findings, mime_defect_count, mime_duplicate_header_count = _collect_mime_findings(msg)
+        (
+            mime_findings,
+            mime_defect_count,
+            mime_duplicate_header_count,
+            mime_review_finding_count,
+            mime_notice_finding_count,
+        ) = _collect_mime_findings(msg)
+        if source_mime_findings:
+            mime_findings.extend(dict(finding) for finding in source_mime_findings)
+            mime_review_finding_count += sum(
+                1 for finding in source_mime_findings
+                if finding.get("level") in {"HIGH", "MEDIUM"}
+            )
+            mime_notice_finding_count += sum(
+                1 for finding in source_mime_findings
+                if finding.get("level") in {"LOW", "INFO"}
+            )
+            severity_order = {"HIGH": 0, "MEDIUM": 1, "LOW": 2, "INFO": 3}
+            mime_findings.sort(
+                key=lambda item: severity_order.get(str(item.get("level") or ""), 4)
+            )
+            mime_findings = mime_findings[:_MIME_FINDING_LIMIT]
         report["mime_findings"] = mime_findings
         report["mime_defect_count"] = mime_defect_count
         report["mime_duplicate_header_count"] = mime_duplicate_header_count
+        report["mime_review_finding_count"] = mime_review_finding_count
+        report["mime_notice_finding_count"] = mime_notice_finding_count
         report["mime_status"] = (
             "review"
-            if mime_findings or mime_alternative_analysis["status"] == "divergent"
-            else "clean"
+            if report["mime_review_finding_count"] or mime_alternative_analysis["status"] == "divergent"
+            else "notice" if mime_findings else "clean"
         )
         report["ai_analysis_supported"] = (
             len(report["body_for_ai"]) <= MAX_AI_BODY_CHARS
@@ -1210,10 +1340,13 @@ class EmlSOCAnalyzer:
                 "MIME structure",
                 str(finding.get("message") or "The MIME structure requires review."),
             )
-        omitted_mime_findings = max(0, len(mime_findings) - 10)
+        total_mime_findings = int(report.get("mime_review_finding_count") or 0) + int(
+            report.get("mime_notice_finding_count") or 0
+        )
+        omitted_mime_findings = max(0, total_mime_findings - 10)
         if omitted_mime_findings:
             flag(
-                "MEDIUM",
+                "MEDIUM" if report.get("mime_review_finding_count") else "LOW",
                 "MIME structure",
                 f"{omitted_mime_findings} additional MIME finding(s) are available in the structured report.",
             )

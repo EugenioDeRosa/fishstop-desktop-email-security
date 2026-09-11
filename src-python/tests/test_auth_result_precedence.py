@@ -1,9 +1,85 @@
 import unittest
 
-from fishstop_engine.analyzer.received_parser import select_effective_auth_results
+from fishstop_engine.analyzer.received_parser import (
+    build_authentication_checkpoints,
+    select_effective_auth_results,
+)
 
 
 class AuthenticationResultPrecedenceTests(unittest.TestCase):
+    def test_checkpoints_link_only_explicit_authentication_evidence(self):
+        hops = [
+            {
+                "sender_ip": "198.51.100.20",
+                "all_ips": ["198.51.100.20"],
+                "from_host": "relay.example",
+                "by_host": "mx.receiver",
+                "received_at": "2026-09-10T10:02:00+00:00",
+            },
+            {
+                "sender_ip": "203.0.113.10",
+                "all_ips": ["203.0.113.10"],
+                "from_host": "sender.example",
+                "by_host": "relay.example",
+                "received_at": "2026-09-10T10:01:00+00:00",
+            },
+        ]
+        checkpoints = build_authentication_checkpoints(
+            [
+                "mx.receiver; spf=fail smtp.remote-ip=198.51.100.20 "
+                "smtp.mailfrom=sender.example; dkim=pass header.d=sender.example; "
+                "dmarc=fail header.from=sender.example"
+            ],
+            [],
+            [],
+            hops,
+        )
+
+        self.assertEqual(["SPF", "DKIM", "DMARC"], [item["protocol"] for item in checkpoints])
+        self.assertTrue(all(item["association"] == "exact" for item in checkpoints))
+        self.assertTrue(all(item["linked_hop_index"] == 1 for item in checkpoints))
+        self.assertEqual("client-ip", checkpoints[0]["link_basis"])
+        self.assertEqual("sender.example", checkpoints[0]["identity"])
+        self.assertEqual("authserv-id", checkpoints[1]["link_basis"])
+
+    def test_checkpoint_remains_unmapped_when_header_has_no_exact_hop(self):
+        checkpoints = build_authentication_checkpoints(
+            ["unknown.evaluator; dkim=fail header.d=sender.example"],
+            [],
+            [],
+            [{"sender_ip": "203.0.113.10", "all_ips": ["203.0.113.10"], "by_host": "mx.receiver"}],
+        )
+
+        self.assertEqual("unmapped", checkpoints[0]["association"])
+        self.assertIsNone(checkpoints[0]["linked_hop_index"])
+
+    def test_received_spf_checkpoint_uses_explicit_client_ip(self):
+        checkpoints = build_authentication_checkpoints(
+            [],
+            [],
+            ["SoftFail client-ip=203.0.113.10; envelope-from=sender@example.com"],
+            [{"sender_ip": "203.0.113.10", "all_ips": ["203.0.113.10"], "by_host": "mx.receiver"}],
+        )
+
+        self.assertEqual("SPF", checkpoints[0]["protocol"])
+        self.assertEqual("softfail", checkpoints[0]["status"])
+        self.assertEqual("exact", checkpoints[0]["association"])
+        self.assertEqual("client-ip", checkpoints[0]["link_basis"])
+
+    def test_reused_client_ip_is_not_forced_onto_an_ambiguous_hop(self):
+        checkpoints = build_authentication_checkpoints(
+            [],
+            [],
+            ["Pass client-ip=203.0.113.10; envelope-from=sender@example.com"],
+            [
+                {"sender_ip": "203.0.113.10", "all_ips": ["203.0.113.10"], "by_host": "mx.one"},
+                {"sender_ip": "203.0.113.10", "all_ips": ["203.0.113.10"], "by_host": "mx.two"},
+            ],
+        )
+
+        self.assertEqual("unmapped", checkpoints[0]["association"])
+        self.assertIsNone(checkpoints[0]["linked_hop_index"])
+
     def test_direct_receiver_pass_is_not_overridden_by_historical_arc_none(self):
         effective = select_effective_auth_results(
             [

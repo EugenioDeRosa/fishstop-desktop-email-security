@@ -33,8 +33,9 @@ _AUTH_FIELD_RE = re.compile(
     re.IGNORECASE,
 )
 
-_AUTH_IDENTITY_RE = re.compile(
-    r"\b(?:header|smtp)\.[a-zA-Z0-9_-]+\s*=\s*([^\s;]+)",
+_AUTH_PROPERTY_RE = re.compile(
+    r"\b((?:header|smtp|policy)\.[a-zA-Z0-9_-]+|client-ip|envelope-from|helo)"
+    r"\s*=\s*([^\s;]+)",
     re.IGNORECASE,
 )
 
@@ -72,6 +73,61 @@ def _auth_identity_domain(value: str) -> str:
     if "@" in identity:
         identity = identity.rsplit("@", 1)[-1]
     return identity
+
+
+def _authserv_id(raw: str, *, arc: bool = False) -> str:
+    """Extract the RFC 8601 authentication service identifier."""
+    parts = [part.strip() for part in str(raw or "").split(";")]
+    position = 1 if arc and parts and re.fullmatch(r"i\s*=\s*\d+", parts[0], re.I) else 0
+    if position >= len(parts):
+        return ""
+    candidate = re.sub(r"\([^)]*\)", "", parts[position]).strip()
+    token = candidate.split()[0].strip("<>\"'") if candidate else ""
+    return token if token and "=" not in token else ""
+
+
+def _arc_instance(raw: str) -> int:
+    match = re.search(r"(?:^|;)\s*i\s*=\s*(\d+)\b", str(raw), re.IGNORECASE)
+    return int(match.group(1)) if match else 0
+
+
+def _auth_result_items(raw: str) -> List[Dict[str, Any]]:
+    """Return every authentication method result without flattening headers."""
+    items: List[Dict[str, Any]] = []
+    matches = list(_AUTH_FIELD_RE.finditer(str(raw or "")))
+    for index, match in enumerate(matches):
+        next_start = matches[index + 1].start() if index + 1 < len(matches) else len(raw)
+        segment = str(raw)[match.start():next_start].strip(" ;\n\t")
+        properties = {
+            property_match.group(1).lower(): property_match.group(2).strip("<>\"'")
+            for property_match in _AUTH_PROPERTY_RE.finditer(segment)
+        }
+        protocol = match.group(1).upper()
+        identity_keys = {
+            "SPF": ("smtp.mailfrom", "smtp.helo", "envelope-from", "helo"),
+            "DKIM": ("header.d", "header.i"),
+            "DMARC": ("header.from",),
+        }.get(protocol, ())
+        identity = next((properties[key] for key in identity_keys if properties.get(key)), "")
+        client_ip = (
+            properties.get("client-ip")
+            or properties.get("smtp.remote-ip")
+            or properties.get("policy.iprev")
+            or ""
+        )
+        try:
+            client_ip = str(ipaddress.ip_address(client_ip.strip("[]"))) if client_ip else ""
+        except ValueError:
+            client_ip = ""
+        items.append({
+            "protocol": protocol,
+            "status": match.group(2).lower(),
+            "identity": identity,
+            "client_ip": client_ip,
+            "properties": properties,
+            "raw": segment,
+        })
+    return items
 
 
 # ── Funzioni di Utility Internizzate ─────────────────────────────────────────
@@ -260,20 +316,9 @@ def parse_auth_results(raw: str) -> Dict[str, Dict[str, Any]]:
     if not raw:
         return {}
 
-    matches = list(_AUTH_FIELD_RE.finditer(raw))
-    for index, m in enumerate(matches):
-        proto = m.group(1).upper()
-        status = m.group(2).lower()
-        next_start = matches[index + 1].start() if index + 1 < len(matches) else len(raw)
-        segment = raw[m.start():next_start].strip(" ;\n\t")
-        identity_match = _AUTH_IDENTITY_RE.search(segment)
-        identity = identity_match.group(1) if identity_match else ""
-
-        grouped.setdefault(proto, []).append({
-            "status": status,
-            "identity": identity.strip("<>\"'"),
-            "raw": segment,
-        })
+    for parsed in _auth_result_items(raw):
+        proto = str(parsed.pop("protocol"))
+        grouped.setdefault(proto, []).append(parsed)
     return {
         proto: _select_worst_auth_result(items)
         for proto, items in grouped.items()
@@ -287,9 +332,20 @@ def parse_received_spf_results(headers: List[str]) -> Dict[str, Dict[str, Any]]:
         match = re.match(r"\s*([a-zA-Z0-9_-]+)", str(raw))
         if not match:
             continue
+        properties = {
+            property_match.group(1).lower(): property_match.group(2).strip("<>\"'")
+            for property_match in _AUTH_PROPERTY_RE.finditer(str(raw))
+        }
+        client_ip = properties.get("client-ip", "")
+        try:
+            client_ip = str(ipaddress.ip_address(client_ip.strip("[]"))) if client_ip else ""
+        except ValueError:
+            client_ip = ""
         items.append({
             "status": match.group(1).lower(),
-            "identity": "",
+            "identity": properties.get("envelope-from", ""),
+            "client_ip": client_ip,
+            "properties": properties,
             "raw": str(raw).strip(),
         })
     return {"SPF": _select_worst_auth_result(items)} if items else {}
@@ -348,16 +404,12 @@ def select_effective_auth_results(
     for raw in authentication_headers or []:
         add_missing(parse_auth_results(str(raw)), "Authentication-Results")
 
-    def arc_instance(raw: str) -> int:
-        match = re.search(r"(?:^|;)\s*i\s*=\s*(\d+)\b", str(raw), re.IGNORECASE)
-        return int(match.group(1)) if match else 0
-
     # ARC sets grow monotonically; the highest instance is the newest sealed
     # account of the preceding route and is only a fallback for missing direct
     # receiver results.
     ordered_arc_headers = sorted(
         (str(value) for value in (arc_authentication_headers or [])),
-        key=arc_instance,
+        key=_arc_instance,
         reverse=True,
     )
     for raw in ordered_arc_headers:
@@ -375,13 +427,13 @@ def select_effective_auth_results(
     if arc_chain_passed:
         origin_spf = None
         origin_instance = 0
-        for raw in sorted(ordered_arc_headers, key=arc_instance):
-            if arc_instance(raw) <= 0:
+        for raw in sorted(ordered_arc_headers, key=_arc_instance):
+            if _arc_instance(raw) <= 0:
                 continue
             candidate = (parse_auth_results(raw) or {}).get("SPF")
             if candidate:
                 origin_spf = candidate
-                origin_instance = arc_instance(raw)
+                origin_instance = _arc_instance(raw)
                 break
 
         if origin_spf:
@@ -427,3 +479,107 @@ def select_effective_auth_results(
                 result["all_results"] = [origin]
             selected["SPF"] = result
     return selected
+
+
+def build_authentication_checkpoints(
+    authentication_headers: List[str],
+    arc_authentication_headers: List[str],
+    received_spf_headers: List[str],
+    received_hops: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Preserve authentication observations and link only exact hop evidence.
+
+    A checkpoint says where a result was *reported*. It does not claim that
+    the geographic location caused the result. SPF can be linked by its
+    explicit client IP; DKIM and DMARC require an exact authserv-id/by-host
+    match. Ambiguous observations remain intentionally unlinked.
+    """
+    route_hops = order_received_hops(received_hops)
+
+    def matching_hop_indices(*, client_ip: str = "", authserv_id: str = "") -> tuple[List[int], str]:
+        normalized_authserv = _clean_host_token(authserv_id)
+        if client_ip:
+            ip_matches = [
+                index for index, hop in enumerate(route_hops)
+                if client_ip == (
+                    hop.get("sender_ip")
+                    or ((hop.get("all_ips") or [""])[0] if len(hop.get("all_ips") or []) == 1 else "")
+                )
+            ]
+            if len(ip_matches) == 1:
+                return ip_matches, "client-ip"
+        if normalized_authserv:
+            host_matches = [
+                index for index, hop in enumerate(route_hops)
+                if (_clean_host_token(hop.get("by_host")) or "").casefold()
+                == normalized_authserv.casefold()
+            ]
+            if len(host_matches) == 1:
+                return host_matches, "authserv-id"
+        return [], ""
+
+    checkpoints: List[Dict[str, Any]] = []
+
+    def add_header(raw: str, source: str, source_index: int, *, arc: bool = False) -> None:
+        authserv_id = _authserv_id(raw, arc=arc)
+        arc_instance = _arc_instance(raw) if arc else 0
+        for result_index, result in enumerate(_auth_result_items(raw)):
+            protocol = str(result.get("protocol") or "").upper()
+            client_ip = str(result.get("client_ip") or "")
+            indices, basis = matching_hop_indices(
+                client_ip=client_ip if protocol == "SPF" else "",
+                authserv_id=authserv_id,
+            )
+            checkpoints.append({
+                "id": f"{source.lower().replace('-', '_')}:{source_index}:{result_index}",
+                "protocol": protocol,
+                "status": result.get("status") or "unknown",
+                "identity": result.get("identity") or "",
+                "client_ip": client_ip,
+                "authserv_id": authserv_id,
+                "source": source,
+                "source_index": source_index,
+                "arc_instance": arc_instance or None,
+                "trust": "receiver_reported" if source == "Authentication-Results" and source_index == 0 else "reported",
+                "linked_hop_index": indices[0] if len(indices) == 1 else None,
+                "association": "exact" if len(indices) == 1 else "unmapped",
+                "link_basis": basis,
+                "raw": result.get("raw") or str(raw).strip(),
+            })
+
+    for index, raw in enumerate(authentication_headers or []):
+        add_header(str(raw), "Authentication-Results", index)
+    for index, raw in enumerate(arc_authentication_headers or []):
+        add_header(str(raw), "ARC-Authentication-Results", index, arc=True)
+    for index, raw in enumerate(received_spf_headers or []):
+        text = str(raw)
+        match = re.match(r"\s*([a-zA-Z0-9_-]+)", text)
+        if not match:
+            continue
+        properties = {
+            property_match.group(1).lower(): property_match.group(2).strip("<>\"'")
+            for property_match in _AUTH_PROPERTY_RE.finditer(text)
+        }
+        client_ip = properties.get("client-ip", "")
+        try:
+            client_ip = str(ipaddress.ip_address(client_ip.strip("[]"))) if client_ip else ""
+        except ValueError:
+            client_ip = ""
+        indices, basis = matching_hop_indices(client_ip=client_ip)
+        checkpoints.append({
+            "id": f"received_spf:{index}:0",
+            "protocol": "SPF",
+            "status": match.group(1).lower(),
+            "identity": properties.get("envelope-from", ""),
+            "client_ip": client_ip,
+            "authserv_id": "",
+            "source": "Received-SPF",
+            "source_index": index,
+            "arc_instance": None,
+            "trust": "reported",
+            "linked_hop_index": indices[0] if len(indices) == 1 else None,
+            "association": "exact" if len(indices) == 1 else "unmapped",
+            "link_basis": basis,
+            "raw": text.strip(),
+        })
+    return checkpoints

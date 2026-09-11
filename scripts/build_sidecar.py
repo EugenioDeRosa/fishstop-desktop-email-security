@@ -14,6 +14,7 @@ ENGINE_ENTRYPOINT = ROOT / "src-python" / "main.py"
 BINARIES_DIRECTORY = ROOT / "src-tauri" / "binaries"
 BUILD_DIRECTORY = ROOT / "build" / "sidecar"
 IDENTITY_ONNX_DIRECTORY = ROOT / "build" / "identity-model" / "int8"
+ENGINE_DATA_DIRECTORY = ROOT / "src-python" / "fishstop_engine" / "data"
 
 
 def main() -> None:
@@ -38,6 +39,8 @@ def main() -> None:
         str(ROOT / "src-python"),
         "--collect-submodules",
         "fishstop_engine",
+        "--add-data",
+        f"{ENGINE_DATA_DIRECTORY}{os.pathsep}fishstop_engine/data",
         "--workpath",
         str(BUILD_DIRECTORY / "work"),
         "--distpath",

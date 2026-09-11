@@ -22,7 +22,7 @@ from fishstop_engine.otx_intelligence import (
     otx_cache_status,
     sync_subscribed_pulses,
 )
-from fishstop_engine.parser import _sanitize_eml_bytes
+from fishstop_engine.parser import _sanitize_eml_bytes_with_findings
 from fishstop_engine.reputation import enrich as enrich_reputation
 
 _IDENTITY_RUNTIME: dict[str, Any] | None = None
@@ -150,12 +150,16 @@ def analyze(path_value: str) -> dict[str, Any]:
         raise EmailAnalysisLimitError("The EML file exceeds the supported 10 MB limit.")
 
     raw = path.read_bytes()
+    normalized_bytes, source_mime_findings = _sanitize_eml_bytes_with_findings(raw)
     # Do not write next to the user-selected file: it may be read-only.
     with tempfile.NamedTemporaryFile(suffix=".eml", delete=False) as normalized_file:
         normalized_path = Path(normalized_file.name)
-        normalized_file.write(_sanitize_eml_bytes(raw))
+        normalized_file.write(normalized_bytes)
     try:
-        report = EmlSOCAnalyzer().analyze(str(normalized_path))
+        report = EmlSOCAnalyzer().analyze(
+            str(normalized_path),
+            source_mime_findings=source_mime_findings,
+        )
     finally:
         normalized_path.unlink(missing_ok=True)
     report["eml_sha256"] = hashlib.sha256(raw).hexdigest()

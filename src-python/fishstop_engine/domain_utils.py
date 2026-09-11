@@ -67,6 +67,34 @@ def registered_domain(value: str) -> str:
     return normalize_hostname(str(registrable)) or host
 
 
+def is_public_suffix(value: str) -> bool:
+    """Return whether a hostname is itself a PSL boundary.
+
+    This includes private suffixes such as shared hosting platforms when they
+    are present in the bundled Public Suffix List. A match on the boundary is
+    not evidence that every customer subdomain is malicious.
+    """
+    host = normalize_hostname(value)
+    if not host or get_tld is None:
+        return False
+    try:
+        ipaddress.ip_address(host)
+        return False
+    except ValueError:
+        pass
+    try:
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                category=DeprecationWarning,
+                module=r"publicsuffix2(?:\..*)?",
+            )
+            suffix = get_tld(host, strict=True)
+    except (TypeError, ValueError, UnicodeError):
+        return False
+    return normalize_hostname(str(suffix or "")) == host
+
+
 def registrable_label(value: str) -> str:
     """Return the label immediately preceding the public suffix."""
     registrable = registered_domain(value)

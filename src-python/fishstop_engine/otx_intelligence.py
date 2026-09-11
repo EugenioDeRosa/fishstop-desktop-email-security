@@ -8,9 +8,9 @@ SQLite database and email analysis performs only point lookups.
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from email.utils import getaddresses
+from functools import lru_cache
 import hashlib
 import ipaddress
 import json
@@ -24,7 +24,7 @@ import time
 from typing import Callable
 from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 
-from fishstop_engine.domain_utils import normalize_hostname, registered_domain
+from fishstop_engine.domain_utils import is_public_suffix, normalize_hostname, registered_domain
 
 try:
     import requests
@@ -38,7 +38,7 @@ OTX_SEARCH_PULSES = f"{OTX_BASE_URL}/api/v1/search/pulses"
 OTX_PULSE_DETAILS = f"{OTX_BASE_URL}/api/v1/pulses"
 PUBLIC_PHISHING_QUERY = 'tag:"phishing"'
 PAGE_SIZE = 50
-INDICATOR_PAGE_SIZE = 10_000
+INDICATOR_PAGE_SIZE = 2_000
 MAX_PULSES_PER_INDICATOR = 5
 INITIAL_LOOKBACK_DAYS = 365
 INCREMENTAL_OVERLAP_DAYS = 1
@@ -47,20 +47,18 @@ REQUEST_TIMEOUT = (5, 30)
 REQUEST_ATTEMPTS = 3
 DETAIL_TIMEOUT = (5, 25)
 DETAIL_ATTEMPTS = 2
-PUBLIC_PREFETCH_TIMEOUT = (5, 15)
-PUBLIC_PREFETCH_WORKERS = 4
+PUBLIC_QUEUE_MAX_ATTEMPTS = 3
 MAX_RETRY_DELAY_SECONDS = 5
-# Public search is discovery, not a bulk feed. A single Pulse may contain more
-# than half a million indicators, so a Pulse count is not a useful safety bound.
-PUBLIC_SEARCH_INITIAL_MAX_PAGES = 6
-PUBLIC_SEARCH_INCREMENTAL_MAX_PAGES = 2
+# OTX rejects very deep search pagination (currently page 51). Walk the rolling
+# year in smaller age windows instead, and split a busy window again if the
+# service reports its depth limit. This keeps discovery complete without tying
+# correctness to a fixed number of pages per refresh.
+PUBLIC_SEARCH_WINDOW_DAYS = 7
 PUBLIC_SYNC_SOFT_SECONDS = 20 * 60
-PUBLIC_INDICATOR_TARGET = 1_000_000
-PUBLIC_DATABASE_TARGET_BYTES = 250 * 1024 * 1024
-PUBLIC_DATABASE_HARD_BYTES = 300 * 1024 * 1024
-PUBLIC_COMMUNITY_PULSE_MAX_INDICATORS = 50_000
-PUBLIC_TRUSTED_PULSE_MAX_INDICATORS = 300_000
-PUBLIC_TRUSTED_AUTHORS = frozenset({"alienvault", "phishdestroy", "urlert_intel"})
+PUBLIC_DATABASE_HARD_BYTES = 1024 * 1024 * 1024
+PUBLIC_EMAIL_PROVIDER_DOMAINS_PATH = (
+    Path(__file__).with_name("data") / "public_email_provider_domains.txt"
+)
 
 _TYPE_ALIASES = {
     "domain": "domain",
@@ -72,6 +70,31 @@ _TYPE_ALIASES = {
     "filehash-sha256": "sha256",
     "email": "email",
 }
+
+
+@lru_cache(maxsize=1)
+def _public_email_provider_domains() -> frozenset[str]:
+    """Load the vendored, open-source public mailbox provider dataset."""
+    try:
+        values = {
+            normalized
+            for line in PUBLIC_EMAIL_PROVIDER_DOMAINS_PATH.read_text(encoding="utf-8").splitlines()
+            if (normalized := normalize_hostname(line))
+        }
+    except OSError:
+        return frozenset()
+    return frozenset(values)
+
+
+def _is_shared_domain_indicator(value: str) -> bool:
+    domain = normalize_hostname(value)
+    return bool(
+        domain
+        and (
+            domain in _public_email_provider_domains()
+            or is_public_suffix(domain)
+        )
+    )
 
 
 class OtxTransientError(RuntimeError):
@@ -88,6 +111,10 @@ class OtxBudgetReached(RuntimeError):
     def __init__(self, reason: str):
         super().__init__(reason)
         self.reason = reason
+
+
+class OtxSearchDepthError(RuntimeError):
+    """The public Pulse search exceeded OTX's accepted pagination depth."""
 
 
 def _utc_now() -> datetime:
@@ -244,6 +271,18 @@ def _request_json(
                 raise OtxAuthenticationError(
                     "The OTX API key is invalid or not authorized."
                 )
+            if status_code == 400 and urlsplit(url).path.endswith("/search/pulses"):
+                page_value = (params or {}).get("page")
+                if page_value is None:
+                    page_value = (parse_qs(urlsplit(url).query).get("page") or [0])[0]
+                try:
+                    deep_page = int(page_value) > 50
+                except (TypeError, ValueError):
+                    deep_page = False
+                if deep_page:
+                    raise OtxSearchDepthError(
+                        "OTX public search reached its pagination depth limit."
+                    )
             if status_code == 429 or 500 <= status_code < 600:
                 if attempt + 1 >= attempts:
                     if status_code == 429:
@@ -333,7 +372,7 @@ def _public_pulse_details(session, pulse: dict) -> dict | None:
     return details if isinstance(details.get("indicators"), list) else None
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 def _database_connection(path: Path, *, readonly: bool = False) -> sqlite3.Connection:
@@ -385,6 +424,18 @@ def _initialize_database(connection: sqlite3.Connection) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_pulse_indicators_indicator
             ON pulse_indicators(indicator_id, pulse_id);
+        CREATE TABLE IF NOT EXISTS public_pulse_queue (
+            pulse_id TEXT PRIMARY KEY REFERENCES pulses(id) ON DELETE CASCADE,
+            next_url TEXT NOT NULL,
+            processed INTEGER NOT NULL DEFAULT 0,
+            total INTEGER NOT NULL DEFAULT 0,
+            stored INTEGER NOT NULL DEFAULT 0,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            state TEXT NOT NULL DEFAULT 'pending',
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_public_pulse_queue_state_updated
+            ON public_pulse_queue(state, updated_at);
     """)
     source_columns = {
         str(row[1]) for row in connection.execute("PRAGMA table_info(pulse_sources)")
@@ -549,19 +600,32 @@ def otx_cache_status(cache_path: str) -> dict:
         return {
             "status": "not_synced", "synced_at": "", "pulse_count": 0,
             "subscribed_pulse_count": 0, "public_phishing_pulse_count": 0,
-            "indicator_count": 0, "skipped_pulse_count": 0,
+            "indicator_count": 0, "pending_pulse_count": 0,
+            "coverage_days": 0, "skipped_pulse_count": 0,
             "truncated": False, "lookback_days": INITIAL_LOOKBACK_DAYS,
             "database_bytes": 0, "limit_reason": "",
         }
     try:
         with _database_connection(path, readonly=True) as connection:
-            if _metadata(connection, "schema_version") not in {"2", str(SCHEMA_VERSION)}:
+            if _metadata(connection, "schema_version") not in {"2", "3", str(SCHEMA_VERSION)}:
                 raise RuntimeError("The local OTX database format is not supported.")
             counts = _database_counts(connection)
+            queue_exists = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='public_pulse_queue'"
+            ).fetchone() is not None
+            pending_pulses = int(connection.execute(
+                "SELECT COUNT(*) FROM public_pulse_queue"
+            ).fetchone()[0]) if queue_exists else 0
             return {
                 "status": "ready",
                 "synced_at": _metadata(connection, "synced_at"),
                 **counts,
+                "pending_pulse_count": pending_pulses,
+                "coverage_days": (
+                    INITIAL_LOOKBACK_DAYS
+                    if _metadata(connection, "public_coverage_complete") == "1"
+                    else int(_metadata(connection, "public_window_cursor_days") or 0)
+                ),
                 "skipped_pulse_count": int(_metadata(connection, "skipped_pulse_count") or 0),
                 "truncated": _metadata(connection, "public_search_truncated") == "1",
                 "limit_reason": _metadata(connection, "public_limit_reason"),
@@ -581,6 +645,14 @@ def _public_search_candidate(pulse: dict, cutoff: datetime) -> bool:
     return _recent_pulse(pulse, cutoff) and _may_have_supported_indicators(pulse)
 
 
+def _public_search_query(start_days: int, end_days: int) -> str:
+    """Build a non-overlapping OTX relative-age window, newest first."""
+    end_days = max(1, min(INITIAL_LOOKBACK_DAYS, int(end_days)))
+    start_days = max(0, min(end_days - 1, int(start_days)))
+    newest_bound = "" if start_days == 0 else f" AND modified:>{start_days}d"
+    return f'{PUBLIC_PHISHING_QUERY}{newest_bound} AND modified:<{end_days}d'
+
+
 def _database_allocated_bytes(connection: sqlite3.Connection) -> int:
     page_count = int(connection.execute("PRAGMA page_count").fetchone()[0])
     page_size = int(connection.execute("PRAGMA page_size").fetchone()[0])
@@ -593,145 +665,185 @@ def _public_budget_reason(
 ) -> str:
     if time.monotonic() - started_at >= PUBLIC_SYNC_SOFT_SECONDS:
         return "time"
-    indicator_count = int(connection.execute("SELECT COUNT(*) FROM indicators").fetchone()[0])
-    if indicator_count >= PUBLIC_INDICATOR_TARGET:
-        return "indicators"
     allocated = _database_allocated_bytes(connection)
-    if allocated >= PUBLIC_DATABASE_TARGET_BYTES:
-        return "database"
     if allocated >= PUBLIC_DATABASE_HARD_BYTES:
         return "database"
     return ""
 
 
-def _public_pulse_indicator_limit(pulse: dict) -> int:
-    author = str(
-        pulse.get("author_name")
-        or ((pulse.get("author") or {}).get("username") if isinstance(pulse.get("author"), dict) else "")
-    ).strip().casefold()
-    return (
-        PUBLIC_TRUSTED_PULSE_MAX_INDICATORS
-        if author in PUBLIC_TRUSTED_AUTHORS
-        else PUBLIC_COMMUNITY_PULSE_MAX_INDICATORS
-    )
-
-
-def _prefetch_public_indicator_page(session, pulse: dict) -> dict | None:
-    pulse_id = str(pulse.get("id") or "")
-    if not re.fullmatch(r"[0-9a-fA-F]{24}", pulse_id):
-        return None
-    try:
-        return _request_json(
-            session,
-            f"{OTX_PULSE_DETAILS}/{pulse_id}/indicators",
-            params={"limit": INDICATOR_PAGE_SIZE, "include_inactive": 0},
-            timeout=PUBLIC_PREFETCH_TIMEOUT,
-            attempts=1,
-        )
-    except OtxAuthenticationError:
-        raise
-    except (OtxTransientError, requests.RequestException, RuntimeError):
-        return None
-
-
-def _ingest_public_pulse(
-    session,
+def _enqueue_public_pulse(
     connection: sqlite3.Connection,
     pulse: dict,
     synced_at: datetime,
-    started_at: float,
-    report_progress: Callable[[dict], None],
-    first_payload: dict | None = None,
-) -> tuple[bool, str]:
-    """Download one public Pulse through bounded 10k-indicator pages."""
-    inline = pulse.get("indicators")
-    if isinstance(inline, list):
-        with connection:
-            stored = _store_pulse(connection, pulse, "public_phishing", synced_at)
-        return stored, _public_budget_reason(connection, started_at)
-
+) -> bool:
     pulse_id = str(pulse.get("id") or "")
     if not re.fullmatch(r"[0-9a-fA-F]{24}", pulse_id):
-        return False, ""
-    pulse_limit = _public_pulse_indicator_limit(pulse)
-    next_page: str | None = f"{OTX_PULSE_DETAILS}/{pulse_id}/indicators"
-    next_params: dict | None = {
-        "limit": INDICATOR_PAGE_SIZE,
-        "include_inactive": 0,
-    }
-    processed = 0
-    stored_supported = 0
-    first_page = True
-    with connection:
-        _store_pulse_summary(
-            connection, pulse, "public_phishing", synced_at, complete=False
-        )
-    while next_page and processed < pulse_limit:
+        return False
+    stored_id = _store_pulse_summary(
+        connection, pulse, "public_phishing", synced_at, complete=False
+    )
+    connection.execute(
+        """INSERT INTO public_pulse_queue(
+               pulse_id, next_url, processed, total, stored, attempts, state, updated_at
+           ) VALUES(?, ?, 0, 0, 0, 0, 'pending', ?)
+           ON CONFLICT(pulse_id) DO NOTHING""",
+        (
+            stored_id,
+            f"{OTX_PULSE_DETAILS}/{stored_id}/indicators",
+            _utc_iso(synced_at, synced_at),
+        ),
+    )
+    return True
+
+
+def _process_public_pulse_queue(
+    session,
+    connection: sqlite3.Connection,
+    synced_at: datetime,
+    started_at: float,
+    report_progress: Callable[[dict], None],
+) -> tuple[int, str]:
+    """Index each discovered Pulse incrementally without letting one failure block the queue."""
+    rows = connection.execute(
+        """SELECT q.*, p.name
+           FROM public_pulse_queue q JOIN pulses p ON p.id = q.pulse_id
+           ORDER BY q.attempts ASC, q.updated_at ASC, p.modified_at DESC"""
+    ).fetchall()
+    queue_total = len(rows)
+    skipped = 0
+
+    def defer_or_drop(pulse_id: str, attempts: int) -> None:
+        with connection:
+            if attempts >= PUBLIC_QUEUE_MAX_ATTEMPTS:
+                connection.execute(
+                    "DELETE FROM public_pulse_queue WHERE pulse_id = ?", (pulse_id,)
+                )
+                connection.execute(
+                    "DELETE FROM pulse_sources WHERE pulse_id = ? AND source = 'public_phishing'",
+                    (pulse_id,),
+                )
+                connection.execute(
+                    "DELETE FROM pulses WHERE id = ? AND NOT EXISTS "
+                    "(SELECT 1 FROM pulse_sources WHERE pulse_id = ?)",
+                    (pulse_id, pulse_id),
+                )
+            else:
+                connection.execute(
+                    """UPDATE public_pulse_queue
+                       SET attempts = ?, state = 'retry', updated_at = ?
+                       WHERE pulse_id = ?""",
+                    (attempts, _utc_iso(_utc_now(), synced_at), pulse_id),
+                )
+
+    for queue_index, row in enumerate(rows, start=1):
         reason = _public_budget_reason(connection, started_at)
         if reason:
-            return stored_supported > 0, reason
-        if first_page and first_payload is not None:
-            payload = first_payload
-        else:
+            return skipped, reason
+        pulse_id = str(row["pulse_id"])
+        next_page = str(row["next_url"])
+        processed = int(row["processed"])
+        total = int(row["total"])
+        stored_supported = int(row["stored"])
+        first_page = processed == 0
+        failed = False
+        while next_page:
+            reason = _public_budget_reason(connection, started_at)
+            if reason:
+                return skipped, reason
             try:
                 payload = _request_json(
                     session,
                     next_page,
-                    params=next_params,
+                    params={"limit": INDICATOR_PAGE_SIZE, "include_inactive": 0}
+                    if first_page else None,
                     timeout=DETAIL_TIMEOUT,
                     attempts=DETAIL_ATTEMPTS,
                 )
             except OtxAuthenticationError:
                 raise
             except (OtxTransientError, requests.RequestException, RuntimeError):
-                return stored_supported > 0, ""
-        next_params = None
-        indicators = payload.get("results")
-        if not isinstance(indicators, list):
-            indicators = payload.get("indicators")
-        if not isinstance(indicators, list):
-            return stored_supported > 0, ""
-        remaining = pulse_limit - processed
-        batch = indicators[:remaining]
-        with connection:
-            if first_page:
-                connection.execute(
-                    "DELETE FROM pulse_indicators WHERE pulse_id = ?", (pulse_id,)
+                skipped += 1
+                failed = True
+                defer_or_drop(pulse_id, int(row["attempts"]) + 1)
+                break
+            indicators = payload.get("results")
+            if not isinstance(indicators, list):
+                indicators = payload.get("indicators")
+            if not isinstance(indicators, list):
+                skipped += 1
+                failed = True
+                defer_or_drop(pulse_id, int(row["attempts"]) + 1)
+                break
+            with connection:
+                if first_page:
+                    connection.execute(
+                        "DELETE FROM pulse_indicators WHERE pulse_id = ?", (pulse_id,)
+                    )
+                stored_supported += _store_indicator_batch(
+                    connection, pulse_id, indicators
                 )
-            stored_supported += _store_indicator_batch(connection, pulse_id, batch)
-        first_page = False
-        processed += len(batch)
-        report_progress({
-            "phase": "public_phishing",
-            "processed": processed,
-            "total": min(
-                pulse_limit,
-                int(payload.get("count") or pulse_limit),
-            ),
-            "percentage": None,
-            "message": f"Indexed {processed:,} phishing indicators from the current Pulse…",
-        })
-        next_page = _safe_next_page(payload.get("next"))
-        if len(batch) < len(indicators):
-            next_page = None
-    completed = not next_page or processed >= pulse_limit
-    with connection:
-        connection.execute(
-            "UPDATE pulse_sources SET complete = ? WHERE pulse_id = ? AND source = 'public_phishing'",
-            (int(completed), pulse_id),
-        )
-        if completed and stored_supported == 0:
+                processed += len(indicators)
+                try:
+                    total = max(total, int(payload.get("count") or processed))
+                except (TypeError, ValueError):
+                    total = max(total, processed)
+                following_page = _safe_next_page(payload.get("next"))
+                connection.execute(
+                    """UPDATE public_pulse_queue
+                       SET next_url = ?, processed = ?, total = ?, stored = ?,
+                           state = 'pending', updated_at = ?
+                       WHERE pulse_id = ?""",
+                    (
+                        following_page or "",
+                        processed,
+                        total,
+                        stored_supported,
+                        _utc_iso(_utc_now(), synced_at),
+                        pulse_id,
+                    ),
+                )
+            first_page = False
+            next_page = following_page or ""
+            pulse_fraction = min(1.0, processed / total) if total else 0.0
+            report_progress({
+                "phase": "public_indicators",
+                "metric": "current_pulse_indicators",
+                "processed": processed,
+                "total": total or None,
+                "pulse_index": queue_index,
+                "pulse_total": queue_total,
+                "pulse_name": str(row["name"])[:160],
+                "percentage": round(
+                    55 + 40 * ((queue_index - 1 + pulse_fraction) / max(1, queue_total))
+                ),
+                "message": (
+                    f"Pulse {queue_index:,} of {queue_total:,} · "
+                    f"{processed:,} of {total:,} indicators indexed · "
+                    f"{str(row['name'])[:100]}"
+                ),
+            })
+        if failed:
+            continue
+        with connection:
             connection.execute(
-                "DELETE FROM pulse_sources WHERE pulse_id = ? AND source = 'public_phishing'",
+                """UPDATE pulse_sources SET complete = 1
+                   WHERE pulse_id = ? AND source = 'public_phishing'""",
                 (pulse_id,),
             )
             connection.execute(
-                "DELETE FROM pulses WHERE id = ? AND NOT EXISTS "
-                "(SELECT 1 FROM pulse_sources WHERE pulse_id = ?)",
-                (pulse_id, pulse_id),
+                "DELETE FROM public_pulse_queue WHERE pulse_id = ?", (pulse_id,)
             )
-    return stored_supported > 0, _public_budget_reason(connection, started_at)
-
+            if stored_supported == 0:
+                connection.execute(
+                    "DELETE FROM pulse_sources WHERE pulse_id = ? AND source = 'public_phishing'",
+                    (pulse_id,),
+                )
+                connection.execute(
+                    "DELETE FROM pulses WHERE id = ? AND NOT EXISTS "
+                    "(SELECT 1 FROM pulse_sources WHERE pulse_id = ?)",
+                    (pulse_id, pulse_id),
+                )
+    return skipped, ""
 
 def sync_subscribed_pulses(
     cache_path: str,
@@ -754,7 +866,9 @@ def sync_subscribed_pulses(
     if path.is_file():
         try:
             with _database_connection(path, readonly=True) as current:
-                valid_existing = _metadata(current, "schema_version") in {"2", str(SCHEMA_VERSION)}
+                valid_existing = _metadata(current, "schema_version") in {
+                    "2", "3", str(SCHEMA_VERSION),
+                }
         except (OSError, sqlite3.Error):
             valid_existing = False
         if valid_existing:
@@ -781,11 +895,11 @@ def sync_subscribed_pulses(
                 (previous_sync - timedelta(days=INCREMENTAL_OVERLAP_DAYS)) if previous_sync else cutoff,
             )
             existing_counts = _database_counts(connection)
-            previous_public_query = _metadata(connection, "public_query")
+            previous_truncated = _metadata(connection, "public_search_truncated") == "1"
+            coverage_marker = _metadata(connection, "public_coverage_complete")
             continuing_bootstrap = (
-                _metadata(connection, "public_search_truncated") == "1"
-                and previous_public_query.endswith(f"<{INITIAL_LOOKBACK_DAYS}d")
-                and existing_counts["indicator_count"] < PUBLIC_INDICATOR_TARGET
+                previous_truncated
+                and coverage_marker != "1"
             )
             bootstrap_public = (
                 existing_counts["public_phishing_pulse_count"] == 0
@@ -807,8 +921,21 @@ def sync_subscribed_pulses(
                     ),
                 )
             )
-            public_query = (
-                f'{PUBLIC_PHISHING_QUERY} AND modified:<{public_window_days}d'
+            public_cursor_days = (
+                max(0, int(_metadata(connection, "public_window_cursor_days") or 0))
+                if bootstrap_public else 0
+            )
+            public_slice_days = max(
+                1,
+                int(_metadata(connection, "public_window_slice_days") or PUBLIC_SEARCH_WINDOW_DAYS),
+            )
+            public_window_end_days = min(
+                public_window_days,
+                public_cursor_days + public_slice_days,
+            )
+            public_query = _public_search_query(
+                public_cursor_days,
+                public_window_end_days,
             )
             public_resume_url = _metadata(connection, "public_search_resume_url")
             if public_resume_url:
@@ -818,6 +945,12 @@ def sync_subscribed_pulses(
                     parsed_resume.path.endswith("/search/pulses")
                     and "q" not in parse_qs(parsed_resume.query)
                 ):
+                    public_resume_url = ""
+                # Older FishStop releases stored a single 365-day query. Restart
+                # discovery with windowed queries; already indexed Pulses are
+                # reused, so this migration does not redownload their indicators.
+                resume_query = (parse_qs(parsed_resume.query).get("q") or [""])[0]
+                if bootstrap_public and resume_query != public_query:
                     public_resume_url = ""
             public_limit_reason = ""
             seen_pulses: dict[str, set[str]] = {
@@ -890,40 +1023,15 @@ def sync_subscribed_pulses(
                     ]
                     remote = [pulse for pulse in candidates if pulse not in inline]
                     for pulse in inline:
-                        succeeded, reason = _ingest_public_pulse(
-                            session, connection, pulse, now, started_at, report_progress
-                        )
-                        stored += int(succeeded)
-                        skipped_pulse_count += int(not succeeded and not reason)
-                        if reason:
-                            return stored, reason
-                    for offset in range(0, len(remote), PUBLIC_PREFETCH_WORKERS):
-                        reason = _public_budget_reason(connection, started_at)
-                        if reason:
-                            return stored, reason
-                        wave = remote[offset:offset + PUBLIC_PREFETCH_WORKERS]
-                        with ThreadPoolExecutor(max_workers=len(wave)) as executor:
-                            payloads = list(executor.map(
-                                lambda item: _prefetch_public_indicator_page(session, item),
-                                wave,
-                            ))
-                        for pulse, payload in zip(wave, payloads):
-                            if payload is None:
-                                skipped_pulse_count += 1
-                                continue
-                            succeeded, reason = _ingest_public_pulse(
-                                session,
-                                connection,
-                                pulse,
-                                now,
-                                started_at,
-                                report_progress,
-                                first_payload=payload,
+                        with connection:
+                            stored += int(
+                                _store_pulse(connection, pulse, source, now)
                             )
-                            stored += int(succeeded)
-                            skipped_pulse_count += int(not succeeded and not reason)
-                            if reason:
-                                return stored, reason
+                    with connection:
+                        for pulse in remote:
+                            stored += int(
+                                _enqueue_public_pulse(connection, pulse, now)
+                            )
                 else:
                     for pulse in candidates:
                         with connection:
@@ -936,8 +1044,6 @@ def sync_subscribed_pulses(
                 source: str,
                 progress_start: int,
                 progress_end: int,
-                *,
-                max_pages: int | None = None,
             ) -> str:
                 nonlocal public_search_truncated, public_limit_reason
                 next_page: str | None = url
@@ -945,7 +1051,6 @@ def sync_subscribed_pulses(
                 visited: set[str] = set()
                 processed = 0
                 expected_total: int | None = None
-                pages_downloaded = 0
                 while next_page:
                     if next_page in visited:
                         raise RuntimeError("OTX returned a pagination loop.")
@@ -969,7 +1074,6 @@ def sync_subscribed_pulses(
                                 )
                             return request_budget_reason
                     payload = _request_json(session, next_page, params=next_params)
-                    pages_downloaded += 1
                     next_params = None
                     pulses = payload.get("results") or []
                     if not isinstance(pulses, list):
@@ -980,8 +1084,6 @@ def sync_subscribed_pulses(
                         try:
                             advertised_total = max(processed, int(payload.get("count")))
                             expected_total = advertised_total
-                            if source == "public_phishing" and max_pages:
-                                expected_total = min(expected_total, max_pages * PAGE_SIZE)
                         except (TypeError, ValueError):
                             expected_total = None
                     percentage = None
@@ -991,6 +1093,11 @@ def sync_subscribed_pulses(
                     label = "subscribed" if source == "subscribed" else "public phishing"
                     report_progress({
                         "phase": source,
+                        "metric": (
+                            "subscribed_pulses"
+                            if source == "subscribed"
+                            else "public_pulse_discovery"
+                        ),
                         "processed": processed,
                         "total": expected_total,
                         "percentage": percentage,
@@ -1007,6 +1114,7 @@ def sync_subscribed_pulses(
                             _set_metadata(connection, "public_search_resume_url", requested_page)
                         report_progress({
                             "phase": source,
+                            "metric": "public_pulse_discovery",
                             "processed": processed,
                             "total": expected_total,
                             "percentage": progress_end,
@@ -1020,10 +1128,6 @@ def sync_subscribed_pulses(
                     if source == "public_phishing":
                         with connection:
                             _set_metadata(connection, "public_search_resume_url", next_page or "")
-                    if next_page and max_pages and pages_downloaded >= max_pages:
-                        public_search_truncated = True
-                        public_limit_reason = "pages"
-                        return "pages"
                 if source == "public_phishing":
                     public_search_truncated = False
                     public_limit_reason = ""
@@ -1036,24 +1140,124 @@ def sync_subscribed_pulses(
                 5,
                 25,
             )
-            public_pages = (
-                PUBLIC_SEARCH_INITIAL_MAX_PAGES
-                if bootstrap_public or public_resume_url
-                else PUBLIC_SEARCH_INCREMENTAL_MAX_PAGES
-            )
-            consume_pages(
-                public_resume_url or OTX_SEARCH_PULSES,
-                {} if public_resume_url else {
-                    "q": public_query,
-                    "sort": "-modified",
-                    "page": 1,
-                    "limit": PAGE_SIZE,
-                },
-                "public_phishing",
-                25,
-                95,
-                max_pages=public_pages,
-            )
+            while public_cursor_days < public_window_days:
+                public_window_end_days = min(
+                    public_window_days,
+                    public_cursor_days + public_slice_days,
+                )
+                public_query = _public_search_query(
+                    public_cursor_days,
+                    public_window_end_days,
+                )
+                with connection:
+                    _set_metadata(
+                        connection,
+                        "public_window_cursor_days",
+                        public_cursor_days,
+                    )
+                    _set_metadata(
+                        connection,
+                        "public_window_slice_days",
+                        public_slice_days,
+                    )
+                    _set_metadata(connection, "public_query", public_query)
+                try:
+                    window_progress_start = round(
+                        25 + 30 * (public_cursor_days / public_window_days)
+                    )
+                    window_progress_end = round(
+                        25 + 30 * (public_window_end_days / public_window_days)
+                    )
+                    window_result = consume_pages(
+                        public_resume_url or OTX_SEARCH_PULSES,
+                        {} if public_resume_url else {
+                            "q": public_query,
+                            "sort": "-modified",
+                            "page": 1,
+                            "limit": PAGE_SIZE,
+                        },
+                        "public_phishing",
+                        window_progress_start,
+                        window_progress_end,
+                    )
+                except OtxSearchDepthError:
+                    window_width = public_window_end_days - public_cursor_days
+                    if window_width <= 1:
+                        public_search_truncated = True
+                        public_limit_reason = "service"
+                        public_resume_url = ""
+                        with connection:
+                            _set_metadata(connection, "public_search_resume_url", "")
+                        report_progress({
+                            "phase": "public_phishing",
+                            "metric": "coverage_days",
+                            "processed": public_cursor_days,
+                            "total": public_window_days,
+                            "percentage": None,
+                            "message": (
+                                "OTX returned too many Pulses for a one-day search window; "
+                                "the local intelligence already downloaded was retained."
+                            ),
+                        })
+                        break
+                    # Restart the same age range with a narrower query. Pulses
+                    # already completed on pages 1-50 are reused from SQLite.
+                    public_slice_days = max(1, window_width // 2)
+                    public_resume_url = ""
+                    with connection:
+                        _set_metadata(connection, "public_search_resume_url", "")
+                        _set_metadata(
+                            connection,
+                            "public_window_slice_days",
+                            public_slice_days,
+                        )
+                    continue
+                if window_result:
+                    break
+                public_cursor_days = public_window_end_days
+                public_resume_url = ""
+                with connection:
+                    _set_metadata(
+                        connection,
+                        "public_window_cursor_days",
+                        public_cursor_days,
+                    )
+                    _set_metadata(connection, "public_search_resume_url", "")
+                report_progress({
+                    "phase": "public_phishing",
+                    "metric": "coverage_days",
+                    "processed": public_cursor_days,
+                    "total": public_window_days,
+                    "percentage": round(
+                        25 + 30 * (public_cursor_days / public_window_days)
+                    ),
+                    "message": (
+                        f"Covered {public_cursor_days} of {public_window_days} days "
+                        "of public phishing Pulses…"
+                    ),
+                })
+
+            if public_cursor_days >= public_window_days:
+                public_search_truncated = False
+                public_limit_reason = ""
+                with connection:
+                    _set_metadata(connection, "public_search_resume_url", "")
+                    _set_metadata(connection, "public_window_cursor_days", 0)
+                    if bootstrap_public:
+                        _set_metadata(connection, "public_coverage_complete", 1)
+
+            if public_limit_reason not in {"time", "database"}:
+                queue_skipped, queue_reason = _process_public_pulse_queue(
+                    session,
+                    connection,
+                    now,
+                    started_at,
+                    report_progress,
+                )
+                skipped_pulse_count += queue_skipped
+                if queue_reason:
+                    public_search_truncated = True
+                    public_limit_reason = queue_reason
 
             report_progress({
                 "phase": "indexing", "processed": 0, "total": None,
@@ -1112,10 +1316,9 @@ def sync_subscribed_pulses(
     if status["truncated"]:
         reason_labels = {
             "time": "the 20 minute refresh budget",
-            "database": "the 250 MB database target",
-            "indicators": "the 1,000,000-indicator target",
-            "pages": "the per-refresh discovery page budget",
+            "database": "the 1 GB database limit",
             "partial": "temporarily unavailable public Pulse pages",
+            "service": "OTX's search-result depth for a one-day window",
         }
         reason = reason_labels.get(status.get("limit_reason"), "its local safety budget")
         status["message"] = (
@@ -1191,7 +1394,7 @@ def apply_local_otx_intelligence(report: dict, cache_path: str | None = None) ->
     seen: set[tuple[str, str, str]] = set()
     try:
         with _database_connection(path, readonly=True) as connection:
-            if _metadata(connection, "schema_version") not in {"2", str(SCHEMA_VERSION)}:
+            if _metadata(connection, "schema_version") not in {"2", "3", str(SCHEMA_VERSION)}:
                 raise sqlite3.DatabaseError("unsupported schema")
             cache_status = {**_database_counts(connection),
                 "synced_at": _metadata(connection, "synced_at"),
@@ -1223,11 +1426,16 @@ def apply_local_otx_intelligence(report: dict, cache_path: str | None = None) ->
                     "tlp": row["tlp"],
                     "url": f"{OTX_BASE_URL}/pulse/{row['id']}",
                 } for row in rows]
+                shared_infrastructure = (
+                    kind in {"domain", "hostname"}
+                    and _is_shared_domain_indicator(normalized)
+                )
                 matches.append({
                     "indicator": normalized,
                     "indicator_type": kind,
                     "source": source,
-                    "confidence": "strong",
+                    "confidence": "supporting" if shared_infrastructure else "strong",
+                    "shared_infrastructure": shared_infrastructure,
                     "pulse_count": int(rows[0]["match_count"]),
                     "pulses": pulses,
                 })
@@ -1239,6 +1447,13 @@ def apply_local_otx_intelligence(report: dict, cache_path: str | None = None) ->
         }
         return report
 
+    matches.sort(key=lambda match: match.get("confidence") == "supporting")
+    strong_matches = [
+        match for match in matches if match.get("confidence") != "supporting"
+    ]
+    supporting_matches = [
+        match for match in matches if match.get("confidence") == "supporting"
+    ]
     report["otx_intelligence"] = {
         "status": "match" if matches else "no_match",
         "synced_at": cache_status["synced_at"],
@@ -1249,20 +1464,28 @@ def apply_local_otx_intelligence(report: dict, cache_path: str | None = None) ->
         "skipped_pulse_count": cache_status["skipped_pulse_count"],
         "lookback_days": cache_status["lookback_days"],
         "truncated": cache_status["truncated"],
+        "strong_match_count": len(strong_matches),
+        "supporting_match_count": len(supporting_matches),
         "matches": matches[:20],
         "message": (
-            f"{len(matches)} indicator match(es) found in synchronized OTX Pulses."
-            if matches
+            f"{len(strong_matches)} high-risk and {len(supporting_matches)} contextual "
+            "indicator match(es) found in synchronized OTX Pulses."
+            if strong_matches
             else (
-                "No match was found in the locally available OTX data; public "
-                "search coverage was limited by OTX. This is neutral evidence."
-                if cache_status["truncated"]
-                else "No match was found in the synchronized 365-day OTX database; this is neutral evidence."
+                f"{len(supporting_matches)} contextual match(es) involve shared infrastructure; "
+                "they are not malicious-domain verdicts."
+                if supporting_matches
+                else (
+                    "No match was found in the locally available OTX data; public "
+                    "search coverage was limited by OTX. This is neutral evidence."
+                    if cache_status["truncated"]
+                    else "No match was found in the synchronized 365-day OTX database; this is neutral evidence."
+                )
             )
         ),
     }
-    if matches:
-        strongest = matches[0]
+    if strong_matches:
+        strongest = strong_matches[0]
         report.setdefault("flags", []).append({
             "level": "HIGH",
             "field": "OTX Threat Intelligence",

@@ -6,6 +6,7 @@ from fishstop_engine.analyzer.link_extractor import extract_links
 from fishstop_engine.analyzer.lookalike import check_lookalike_domains
 from fishstop_engine.analyzer.soc_analyzer import EmlSOCAnalyzer
 from fishstop_engine.domain_utils import (
+    is_public_suffix,
     registered_domain,
     registrable_label,
     same_registered_domain,
@@ -26,6 +27,8 @@ class DomainPolicyTests(unittest.TestCase):
         self.assertFalse(
             same_registered_domain("alice.blogspot.com", "paypal.blogspot.com")
         )
+        self.assertTrue(is_public_suffix("blogspot.com"))
+        self.assertFalse(is_public_suffix("alice.blogspot.com"))
 
     def test_unknown_suffix_fails_closed(self):
         self.assertEqual(

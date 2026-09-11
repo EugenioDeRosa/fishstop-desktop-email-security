@@ -11,9 +11,13 @@ from fishstop_engine.analyzer.llm_context_analyzer import (
     _technical_risk,
 )
 from fishstop_engine.otx_intelligence import (
+    OtxSearchDepthError,
     _active_indicator,
     _database_connection,
+    _enqueue_public_pulse,
     _initialize_database,
+    _process_public_pulse_queue,
+    _request_json,
     _set_metadata,
     _store_pulse,
     apply_local_otx_intelligence,
@@ -33,6 +37,125 @@ PULSE = {
 
 
 class LocalOtxIntelligenceTests(unittest.TestCase):
+    def test_public_indicator_queue_resumes_from_saved_page(self):
+        pulse_id = "0123456789abcdef01234567"
+        now = datetime.now(timezone.utc)
+        pages = {
+            f"https://otx.alienvault.com/api/v1/pulses/{pulse_id}/indicators": {
+                "count": 2,
+                "next": f"https://otx.alienvault.com/api/v1/pulses/{pulse_id}/indicators?page=2",
+                "results": [{"type": "domain", "indicator": "first.example"}],
+            },
+            f"https://otx.alienvault.com/api/v1/pulses/{pulse_id}/indicators?page=2": {
+                "count": 2,
+                "next": None,
+                "results": [{"type": "domain", "indicator": "second.example"}],
+            },
+        }
+
+        def request(_session, url, **_kwargs):
+            return pages[url]
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "otx.sqlite3"
+            with _database_connection(path) as connection:
+                _initialize_database(connection)
+                with connection:
+                    _enqueue_public_pulse(connection, PULSE, now)
+                with (
+                    patch("fishstop_engine.otx_intelligence._request_json", request),
+                    patch(
+                        "fishstop_engine.otx_intelligence._public_budget_reason",
+                        side_effect=["", "", "time"],
+                    ),
+                ):
+                    _, reason = _process_public_pulse_queue(
+                        object(), connection, now, 0, lambda _event: None
+                    )
+                checkpoint = connection.execute(
+                    "SELECT processed, next_url FROM public_pulse_queue WHERE pulse_id = ?",
+                    (pulse_id,),
+                ).fetchone()
+                self.assertEqual("time", reason)
+                self.assertEqual(1, checkpoint["processed"])
+                self.assertTrue(checkpoint["next_url"].endswith("page=2"))
+
+                with (
+                    patch("fishstop_engine.otx_intelligence._request_json", request),
+                    patch("fishstop_engine.otx_intelligence._public_budget_reason", return_value=""),
+                ):
+                    _process_public_pulse_queue(
+                        object(), connection, now, 0, lambda _event: None
+                    )
+                self.assertEqual(
+                    0,
+                    connection.execute(
+                        "SELECT COUNT(*) FROM public_pulse_queue"
+                    ).fetchone()[0],
+                )
+                self.assertEqual(
+                    2,
+                    connection.execute("SELECT COUNT(*) FROM indicators").fetchone()[0],
+                )
+
+    def test_page_51_bad_request_is_recognized_as_search_depth_limit(self):
+        class Response:
+            status_code = 400
+            headers = {}
+
+            @staticmethod
+            def raise_for_status():
+                raise AssertionError("The generic HTTP error path should not run")
+
+        class Session:
+            @staticmethod
+            def get(_url, **_kwargs):
+                return Response()
+
+        with self.assertRaises(OtxSearchDepthError):
+            _request_json(
+                Session(),
+                "https://otx.alienvault.com/api/v1/search/pulses?page=51&limit=50",
+            )
+
+    def test_search_depth_limit_restarts_with_narrower_time_windows(self):
+        queries = []
+
+        def request(_session, url, *, params=None, **_kwargs):
+            if url.endswith("/pulses/subscribed"):
+                return {"next": None, "results": []}
+            if "page=51" in url:
+                raise OtxSearchDepthError("search depth")
+            query = (params or {}).get("q", "")
+            queries.append(query)
+            if query.endswith("modified:<4d") and "modified:>" not in query:
+                return {
+                    "count": 2_501,
+                    "next": (
+                        "https://otx.alienvault.com/api/v1/search/pulses"
+                        "?page=51&limit=50"
+                    ),
+                    "results": [],
+                }
+            return {"count": 0, "next": None, "results": []}
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "otx.sqlite3"
+            with (
+                patch("fishstop_engine.otx_intelligence.requests.Session"),
+                patch("fishstop_engine.otx_intelligence._request_json", request),
+                patch("fishstop_engine.otx_intelligence.INITIAL_LOOKBACK_DAYS", 4),
+                patch("fishstop_engine.otx_intelligence.PUBLIC_SEARCH_WINDOW_DAYS", 4),
+            ):
+                result = sync_subscribed_pulses(str(path), "test-key")
+
+        self.assertFalse(result["truncated"])
+        self.assertIn('tag:"phishing" AND modified:<2d', queries)
+        self.assertIn(
+            'tag:"phishing" AND modified:>2d AND modified:<4d',
+            queries,
+        )
+
     def _cache(self, entries: dict) -> tuple[tempfile.TemporaryDirectory, str]:
         directory = tempfile.TemporaryDirectory()
         path = Path(directory.name) / "otx.sqlite3"
@@ -107,6 +230,52 @@ class LocalOtxIntelligenceTests(unittest.TestCase):
         apply_local_otx_intelligence(report, path)
 
         self.assertEqual("strong", report["otx_intelligence"]["matches"][0]["confidence"])
+        self.assertEqual("HIGH", report["flags"][-1]["level"])
+        self.assertEqual("malicious", _technical_risk(report)[0])
+
+    def test_public_mailbox_domain_match_is_context_only(self):
+        directory, path = self._cache({
+            "domain:gmail.com": [PULSE],
+        })
+        self.addCleanup(directory.cleanup)
+        report = {
+            "from_": "Unknown sender <someone@gmail.com>",
+            "flags": [],
+        }
+
+        apply_local_otx_intelligence(report, path)
+
+        intelligence = report["otx_intelligence"]
+        self.assertEqual("match", intelligence["status"])
+        self.assertEqual(0, intelligence["strong_match_count"])
+        self.assertEqual(1, intelligence["supporting_match_count"])
+        self.assertEqual("supporting", intelligence["matches"][0]["confidence"])
+        self.assertTrue(intelligence["matches"][0]["shared_infrastructure"])
+        self.assertEqual([], report["flags"])
+        self.assertNotEqual("malicious", _technical_risk(report)[0])
+        self.assertTrue(any(
+            "shared infrastructure is not a malicious-domain verdict" in line
+            for line in _technical_context_lines(report)
+        ))
+
+    def test_exact_public_mailbox_address_remains_high_risk(self):
+        directory, path = self._cache({
+            "email:known-attacker@gmail.com": [PULSE],
+            "domain:gmail.com": [PULSE],
+        })
+        self.addCleanup(directory.cleanup)
+        report = {
+            "reply_to": "known-attacker@gmail.com",
+            "flags": [],
+        }
+
+        apply_local_otx_intelligence(report, path)
+
+        intelligence = report["otx_intelligence"]
+        self.assertEqual(1, intelligence["strong_match_count"])
+        self.assertEqual(1, intelligence["supporting_match_count"])
+        self.assertEqual("email", intelligence["matches"][0]["indicator_type"])
+        self.assertEqual("strong", intelligence["matches"][0]["confidence"])
         self.assertEqual("HIGH", report["flags"][-1]["level"])
         self.assertEqual("malicious", _technical_risk(report)[0])
 
@@ -300,7 +469,7 @@ class LocalOtxIntelligenceTests(unittest.TestCase):
 
         self.assertEqual(1, result["public_phishing_pulse_count"])
         self.assertEqual(2, result["indicator_count"])
-        self.assertEqual(10_000, indicator_calls[0]["limit"])
+        self.assertEqual(2_000, indicator_calls[0]["limit"])
         self.assertIsNone(indicator_calls[1])
 
     def test_time_budget_publishes_progress_and_checkpoints_search_page(self):
@@ -470,11 +639,12 @@ class LocalOtxIntelligenceTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "otx.sqlite3"
+            progress = []
             with (
                 patch("fishstop_engine.otx_intelligence.requests.Session", Session),
                 patch("fishstop_engine.otx_intelligence.time.sleep"),
             ):
-                result = sync_subscribed_pulses(str(path), "test-key")
+                result = sync_subscribed_pulses(str(path), "test-key", progress.append)
             status = otx_cache_status(str(path))
             report = {"links": [{"url": "https://detected.example/", "host": "detected.example", "scheme": "https"}], "flags": []}
             apply_local_otx_intelligence(report, str(path))
@@ -483,6 +653,13 @@ class LocalOtxIntelligenceTests(unittest.TestCase):
         self.assertEqual(1, result["skipped_pulse_count"])
         self.assertEqual(1, status["skipped_pulse_count"])
         self.assertEqual("match", report["otx_intelligence"]["status"])
+        indicator_progress = next(
+            item for item in progress if item["phase"] == "public_indicators"
+        )
+        self.assertEqual("current_pulse_indicators", indicator_progress["metric"])
+        self.assertEqual(2, indicator_progress["pulse_index"])
+        self.assertEqual(2, indicator_progress["pulse_total"])
+        self.assertEqual("Ready Pulse", indicator_progress["pulse_name"])
 
     def test_public_phishing_sync_follows_pagination_within_budget(self):
         class Response:
@@ -530,8 +707,8 @@ class LocalOtxIntelligenceTests(unittest.TestCase):
             path = Path(directory) / "otx.sqlite3"
             with patch("fishstop_engine.otx_intelligence.requests.Session", Session):
                 with patch(
-                    "fishstop_engine.otx_intelligence.PUBLIC_SEARCH_INITIAL_MAX_PAGES",
-                    2,
+                    "fishstop_engine.otx_intelligence.PUBLIC_SEARCH_WINDOW_DAYS",
+                    365,
                 ):
                     result = sync_subscribed_pulses(str(path), "test-key")
 
@@ -539,7 +716,7 @@ class LocalOtxIntelligenceTests(unittest.TestCase):
         self.assertEqual(2, result["indicator_count"])
         self.assertFalse(result["truncated"])
 
-    def test_public_search_stops_at_the_bounded_enrichment_budget(self):
+    def test_public_search_has_no_fixed_page_budget(self):
         class Response:
             status_code = 200
             headers = {}
@@ -564,14 +741,13 @@ class LocalOtxIntelligenceTests(unittest.TestCase):
                     return Response({"next": None, "results": []})
                 if "/search/pulses" in url:
                     self.public_page += 1
-                    if self.public_page > 2:
-                        raise AssertionError("FishStop exceeded its public enrichment budget")
                     page = self.public_page
                     return Response({
-                        "count": 2_501,
+                        "count": 3,
                         "next": (
                             "https://otx.alienvault.com/api/v1/search/pulses"
                             f"?page={page + 1}&limit=50"
+                            if page < 3 else None
                         ),
                         "results": [{
                             "id": f"pulse-{page}",
@@ -591,17 +767,15 @@ class LocalOtxIntelligenceTests(unittest.TestCase):
             path = Path(directory) / "otx.sqlite3"
             with patch("fishstop_engine.otx_intelligence.requests.Session", Session):
                 with patch(
-                    "fishstop_engine.otx_intelligence.PUBLIC_SEARCH_INITIAL_MAX_PAGES",
-                    2,
+                    "fishstop_engine.otx_intelligence.PUBLIC_SEARCH_WINDOW_DAYS",
+                    365,
                 ):
                     result = sync_subscribed_pulses(str(path), "test-key")
             status = otx_cache_status(str(path))
 
-        self.assertEqual(2, result["public_phishing_pulse_count"])
-        self.assertTrue(result["truncated"])
-        self.assertTrue(status["truncated"])
-        self.assertEqual("pages", result["limit_reason"])
-        self.assertIn("continue incrementally", result["message"])
+        self.assertEqual(3, result["public_phishing_pulse_count"])
+        self.assertFalse(result["truncated"])
+        self.assertFalse(status["truncated"])
 
     def test_public_search_uses_otx_query_syntax_for_the_time_window(self):
         captured_params = []
@@ -633,10 +807,18 @@ class LocalOtxIntelligenceTests(unittest.TestCase):
             with patch("fishstop_engine.otx_intelligence.requests.Session", Session):
                 sync_subscribed_pulses(str(path), "test-key")
 
-        self.assertEqual(1, len(captured_params))
+        self.assertEqual(53, len(captured_params))
         self.assertEqual(
-            'tag:"phishing" AND modified:<365d',
+            'tag:"phishing" AND modified:<7d',
             captured_params[0]["q"],
+        )
+        self.assertEqual(
+            'tag:"phishing" AND modified:>7d AND modified:<14d',
+            captured_params[1]["q"],
+        )
+        self.assertEqual(
+            'tag:"phishing" AND modified:>364d AND modified:<365d',
+            captured_params[-1]["q"],
         )
         self.assertEqual("-modified", captured_params[0]["sort"])
         self.assertNotIn("modified_since", captured_params[0])

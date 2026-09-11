@@ -140,6 +140,10 @@ struct OtxCacheStatus {
     subscribed_pulse_count: u64,
     public_phishing_pulse_count: u64,
     indicator_count: u64,
+    #[serde(default)]
+    pending_pulse_count: u64,
+    #[serde(default)]
+    coverage_days: u64,
     skipped_pulse_count: u64,
     truncated: bool,
     limit_reason: String,
@@ -153,8 +157,12 @@ struct OtxCacheStatus {
 struct OtxSyncProgress {
     user_sub: String,
     phase: String,
+    metric: Option<String>,
     processed: u64,
     total: Option<u64>,
+    pulse_index: Option<u64>,
+    pulse_total: Option<u64>,
+    pulse_name: Option<String>,
     percentage: Option<u8>,
     message: String,
 }
@@ -459,6 +467,8 @@ fn read_otx_cache_status(path: &Path, configured: bool) -> Result<OtxCacheStatus
             subscribed_pulse_count: 0,
             public_phishing_pulse_count: 0,
             indicator_count: 0,
+            pending_pulse_count: 0,
+            coverage_days: 0,
             skipped_pulse_count: 0,
             truncated: false,
             limit_reason: String::new(),
@@ -516,6 +526,14 @@ fn read_otx_cache_status(path: &Path, configured: bool) -> Result<OtxCacheStatus
             .unwrap_or(0),
         indicator_count: payload
             .get("indicator_count")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0),
+        pending_pulse_count: payload
+            .get("pending_pulse_count")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0),
+        coverage_days: payload
+            .get("coverage_days")
             .and_then(|value| value.as_u64())
             .unwrap_or(0),
         skipped_pulse_count: payload
@@ -1873,8 +1891,12 @@ fn run_otx_sync_with_progress(
                 let progress = OtxSyncProgress {
                     user_sub: event_user.clone(),
                     phase: value.get("phase").and_then(|item| item.as_str()).unwrap_or("downloading").to_string(),
+                    metric: value.get("metric").and_then(|item| item.as_str()).map(str::to_string),
                     processed: value.get("processed").and_then(|item| item.as_u64()).unwrap_or(0),
                     total: value.get("total").and_then(|item| item.as_u64()),
+                    pulse_index: value.get("pulse_index").and_then(|item| item.as_u64()),
+                    pulse_total: value.get("pulse_total").and_then(|item| item.as_u64()),
+                    pulse_name: value.get("pulse_name").and_then(|item| item.as_str()).map(str::to_string),
                     percentage: value.get("percentage").and_then(|item| item.as_u64()).map(|item| item.min(100) as u8),
                     message: value.get("message").and_then(|item| item.as_str()).unwrap_or("Synchronizing OTX Pulses…").to_string(),
                 };
@@ -2390,7 +2412,7 @@ async fn warm_ollama_model(
     let runtime = Arc::clone(&runtime);
     tauri::async_runtime::spawn_blocking(move || ollama_runtime::warm_default_model(&app, &runtime))
         .await
-        .map_err(|error| format!("Qwen warm-up interrupted: {error}"))?
+        .map_err(|error| format!("AI model warm-up interrupted: {error}"))?
 }
 
 #[derive(Deserialize)]
@@ -2429,7 +2451,7 @@ async fn install_default_ollama_model(
         ollama_runtime::install_default_model(&app, &runtime)
     })
     .await
-    .map_err(|error| format!("Qwen installation interrupted: {error}"))?
+    .map_err(|error| format!("AI model installation interrupted: {error}"))?
 }
 
 #[tauri::command]
@@ -2442,7 +2464,7 @@ async fn remove_default_ollama_model(
         ollama_runtime::remove_default_model(&app, &runtime)
     })
     .await
-    .map_err(|error| format!("Qwen removal interrupted: {error}"))?
+    .map_err(|error| format!("AI model removal interrupted: {error}"))?
 }
 
 #[tauri::command]

@@ -10,7 +10,7 @@ except ImportError:  # Desktop analysis does not need batch/training support.
 from fishstop_engine.analyzer.html_utils import recover_mislabelled_utf7_html
 
 
-def _sanitize_eml_bytes(raw_bytes: bytes) -> bytes:
+def _sanitize_eml_bytes_with_findings(raw_bytes: bytes) -> tuple[bytes, list[dict]]:
     """
     Pre-processes raw .eml bytes exported by non-standard MUAs or webmail clients
     that violate RFC 2822 in predictable ways. Applies three fixes in order:
@@ -38,6 +38,7 @@ def _sanitize_eml_bytes(raw_bytes: bytes) -> bytes:
     Only the RFC 5322 header block is normalised. The original header/body
     separator and all body bytes are preserved exactly.
     """
+    findings: list[dict] = []
     separator_match = re.search(rb'\r\n\r\n|\n\n|\r\r', raw_bytes)
     if separator_match:
         header_bytes = raw_bytes[:separator_match.start()]
@@ -69,6 +70,18 @@ def _sanitize_eml_bytes(raw_bytes: bytes) -> bytes:
         if valid_field_re.match(content):
             start = i
             break
+    if start:
+        findings.append({
+            "kind": "source_normalization",
+            "code": "DiscardedLeadingNonHeaderLines",
+            "level": "MEDIUM",
+            "part_path": "1",
+            "count": start,
+            "message": (
+                f"{start} non-header line(s) before the first RFC-style header were ignored; "
+                "different mail parsers could interpret the original source differently."
+            ),
+        })
     lines = lines[start:]
 
     # ── Fix 2: normalise Unicode folding whitespace ───────────────────────────
@@ -76,6 +89,8 @@ def _sanitize_eml_bytes(raw_bytes: bytes) -> bytes:
     # NO-BREAK SPACE: U+00A0 -> \xc2\xa0 in UTF-8
     unicode_indent_re = re.compile(rb'^(?:(?:\xe2\x80[\x80-\x8b])|\xc2\xa0)+')
     fixed_lines = []
+    repaired_fold_count = 0
+    replaced_nbsp_count = 0
     for line in lines:
         content, line_ending = split_line_ending(line)
         # If line starts with Unicode WS but NOT ASCII space/tab, it's a folded
@@ -86,24 +101,63 @@ def _sanitize_eml_bytes(raw_bytes: bytes) -> bytes:
             and unicode_indent_re.match(content)
         ):
             content = b' ' + unicode_indent_re.sub(b'', content)
+            repaired_fold_count += 1
         # Replace any remaining NBSP inline (e.g. inside Received header values)
+        replaced_nbsp_count += content.count(b'\xc2\xa0')
         content = content.replace(b'\xc2\xa0', b' ')
         fixed_lines.append(content + line_ending)
+
+    if repaired_fold_count:
+        findings.append({
+            "kind": "source_normalization",
+            "code": "UnicodeHeaderFoldingNormalized",
+            "level": "LOW",
+            "part_path": "1",
+            "count": repaired_fold_count,
+            "message": (
+                f"{repaired_fold_count} header continuation line(s) used Unicode whitespace "
+                "and were normalized before parsing."
+            ),
+        })
+    if replaced_nbsp_count:
+        findings.append({
+            "kind": "source_normalization",
+            "code": "UnicodeHeaderWhitespaceNormalized",
+            "level": "INFO",
+            "part_path": "1",
+            "count": replaced_nbsp_count,
+            "message": (
+                f"{replaced_nbsp_count} non-breaking space(s) in the header block were "
+                "normalized for parser compatibility."
+            ),
+        })
 
     sanitized_headers = b''.join(fixed_lines)
 
     if separator is not None:
-        return sanitized_headers + separator + body_bytes
+        return sanitized_headers + separator + body_bytes, findings
 
     # ── Fix 3: ensure one blank-line header/body separator ──────────────────
+    findings.append({
+        "kind": "source_normalization",
+        "code": "MissingHeaderBodySeparatorRepaired",
+        "level": "INFO",
+        "part_path": "1",
+        "message": "The EML export omitted the final header/body separator; an empty body was assumed.",
+    })
     if sanitized_headers.endswith(b'\r\n'):
-        return sanitized_headers + b'\r\n'
+        return sanitized_headers + b'\r\n', findings
     if sanitized_headers.endswith(b'\n'):
-        return sanitized_headers + b'\n'
+        return sanitized_headers + b'\n', findings
     if sanitized_headers.endswith(b'\r'):
-        return sanitized_headers + b'\r'
+        return sanitized_headers + b'\r', findings
     preferred_newline = b'\r\n' if b'\r\n' in sanitized_headers else b'\n'
-    return sanitized_headers + preferred_newline + preferred_newline
+    return sanitized_headers + preferred_newline + preferred_newline, findings
+
+
+def _sanitize_eml_bytes(raw_bytes: bytes) -> bytes:
+    """Return parser-compatible bytes while preserving the historical API."""
+    return _sanitize_eml_bytes_with_findings(raw_bytes)[0]
 
 
 class EmailParserPipeline:

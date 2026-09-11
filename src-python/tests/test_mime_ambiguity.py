@@ -50,6 +50,80 @@ class MimeAmbiguityTests(unittest.TestCase):
         self.assertIn("InvalidBase64CharactersDefect", defect_codes)
         self.assertIn("InvalidBase64PaddingDefect", defect_codes)
         self.assertEqual(len(defect_codes), report["mime_defect_count"])
+        self.assertEqual("review", report["mime_status"])
+        levels = {finding["code"]: finding["level"] for finding in report["mime_findings"]}
+        self.assertEqual("MEDIUM", levels["InvalidBase64CharactersDefect"])
+        self.assertEqual("LOW", levels["InvalidBase64PaddingDefect"])
+
+    def test_metadata_only_defect_is_a_notice_not_phishing_evidence(self):
+        report = self._analyze(
+            b"From: sender@example.com\r\n"
+            b"To: recipient@example.net\r\n"
+            b"Date: definitely-not-a-date\r\n"
+            b"Subject: Ordinary message\r\n"
+            b"\r\n"
+            b"Hello.\r\n"
+        )
+
+        date_finding = next(
+            finding for finding in report["mime_findings"]
+            if finding["code"] == "InvalidDateDefect"
+        )
+        self.assertEqual("INFO", date_finding["level"])
+        self.assertEqual("notice", report["mime_status"])
+        self.assertEqual(0, report["mime_review_finding_count"])
+        technical_status, reasons = _technical_risk(report)
+        self.assertEqual("clean", technical_status)
+        self.assertEqual(["no strong technical threat was detected"], reasons)
+
+    def test_truncated_closing_boundary_is_visible_but_not_verdict_changing(self):
+        report = self._analyze(
+            b"From: sender@example.com\r\n"
+            b"MIME-Version: 1.0\r\n"
+            b"Content-Type: multipart/mixed; boundary=part\r\n"
+            b"\r\n"
+            b"--part\r\n"
+            b"Content-Type: text/plain; charset=utf-8\r\n"
+            b"\r\n"
+            b"A message truncated in transit.\r\n"
+        )
+
+        finding = next(
+            finding for finding in report["mime_findings"]
+            if finding["code"] == "CloseBoundaryNotFoundDefect"
+        )
+        self.assertEqual("LOW", finding["level"])
+        self.assertEqual("notice", report["mime_status"])
+        self.assertIn("truncated in transit", report["body_for_ai"])
+
+    def test_security_relevant_source_repair_is_included_in_mime_status(self):
+        raw = (
+            b"From: sender@example.com\r\n"
+            b"Subject: Repaired source\r\n"
+            b"\r\n"
+            b"Hello.\r\n"
+        )
+        source_finding = {
+            "kind": "source_normalization",
+            "code": "DiscardedLeadingNonHeaderLines",
+            "level": "MEDIUM",
+            "part_path": "1",
+            "count": 1,
+            "message": "One leading source line was ignored.",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "message.eml"
+            path.write_bytes(raw)
+            report = EmlSOCAnalyzer().analyze(
+                str(path), source_mime_findings=[source_finding]
+            )
+
+        self.assertEqual("review", report["mime_status"])
+        self.assertEqual(1, report["mime_review_finding_count"])
+        self.assertTrue(any(
+            finding["code"] == "DiscardedLeadingNonHeaderLines"
+            for finding in report["mime_findings"]
+        ))
 
     def test_missing_multipart_boundary_is_reported(self):
         report = self._analyze(
@@ -104,6 +178,15 @@ class MimeAmbiguityTests(unittest.TestCase):
             for flag in report["flags"]
         ))
         self.assertNotIn("[MIME alternative:", report["body_for_ai"])
+
+    def test_reordered_equivalent_alternatives_are_not_marked_divergent(self):
+        report = self._analyze(self._multipart_message(
+            "Invoice 42 is available. Contact accounting for questions.",
+            "<p>Contact accounting for questions.</p><p>Invoice 42 is available.</p>",
+        ))
+
+        self.assertEqual("consistent", report["mime_alternative_analysis"]["status"])
+        self.assertEqual("clean", report["mime_status"])
 
     def test_empty_plain_alternative_cannot_hide_html_content(self):
         report = self._analyze(self._multipart_message(

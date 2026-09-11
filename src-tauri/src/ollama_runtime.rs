@@ -415,7 +415,7 @@ fn ensure_server(
     if ready("http://127.0.0.1:11434") {
         return Ok(("http://127.0.0.1:11434".to_string(), false));
     }
-    Err("Local AI runtime unavailable. Install the FishSTOP Qwen model from Settings.".to_string())
+    Err("Local AI runtime unavailable. Install the FishStop AI model from Settings.".to_string())
 }
 
 pub fn prepare_model(
@@ -468,7 +468,7 @@ pub fn warm_default_model(
         }))
         .send()
         .and_then(|response| response.error_for_status())
-        .map_err(|error| format!("Could not preload Qwen: {error}"))?;
+        .map_err(|error| format!("Could not preload the AI model: {error}"))?;
     Ok(())
 }
 
@@ -488,7 +488,7 @@ pub fn unload_default_model() -> Result<(), String> {
         }))
         .send()
         .and_then(|response| response.error_for_status())
-        .map_err(|error| format!("Could not unload Qwen from memory: {error}"))?;
+        .map_err(|error| format!("Could not unload the AI model from memory: {error}"))?;
     Ok(())
 }
 
@@ -548,14 +548,14 @@ pub fn install_default_model(
         .json(&serde_json::json!({"name": recommended_model(), "stream": true}))
         .send()
         .and_then(|response| response.error_for_status())
-        .map_err(|error| format!("Could not download Qwen: {error}"))?;
+        .map_err(|error| format!("Could not download the AI model: {error}"))?;
     for line in BufReader::new(response).lines() {
-        let line = line.map_err(|error| format!("Qwen download interrupted: {error}"))?;
+        let line = line.map_err(|error| format!("AI model download interrupted: {error}"))?;
         if line.trim().is_empty() {
             continue;
         }
         let progress: PullProgress = serde_json::from_str(&line)
-            .map_err(|error| format!("Invalid Qwen download progress: {error}"))?;
+            .map_err(|error| format!("Invalid AI model download progress: {error}"))?;
         app.emit(
             "ollama-model-progress",
             ModelProgress {
@@ -564,7 +564,7 @@ pub fn install_default_model(
                 completed: progress.completed,
             },
         )
-        .map_err(|error| format!("Could not update Qwen download progress: {error}"))?;
+        .map_err(|error| format!("Could not update AI model download progress: {error}"))?;
     }
     Ok(())
 }
@@ -579,6 +579,6 @@ pub fn remove_default_model(
         .json(&serde_json::json!({"name": recommended_model()}))
         .send()
         .and_then(|response| response.error_for_status())
-        .map_err(|error| format!("Could not remove Qwen: {error}"))?;
+        .map_err(|error| format!("Could not remove the AI model: {error}"))?;
     Ok(())
 }

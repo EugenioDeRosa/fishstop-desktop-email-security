@@ -682,9 +682,14 @@ def _technical_context_lines(soc: dict, body_for_llm: str = "", link_reputation:
         lines.append(f"Display name spoofing indicator: {soc.get('display_name_spoofing')}")
 
     mime_findings = soc.get("mime_findings") or []
-    if mime_findings:
+    mime_review_findings = [
+        finding for finding in mime_findings
+        if finding.get("level") in {"HIGH", "MEDIUM"}
+    ]
+    if mime_review_findings:
         lines.append(
             "MIME parser ambiguity detected: "
+            f"security_relevant_findings={int(soc.get('mime_review_finding_count') or len(mime_review_findings))} "
             f"defects={int(soc.get('mime_defect_count') or 0)} "
             f"duplicate_singleton_headers={int(soc.get('mime_duplicate_header_count') or 0)}; "
             "treat parsed fields and transfer-decoded content with caution"
@@ -768,8 +773,14 @@ def _technical_context_lines(soc: dict, body_for_llm: str = "", link_reputation:
 
     otx = soc.get("otx_intelligence") or {}
     for match in (otx.get("matches") or [])[:5]:
+        supporting = match.get("confidence") == "supporting"
+        evidence_label = (
+            "contextual evidence only; shared infrastructure is not a malicious-domain verdict"
+            if supporting
+            else "positive malicious evidence"
+        )
         lines.append(
-            "OTX synchronized Pulse match (positive malicious evidence): "
+            f"OTX synchronized Pulse match ({evidence_label}): "
             f"type={match.get('indicator_type') or '-'} "
             f"indicator={_clip(match.get('indicator', ''), 180)} "
             f"source={match.get('source') or '-'} "
@@ -2343,12 +2354,20 @@ def _technical_risk(soc: dict, semantic: dict | None = None) -> tuple[str, list[
         elif status == "suspicious" or _safe_int(rep.get("suspicious")) > 0:
             suspicious.append("a sender domain has suspicious VirusTotal reputation")
 
-    if (soc.get("otx_intelligence") or {}).get("matches"):
+    strong_otx_matches = [
+        match
+        for match in ((soc.get("otx_intelligence") or {}).get("matches") or [])
+        if match.get("confidence") != "supporting"
+    ]
+    if strong_otx_matches:
         malicious.append("an email indicator exactly matches synchronized OTX threat intelligence")
 
     if any(link.get("is_ip") for link in (soc.get("links") or [])):
         suspicious.append("the message contains a direct-IP URL")
-    if soc.get("mime_findings"):
+    if soc.get("mime_status") == "review" and any(
+        finding.get("level") in {"HIGH", "MEDIUM"}
+        for finding in (soc.get("mime_findings") or [])
+    ):
         suspicious.append("the email has ambiguous or malformed MIME structure")
     if (soc.get("mime_alternative_analysis") or {}).get("status") == "divergent":
         suspicious.append("the visible MIME alternatives contain substantially different content")

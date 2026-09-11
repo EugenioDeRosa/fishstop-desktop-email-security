@@ -9,7 +9,7 @@ from fishstop_engine.analyzer.soc_analyzer import (
     EmlSOCAnalyzer,
     _redacted_eml_preview,
 )
-from fishstop_engine.parser import _sanitize_eml_bytes
+from fishstop_engine.parser import _sanitize_eml_bytes, _sanitize_eml_bytes_with_findings
 
 
 class EmlSanitizationTests(unittest.TestCase):
@@ -78,6 +78,22 @@ class EmlSanitizationTests(unittest.TestCase):
             b"From: sender@example.com\r\nSubject: Test\r\n\r\n",
             _sanitize_eml_bytes(b"From: sender@example.com\r\nSubject: Test\r\n"),
         )
+
+    def test_repairs_are_reported_with_proportional_severity(self):
+        raw = (
+            b"Created at export time\r\n"
+            b"From: sender@example.com\r\n"
+            b"X-Trace: first\r\n"
+            b"\xe2\x80\x83continued\r\n"
+        )
+
+        sanitized, findings = _sanitize_eml_bytes_with_findings(raw)
+
+        self.assertIn(b"From: sender@example.com", sanitized)
+        levels = {finding["code"]: finding["level"] for finding in findings}
+        self.assertEqual("MEDIUM", levels["DiscardedLeadingNonHeaderLines"])
+        self.assertEqual("LOW", levels["UnicodeHeaderFoldingNormalized"])
+        self.assertEqual("INFO", levels["MissingHeaderBodySeparatorRepaired"])
 
     def test_raw_preview_keeps_message_source_and_omits_attachment_payload(self):
         raw = (

@@ -1840,7 +1840,7 @@ function renderEmailGlobe(report: AnalysisReport): void {
       ? Math.max(...group.map((hop) => hop.score ?? 0))
       : undefined,
     strongOtxIpMatch: group.some((hop) => hop.strongOtxIpMatch),
-  }));
+  })).sort((left, right) => left.hops[0].order - right.hops[0].order);
   canvas.dataset.globeInitialized = "true";
   const context = canvas.getContext("2d");
   if (!context) return;
@@ -1850,8 +1850,8 @@ function renderEmailGlobe(report: AnalysisReport): void {
   const graticule = geoGraticule()();
   const routeCenter = (): [number, number] => {
     const radians = Math.PI / 180;
-    const vector = hops.reduce((total, hop) => {
-      const latitude = hop.lat * radians, longitude = hop.lon * radians;
+    const vector = locations.reduce((total, location) => {
+      const latitude = location.lat * radians, longitude = location.lon * radians;
       total.x += Math.cos(latitude) * Math.cos(longitude);
       total.y += Math.cos(latitude) * Math.sin(longitude);
       total.z += Math.sin(latitude);
@@ -1864,6 +1864,7 @@ function renderEmailGlobe(report: AnalysisReport): void {
   let width = 0, height = 0, radius = 0;
   let [lambda, phi] = routeCenter();
   let rotating = false, dragging = false, pointerX = 0, pointerY = 0, dragX = 0, dragY = 0, dragLambda = lambda, dragPhi = phi, hoveredIndex = -1;
+  let renderedTooltipIndex = -1;
   const projection = geoOrthographic().clipAngle(90);
   const path = geoPath(projection, context);
   const riskColor = (score?: number, strongOtxIpMatch = false) => strongOtxIpMatch ? "#e24b4a" : score === undefined ? "#888780" : score >= 50 ? "#e24b4a" : score >= 25 ? "#ef9f27" : "#1d9e75";
@@ -1915,8 +1916,8 @@ function renderEmailGlobe(report: AnalysisReport): void {
     context.beginPath(); path(land); context.fillStyle = "#243447"; context.fill();
     context.beginPath(); path(borders); context.strokeStyle = "rgba(255,255,255,.10)"; context.lineWidth = .45; context.stroke();
     context.beginPath(); path(graticule); context.strokeStyle = "rgba(255,255,255,.05)"; context.lineWidth = .3; context.stroke();
-    for (let index = 0; index < hops.length - 1; index += 1) {
-      const origin = hops[index], destination = hops[index + 1];
+    for (let index = 0; index < locations.length - 1; index += 1) {
+      const origin = locations[index], destination = locations[index + 1];
       const interpolate = geoInterpolate([origin.lon, origin.lat], [destination.lon, destination.lat]);
       const line = { type: "LineString" as const, coordinates: Array.from({ length: 61 }, (_, point) => interpolate(point / 60)) };
       context.beginPath(); path(line); context.strokeStyle = riskColor(origin.score, origin.strongOtxIpMatch); context.globalAlpha = .72; context.lineWidth = 1.8; context.setLineDash([6, 10]); context.stroke(); context.setLineDash([]); context.globalAlpha = 1;
@@ -1943,34 +1944,53 @@ function renderEmailGlobe(report: AnalysisReport): void {
         const tone = authCheckTone(status);
         context.beginPath(); context.arc(point[0], point[1], ringRadius, start, end); context.strokeStyle = authenticationColor(status); context.lineWidth = tone === "fail" ? 4.2 : 2.6; context.stroke();
       });
-      const orders = location.hops.map((hop) => hop.order);
-      const markerLabel = orders.length <= 2 ? orders.join("·") : `${orders[0]}+${orders.length - 1}`;
+      const markerLabel = String(location.hops[0].order);
       context.fillStyle = "#fff"; context.font = `800 ${multipleHops ? hover ? 9 : 8 : hover ? 11 : 10}px "DM Mono", ui-monospace, monospace`; context.textAlign = "center"; context.textBaseline = "middle"; context.fillText(markerLabel, point[0], point[1]);
       if (hover && location.city) { context.font = "11px ui-sans-serif, system-ui"; context.fillStyle = "#e6edf3"; context.fillText([location.city, location.country].filter(Boolean).join(", "), point[0], point[1] - markerRadius - 9); }
     });
     const hovered = locations[hoveredIndex];
     if (hovered && !dragging) {
       tooltip.hidden = false;
-      const hopCards = hovered.hops.map((hop) => {
-        const authResults = protocolOrder.map((protocol) => {
-          const checkpoint = checkpointForProtocol(hop, protocol);
-          const status = checkpoint?.status || "none";
-          return `<i class="auth-${authCheckTone(status)}">${protocol} ${escapeHtml(status.toUpperCase())}</i>`;
+      if (renderedTooltipIndex !== hoveredIndex) {
+        const hopCards = hovered.hops.map((hop) => {
+          const authResults = protocolOrder.map((protocol) => {
+            const checkpoint = checkpointForProtocol(hop, protocol);
+            const status = checkpoint?.status || "none";
+            return `<i class="auth-${authCheckTone(status)}">${protocol} ${escapeHtml(status.toUpperCase())}</i>`;
+          }).join("");
+          const otxStatus = hop.strongOtxIpMatch ? " · OTX exact IP match" : "";
+          return `<section class="globe-hop-detail"><b>Hop ${hop.order} · ${escapeHtml(roleLabel[hop.role])}</b><span>${escapeHtml(hop.ip)}</span><small>${escapeHtml(hop.fromHost)} → ${escapeHtml(hop.byHost)}</small><small>${escapeHtml(hop.isp || "ISP unavailable")} · ${escapeHtml(hop.abuseSummary)}${escapeHtml(otxStatus)}</small><div class="globe-auth-results">${authResults}</div></section>`;
         }).join("");
-        const otxStatus = hop.strongOtxIpMatch ? " · OTX exact IP match" : "";
-        return `<section class="globe-hop-detail"><b>Hop ${hop.order} · ${escapeHtml(roleLabel[hop.role])}</b><span>${escapeHtml(hop.ip)}</span><small>${escapeHtml(hop.fromHost)} → ${escapeHtml(hop.byHost)}</small><small>${escapeHtml(hop.isp || "ISP unavailable")} · ${escapeHtml(hop.abuseSummary)}${escapeHtml(otxStatus)}</small><div class="globe-auth-results">${authResults}</div></section>`;
-      }).join("");
-      const locationName = [hovered.city, hovered.country].filter(Boolean).join(", ") || "Approximate location available";
-      tooltip.innerHTML = `<header><b>${hovered.hops.length} ${hovered.hops.length === 1 ? "hop" : "hops"} at this location</b><span>${escapeHtml(locationName)}</span></header>${hopCards}`;
+        const locationName = [hovered.city, hovered.country].filter(Boolean).join(", ") || "Approximate location available";
+        tooltip.innerHTML = `<header><b>Hop ${hovered.hops[0].order} on the globe · ${hovered.hops.length} route ${hovered.hops.length === 1 ? "entry" : "entries"}</b><span>${escapeHtml(locationName)}</span></header>${hopCards}`;
+        tooltip.classList.toggle("is-scrollable", hovered.hops.length > 2);
+        tooltip.scrollTop = 0;
+        renderedTooltipIndex = hoveredIndex;
+      }
       tooltip.style.left = `${Math.max(12, Math.min(width - 332, pointerX + 14))}px`; tooltip.style.top = `${Math.max(12, Math.min(height - Math.min(300, 95 + hovered.hops.length * 105), pointerY + 14))}px`;
-    } else tooltip.hidden = true;
+    } else {
+      tooltip.hidden = true;
+      renderedTooltipIndex = -1;
+    }
     requestAnimationFrame(draw);
   };
   resize(); new ResizeObserver(resize).observe(wrapper); draw();
   canvas.addEventListener("pointerdown", (event) => { dragging = true; rotating = false; toggle.textContent = "Start rotation"; canvas.setPointerCapture(event.pointerId); dragX = pointerX = event.offsetX; dragY = pointerY = event.offsetY; dragLambda = lambda; dragPhi = phi; });
   canvas.addEventListener("pointermove", (event) => { pointerX = event.offsetX; pointerY = event.offsetY; if (dragging) { lambda = dragLambda + (event.offsetX - dragX) * .3; phi = Math.max(-60, Math.min(60, dragPhi - (event.offsetY - dragY) * .3)); projection.rotate([lambda, phi]); } });
   canvas.addEventListener("pointerup", () => { dragging = false; });
-  canvas.addEventListener("pointerleave", () => { if (!dragging) tooltip.hidden = true; });
+  canvas.addEventListener("pointerleave", (event) => {
+    const enteredTooltip = event.relatedTarget instanceof Node && tooltip.contains(event.relatedTarget);
+    if (!dragging && !enteredTooltip) {
+      tooltip.hidden = true;
+      renderedTooltipIndex = -1;
+    }
+  });
+  tooltip.addEventListener("pointerleave", () => {
+    tooltip.hidden = true;
+    renderedTooltipIndex = -1;
+    pointerX = -100;
+    pointerY = -100;
+  });
   toggle.textContent = "Start rotation";
   toggle.addEventListener("click", () => { rotating = !rotating; toggle.textContent = rotating ? "Pause rotation" : "Start rotation"; });
   fit.addEventListener("click", centerRoute);

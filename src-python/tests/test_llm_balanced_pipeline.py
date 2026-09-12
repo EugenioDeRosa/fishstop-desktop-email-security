@@ -682,6 +682,7 @@ class BalancedPipelineTests(unittest.TestCase):
                 "links": [{
                     "url": "https://documents.example/item",
                     "host": "documents.example",
+                    "scheme": "https",
                     "role": "body_action",
                     "actionable": True,
                     "html_call_to_action": True,
@@ -700,6 +701,44 @@ class BalancedPipelineTests(unittest.TestCase):
         self.assertEqual("uncertain", analysis["identity_risk"])
         self.assertEqual("review", analysis["final_verdict"])
 
+    def test_forwarded_link_request_is_recovered_when_model_calls_it_informational(self):
+        evidence = "Per visualizzarlo, clicca sul link qui sotto."
+        analysis = llm.apply_email_risk_policy(
+            {
+                "from_": "Forwarder <forwarder@example.com>",
+                "subject": "Fwd: Shared document",
+                "body_context": "forwarded",
+                "body_for_ai": f"{evidence} APRI IL DOCUMENTO QUI",
+                "forwarded_identity": {
+                    "from": "Original Sender <original@example.org>",
+                    "address": "original@example.org",
+                    "authentication_status": "unavailable",
+                },
+                "links": [{
+                    "url": "https://documents.example/item",
+                    "host": "documents.example",
+                    "scheme": "https",
+                    "role": "body_action",
+                    "actionable": True,
+                    "html_call_to_action": True,
+                    "display_text": "APRI IL DOCUMENTO QUI",
+                }],
+                "attachments": [],
+                "effective_auth_results": {
+                    "SPF": {"status": "pass"},
+                    "DKIM": {"status": "pass"},
+                    "DMARC": {"status": "pass"},
+                },
+            },
+            _primary(),
+        )
+
+        self.assertEqual("visit_link", analysis["requested_action"])
+        self.assertEqual("supplied_link", analysis["action_channel"])
+        self.assertEqual(evidence, analysis["intent_evidence"])
+        self.assertEqual("uncertain", analysis["identity_risk"])
+        self.assertEqual("review", analysis["final_verdict"])
+
     def test_otx_indicator_match_is_high_risk_without_other_signals(self):
         analysis = llm.apply_email_risk_policy(
             {
@@ -712,6 +751,8 @@ class BalancedPipelineTests(unittest.TestCase):
                     "matches": [{
                         "indicator_type": "domain",
                         "indicator": "malicious.example",
+                        "matched_indicator": "malicious.example",
+                        "match_type": "exact",
                         "confidence": "strong",
                         "pulse_count": 1,
                     }],
@@ -722,6 +763,31 @@ class BalancedPipelineTests(unittest.TestCase):
 
         self.assertEqual("malicious", analysis["technical_risk"])
         self.assertEqual("phishing", analysis["final_verdict"])
+
+    def test_otx_context_only_association_does_not_raise_technical_risk(self):
+        analysis = llm.apply_email_risk_policy(
+            {
+                "subject": "Ordinary update",
+                "body_for_ai": "This is an ordinary informational update.",
+                "links": [],
+                "attachments": [],
+                "otx_intelligence": {
+                    "status": "context_only",
+                    "matches": [{
+                        "indicator_type": "ipv4",
+                        "indicator": "8.8.8.8",
+                        "matched_indicator": "8.8.8.8",
+                        "match_type": "exact",
+                        "confidence": "supporting",
+                        "pulse_count": 1,
+                    }],
+                },
+            },
+            _primary(),
+        )
+
+        self.assertNotEqual("malicious", analysis["technical_risk"])
+        self.assertNotEqual("phishing", analysis["final_verdict"])
 
     def test_primary_schema_requires_only_core_semantic_fields(self):
         self.assertEqual(

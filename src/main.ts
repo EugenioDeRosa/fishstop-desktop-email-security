@@ -49,8 +49,8 @@ type AuthenticationCheckpoint = {
 };
 type ReceivedHop = { from_host?: string; by_host?: string; sender_ip?: string; all_ips?: string[]; received_at?: string; raw?: string };
 type OtxPulseSummary = { id?: string; name?: string; author?: string; modified?: string; tags?: string[]; tlp?: string; url?: string };
-type OtxMatch = { indicator?: string; matched_indicator?: string; indicator_type?: string; match_type?: "exact" | "url_scope"; source?: string; confidence?: "strong" | "supporting"; shared_infrastructure?: boolean; pulse_count?: number; pulses?: OtxPulseSummary[] };
-type OtxIntelligence = { status?: "match" | "no_match" | "unavailable"; synced_at?: string; pulse_count?: number; subscribed_pulse_count?: number; public_phishing_pulse_count?: number; indicator_count?: number; skipped_pulse_count?: number; lookback_days?: number; truncated?: boolean; strong_match_count?: number; supporting_match_count?: number; matches?: OtxMatch[]; message?: string };
+type OtxMatch = { indicator?: string; matched_indicator?: string; indicator_type?: string; match_type?: "exact"; source?: string; confidence?: "strong" | "supporting" | "informational"; classification?: "malicious" | "supporting" | "informational"; shared_infrastructure?: boolean; pulse_count?: number; pulses?: OtxPulseSummary[] };
+type OtxIntelligence = { status?: "match" | "context_only" | "no_match" | "unavailable"; lookup_mode?: "on_demand_exact"; checked_indicator_count?: number; failed_indicator_count?: number; strong_match_count?: number; context_match_count?: number; matches?: OtxMatch[]; message?: string };
 type AnalysisReport = {
   subject?: string; from_?: string; from_registered_domain?: string; reply_to?: string; return_path?: string; flags?: SocFlag[];
   delivered_to?: string; to?: string; date?: string; message_id?: string; errors_to?: string; importance?: string;
@@ -119,9 +119,6 @@ const REPUTATION_KEYS_PREFIX = "fishstop.reputation-keys.";
 const INDICATOR_COPY_STORAGE_PREFIX = "fishstop.indicator-copies.";
 const STATISTICS_PERIOD_PREFIX = "fishstop.statistics-period.";
 const DEFAULT_OLLAMA_MODEL = "qwen3:4b-instruct-2507-q4_K_M";
-const OTX_LOOKBACK_DAYS = 365;
-const OTX_BACKGROUND_SYNC_INTERVAL_MS = 24 * 60 * 60 * 1000;
-const OTX_BACKGROUND_RESUME_DELAY_MS = 2 * 60 * 1000;
 const GOOGLE_INBOX_PREVIEW_EMAIL_HASH = "165a8d4c34e9abd1da9ddb4f55317bcf935f79dbde5e8e5f47256ff5fa8728bf";
 const analysisHistoryCache = new Map<string, AnalysisRecord[]>();
 const analysisHistoryReady = new Set<string>();
@@ -141,8 +138,6 @@ const root: HTMLDivElement = app;
 type ProtectionTone = "checking" | "ok" | "warning" | "error";
 type LocalEngineStatus = { static_engine: boolean; python_runtime: boolean };
 type ReputationKeyStatus = { virustotal: boolean; abuseipdb: boolean; otx: boolean };
-type OtxCacheStatus = { configured: boolean; status: "disabled" | "not_synced" | "ready" | "stale"; synced_at: string; pulse_count: number; subscribed_pulse_count: number; public_phishing_pulse_count: number; indicator_count: number; pending_pulse_count: number; coverage_days: number; skipped_pulse_count: number; truncated: boolean; limit_reason: string; stale: boolean; lookback_days: number; database_bytes: number; message: string };
-type OtxSyncProgress = { user_sub: string; phase: string; metric?: string; processed: number; total?: number; pulse_index?: number; pulse_total?: number; pulse_name?: string; percentage?: number; message: string };
 type AnalysisProgress = { analysis_id: string; stage: string; completed_check?: number; message: string };
 type AiAnalysisResult = NonNullable<AnalysisReport["phi4_analysis"]> & { identity_analysis?: NonNullable<AnalysisReport["identity_analysis"]> };
 type OllamaRuntimeStatus = {
@@ -154,11 +149,6 @@ type OllamaModelProgress = { status: string; total?: number; completed?: number 
 type ManagedModelOperation = { phase: "installing" | "removing"; status: string; total?: number; completed?: number };
 let managedModelOperation: ManagedModelOperation | null = null;
 let ollamaRuntimeSnapshot: OllamaRuntimeStatus | null = null;
-const otxAutoSyncAttempted = new Set<string>();
-const otxMaintenanceInProgress = new Set<string>();
-let otxBackgroundSyncTimer: number | null = null;
-let otxBackgroundResumeTimer: number | null = null;
-let otxBackgroundSyncUserSub: string | null = null;
 
 function escapeHtml(value: string): string {
   return value.replace(/[&<>'"]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[character] || character));
@@ -217,254 +207,6 @@ async function refreshReputationSettings(user: AuthUser): Promise<void> {
   }
 }
 
-function renderOtxStatus(status: OtxCacheStatus): void {
-  const panel = document.querySelector<HTMLElement>(".otx-sync-panel");
-  const detail = document.querySelector<HTMLElement>("#otx-sync-status");
-  const button = document.querySelector<HTMLButtonElement>("#sync-otx-intelligence");
-  const deleteButton = document.querySelector<HTMLButtonElement>("#clear-otx-intelligence");
-  const progressPanel = document.querySelector<HTMLElement>("#otx-sync-progress");
-  if (!panel || !detail || !button) return;
-  const currentUser = storedUser();
-  const busy = Boolean(currentUser && otxMaintenanceInProgress.has(currentUser.sub));
-  panel.dataset.status = status.status;
-  if (!busy && progressPanel) progressPanel.hidden = true;
-  if (deleteButton) deleteButton.disabled = busy || status.database_bytes <= 0;
-  if (busy) {
-    button.disabled = true;
-    button.textContent = "Synchronizing…";
-  }
-  if (!status.configured) {
-    detail.textContent = status.database_bytes > 0
-      ? `${status.pulse_count.toLocaleString()} Pulses · ${(status.database_bytes / 1_048_576).toFixed(1)} MB local database · add a key to refresh`
-      : "Add an OTX API key to enable automatic intelligence synchronization.";
-    button.disabled = true;
-    button.textContent = busy ? "Synchronizing…" : "Sync unavailable";
-    return;
-  }
-  button.disabled = busy;
-  button.textContent = busy ? "Synchronizing…" : status.status === "not_synced" ? "Sync now" : "Refresh Pulses";
-  if (status.truncated && status.limit_reason === "analysis") {
-    detail.textContent = "OTX synchronization paused safely during email analysis. It will resume automatically.";
-    return;
-  }
-  if (!status.synced_at) {
-    detail.textContent = status.message;
-    return;
-  }
-  const freshness = `Updated ${formatAnalysisDate(status.synced_at)}`;
-  detail.textContent = `${freshness} · ${status.pulse_count.toLocaleString()} Pulses · ${status.subscribed_pulse_count.toLocaleString()} subscribed · ${status.indicator_count.toLocaleString()} indicators · Open-source intelligence database · Last year`;
-}
-
-function otxProgressMarkup(): string {
-  const steps = [
-    ["preparing", "Prepare"],
-    ["subscribed", "Subscribed"],
-    ["public_phishing", "Discover"],
-    ["public_indicators", "Indicators"],
-    ["indexing", "Finalize"],
-  ].map(([phase, label]) => `<li data-otx-step="${phase}"><i aria-hidden="true"></i><span>${label}</span></li>`).join("");
-  const metric = (id: string, label: string) => `<article class="otx-progress-metric" id="otx-${id}" hidden><header><span>${label}</span><strong id="otx-${id}-value">0</strong></header><div class="otx-metric-track" id="otx-${id}-track" role="progressbar" aria-label="${label}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i id="otx-${id}-fill"></i></div></article>`;
-  return `<div class="otx-download-progress" id="otx-sync-progress" hidden><ol class="otx-progress-steps" aria-label="OTX synchronization phases">${steps}</ol><div class="otx-progress-heading"><div><span>Current phase</span><strong id="otx-sync-progress-label">Preparing</strong></div><b id="otx-sync-progress-value">0%</b></div><div class="otx-download-track" id="otx-sync-progress-track" role="progressbar" aria-label="Overall OTX synchronization progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i id="otx-sync-progress-fill"></i></div><div class="otx-progress-metrics">${metric("subscribed-progress", "Subscribed Pulses")}${metric("discovery-progress", "Public Pulses discovered")}${metric("coverage-progress", "Last-year coverage")}${metric("pulse-progress", "Public Pulses indexed")}${metric("indicator-progress", "Indicators in current Pulse")}</div><div class="otx-current-pulse" id="otx-current-pulse" hidden><span>Current Pulse</span><strong id="otx-current-pulse-name" title=""></strong></div><small class="otx-progress-activity" id="otx-sync-activity">Starting synchronization…</small></div>`;
-}
-
-async function refreshOtxStatus(user: AuthUser): Promise<OtxCacheStatus | null> {
-  try {
-    const status = await invoke<OtxCacheStatus>("otx_cache_status", { userSub: user.sub });
-    renderOtxStatus(status);
-    return status;
-  } catch (error) {
-    const detail = document.querySelector<HTMLElement>("#otx-sync-status");
-    if (detail) detail.textContent = `Local OTX status unavailable: ${String(error)}`;
-    return null;
-  }
-}
-
-async function runOtxSync(user: AuthUser, force: boolean): Promise<void> {
-  if (otxMaintenanceInProgress.has(user.sub)) return;
-  otxMaintenanceInProgress.add(user.sub);
-  const button = document.querySelector<HTMLButtonElement>("#sync-otx-intelligence");
-  const deleteButton = document.querySelector<HTMLButtonElement>("#clear-otx-intelligence");
-  const deleteWasDisabled = deleteButton?.disabled ?? true;
-  const detail = document.querySelector<HTMLElement>("#otx-sync-status");
-  const progressPanel = document.querySelector<HTMLElement>("#otx-sync-progress");
-  const progressLabel = document.querySelector<HTMLElement>("#otx-sync-progress-label");
-  const progressValue = document.querySelector<HTMLElement>("#otx-sync-progress-value");
-  const progressTrack = document.querySelector<HTMLElement>("#otx-sync-progress-track");
-  const progressFill = document.querySelector<HTMLElement>("#otx-sync-progress-fill");
-  const progressActivity = document.querySelector<HTMLElement>("#otx-sync-activity");
-  let unlistenProgress: (() => void) | undefined;
-  const syncStartedAt = Date.now();
-  let lastProgressAt = syncStartedAt;
-  const elapsedLabel = (milliseconds: number) => {
-    const seconds = Math.max(0, Math.floor(milliseconds / 1000));
-    const minutes = Math.floor(seconds / 60);
-    return minutes ? `${minutes}m ${seconds % 60}s` : `${seconds}s`;
-  };
-  const activityTimer = window.setInterval(() => {
-    const liveActivity = document.querySelector<HTMLElement>("#otx-sync-activity");
-    if (!liveActivity?.isConnected) return;
-    const idleFor = Date.now() - lastProgressAt;
-    liveActivity.textContent = idleFor >= 45_000
-      ? `Running for ${elapsedLabel(Date.now() - syncStartedAt)} · waiting for OTX response…`
-      : `Running for ${elapsedLabel(Date.now() - syncStartedAt)} · updated ${elapsedLabel(idleFor)} ago`;
-  }, 5_000);
-  if (button) {
-    button.disabled = true;
-    button.textContent = "Synchronizing…";
-  }
-  if (deleteButton) deleteButton.disabled = true;
-  if (detail) detail.textContent = "Synchronization in progress. Existing local intelligence remains available.";
-  if (progressPanel) progressPanel.hidden = false;
-  if (progressLabel) progressLabel.textContent = "Preparing";
-  if (progressValue) progressValue.textContent = "0%";
-  if (progressFill) progressFill.style.width = "0%";
-  if (progressActivity) progressActivity.textContent = "Starting synchronization…";
-  progressTrack?.setAttribute("aria-valuenow", "0");
-  document.querySelectorAll<HTMLElement>("[data-otx-step]").forEach((step) => step.classList.remove("is-active", "is-complete"));
-  document.querySelector<HTMLElement>('[data-otx-step="preparing"]')?.classList.add("is-active");
-  document.querySelectorAll<HTMLElement>(".otx-progress-metric, #otx-current-pulse").forEach((item) => { item.hidden = true; });
-  try {
-    unlistenProgress = await listen<OtxSyncProgress>("otx-sync-progress", (event) => {
-      if (event.payload.user_sub !== user.sub) return;
-      lastProgressAt = Date.now();
-      const livePanel = document.querySelector<HTMLElement>("#otx-sync-progress");
-      const liveLabel = document.querySelector<HTMLElement>("#otx-sync-progress-label");
-      const liveValue = document.querySelector<HTMLElement>("#otx-sync-progress-value");
-      const liveTrack = document.querySelector<HTMLElement>("#otx-sync-progress-track");
-      const liveFill = document.querySelector<HTMLElement>("#otx-sync-progress-fill");
-      if (livePanel) livePanel.hidden = false;
-      const phaseLabels: Record<string, string> = {
-        preparing: "Preparing",
-        subscribed: "Downloading subscribed Pulses",
-        public_phishing: "Discovering public phishing Pulses",
-        public_indicators: "Indexing public phishing indicators",
-        indexing: "Finalizing the local index",
-        complete: "Completed",
-      };
-      if (liveLabel) liveLabel.textContent = phaseLabels[event.payload.phase] || "Synchronizing OTX intelligence…";
-      const phaseOrder = ["preparing", "subscribed", "public_phishing", "public_indicators", "indexing"];
-      const activeIndex = event.payload.phase === "complete" ? phaseOrder.length : phaseOrder.indexOf(event.payload.phase);
-      document.querySelectorAll<HTMLElement>("[data-otx-step]").forEach((step) => {
-        const stepIndex = phaseOrder.indexOf(step.dataset.otxStep || "");
-        step.classList.toggle("is-complete", activeIndex === phaseOrder.length || (activeIndex >= 0 && stepIndex < activeIndex));
-        step.classList.toggle("is-active", activeIndex >= 0 && stepIndex === activeIndex);
-      });
-      const updateMetric = (id: string, processed: number, total?: number) => {
-        const metric = document.querySelector<HTMLElement>(`#otx-${id}`);
-        const value = document.querySelector<HTMLElement>(`#otx-${id}-value`);
-        const track = document.querySelector<HTMLElement>(`#otx-${id}-track`);
-        const fill = document.querySelector<HTMLElement>(`#otx-${id}-fill`);
-        if (metric) metric.hidden = false;
-        if (value) value.textContent = total
-          ? `${processed.toLocaleString()} / ${total.toLocaleString()}`
-          : processed.toLocaleString();
-        const percent = total && total > 0 ? Math.max(0, Math.min(100, processed / total * 100)) : 0;
-        if (fill) fill.style.width = `${percent}%`;
-        track?.setAttribute("aria-valuenow", String(Math.round(percent)));
-      };
-      const metric = event.payload.metric || (event.payload.phase === "subscribed" ? "subscribed_pulses" : event.payload.phase === "public_phishing" ? "public_pulse_discovery" : "");
-      if (metric === "subscribed_pulses") updateMetric("subscribed-progress", event.payload.processed, event.payload.total);
-      if (metric === "public_pulse_discovery") updateMetric("discovery-progress", event.payload.processed, event.payload.total);
-      if (metric === "coverage_days") updateMetric("coverage-progress", event.payload.processed, event.payload.total);
-      if (event.payload.phase === "public_indicators") {
-        updateMetric("pulse-progress", event.payload.pulse_index || 0, event.payload.pulse_total);
-        updateMetric("indicator-progress", event.payload.processed, event.payload.total);
-        const currentPulse = document.querySelector<HTMLElement>("#otx-current-pulse");
-        const currentPulseName = document.querySelector<HTMLElement>("#otx-current-pulse-name");
-        if (currentPulse) currentPulse.hidden = !event.payload.pulse_name;
-        if (currentPulseName) {
-          currentPulseName.textContent = event.payload.pulse_name || "";
-          currentPulseName.title = event.payload.pulse_name || "";
-        }
-      }
-      const percentage = event.payload.percentage;
-      if (typeof percentage === "number" && Number.isFinite(percentage)) {
-        const bounded = Math.max(0, Math.min(100, Math.round(percentage)));
-        livePanel?.classList.remove("is-indeterminate");
-        if (liveValue) liveValue.textContent = `${bounded}%`;
-        if (liveFill) liveFill.style.width = `${bounded}%`;
-        liveTrack?.setAttribute("aria-valuenow", String(bounded));
-      } else {
-        livePanel?.classList.add("is-indeterminate");
-        if (liveValue) liveValue.textContent = "Working…";
-        if (liveFill) liveFill.style.width = "32%";
-        liveTrack?.removeAttribute("aria-valuenow");
-      }
-    });
-  } catch { /* Synchronization still works if progress events are unavailable. */ }
-  try {
-    const result = await invoke<OtxCacheStatus>("sync_otx_intelligence", { userSub: user.sub, force });
-    window.clearInterval(activityTimer);
-    unlistenProgress?.();
-    otxMaintenanceInProgress.delete(user.sub);
-    if (storedUser()?.sub === user.sub) {
-      renderOtxStatus(result);
-      if (result.truncated && ["time", "partial"].includes(result.limit_reason)) {
-        if (otxBackgroundResumeTimer !== null) window.clearTimeout(otxBackgroundResumeTimer);
-        otxBackgroundResumeTimer = window.setTimeout(() => {
-          otxBackgroundResumeTimer = null;
-          const currentUser = storedUser();
-          if (currentUser?.sub === user.sub) void runOtxSync(currentUser, true);
-        }, OTX_BACKGROUND_RESUME_DELAY_MS);
-      }
-    }
-  } catch (error) {
-    window.clearInterval(activityTimer);
-    unlistenProgress?.();
-    otxMaintenanceInProgress.delete(user.sub);
-    if (storedUser()?.sub !== user.sub) return;
-    if (detail) detail.textContent = `${String(error)} Previous local intelligence remains available.`;
-    if (button) {
-      button.disabled = false;
-      button.textContent = "Retry sync";
-    }
-    if (deleteButton) deleteButton.disabled = deleteWasDisabled;
-    if (progressPanel) progressPanel.hidden = true;
-  }
-}
-
-async function maybeAutoSyncOtx(user: AuthUser, scheduled = false): Promise<void> {
-  if (activeAnalysis?.status === "processing") return;
-  const shouldAutoSync = scheduled || !otxAutoSyncAttempted.has(user.sub);
-  if (!scheduled && shouldAutoSync) otxAutoSyncAttempted.add(user.sub);
-  if (!shouldAutoSync) {
-    // Settings markup is rebuilt whenever the user returns to this section.
-    if (document.querySelector(".otx-sync-panel")) await refreshOtxStatus(user);
-    return;
-  }
-  const status = await refreshOtxStatus(user);
-  const resumable = Boolean(status?.truncated && ["time", "partial", "analysis"].includes(status.limit_reason));
-  const needsRefresh = Boolean(status && (
-    status.status !== "ready"
-    || status.lookback_days < OTX_LOOKBACK_DAYS
-    || resumable
-  ));
-  if (shouldAutoSync && status?.configured && needsRefresh) await runOtxSync(user, status.status === "ready");
-}
-
-function stopOtxBackgroundSync(): void {
-  if (otxBackgroundSyncTimer !== null) window.clearInterval(otxBackgroundSyncTimer);
-  if (otxBackgroundResumeTimer !== null) window.clearTimeout(otxBackgroundResumeTimer);
-  otxBackgroundSyncTimer = null;
-  otxBackgroundResumeTimer = null;
-  otxBackgroundSyncUserSub = null;
-}
-
-function ensureOtxBackgroundSync(user: AuthUser): void {
-  if (otxBackgroundSyncUserSub !== user.sub || otxBackgroundSyncTimer === null) {
-    stopOtxBackgroundSync();
-    otxBackgroundSyncUserSub = user.sub;
-    otxBackgroundSyncTimer = window.setInterval(() => {
-      const currentUser = storedUser();
-      if (!currentUser || currentUser.sub !== user.sub) {
-        stopOtxBackgroundSync();
-        return;
-      }
-      void maybeAutoSyncOtx(currentUser, true);
-    }, OTX_BACKGROUND_SYNC_INTERVAL_MS);
-  }
-  void maybeAutoSyncOtx(user);
-}
 function setProtectionStatus(element: HTMLElement, tone: ProtectionTone, message: string): void {
   element.className = `top-status top-status-${tone}`;
   element.querySelector("span")!.textContent = message;
@@ -1157,8 +899,21 @@ function unverifiedRequestedResourceReason(report: AnalysisReport): string | nul
   const semantic = report.phi4_analysis?.analysis;
   const action = (semantic?.requested_action || "").toLowerCase();
   const cannotVerify = (result?: ReputationResult) => !["clean", "malicious", "suspicious"].includes((result?.status || "").toLowerCase());
+  const requestedLinks = primaryRequestedLinks(report);
+  const forwardedAuthentication = (report.forwarded_identity?.authentication_status || "unavailable").toLowerCase();
+  const unauthenticatedForwardedLinkRequest = report.body_context === "forwarded"
+    && Boolean(report.forwarded_identity?.from)
+    && !["pass", "verified", "authenticated"].includes(forwardedAuthentication)
+    && requestedLinks.some((link) => link.html_call_to_action && normalizedIntentText(link.display_text).length >= 4)
+    && requestedLinks.some((link) => cannotVerify(report.link_reputation?.[link.url || ""]));
+  // Authentication on an outer forwarding message says nothing about the
+  // embedded sender. Keep an unverified embedded CTA in Review even when the
+  // local model overlooks the link instruction; this is uncertainty, not a
+  // phishing verdict, so legitimate forwards are not reported as malicious.
+  if (unauthenticatedForwardedLinkRequest) {
+    return "The message forwards a link request, but the embedded sender is not authenticated by the available headers and the requested destination could not be verified.";
+  }
   if (action === "visit_link") {
-    const requestedLinks = primaryRequestedLinks(report);
     const unverifiedLinks = requestedLinks.filter((link) => cannotVerify(report.link_reputation?.[link.url || ""]));
     const identityMismatch = Boolean(
       report.reply_to_mismatch
@@ -1411,7 +1166,7 @@ function otxMatchesForIp(report: AnalysisReport, ip: string): OtxMatch[] {
 }
 
 function isStrongOtxMatch(match: OtxMatch): boolean {
-  return match.confidence !== "supporting";
+  return match.match_type === "exact" && match.confidence === "strong";
 }
 
 function senderIdentityDomains(report: AnalysisReport): Set<string> {
@@ -1424,24 +1179,12 @@ function senderIdentityDomains(report: AnalysisReport): Set<string> {
   return domains;
 }
 
-function senderIdentityEmails(report: AnalysisReport): Set<string> {
-  return new Set(
-    [report.from_, report.return_path, report.reply_to]
-      .map((value) => mailboxAddress(String(value || "")).toLowerCase())
-      .filter((value) => /^\S+@\S+$/.test(value)),
-  );
-}
-
 function otxSenderMatches(report: AnalysisReport): OtxMatch[] {
   const domains = senderIdentityDomains(report);
-  const emails = senderIdentityEmails(report);
-  return (report.otx_intelligence?.matches || []).filter((match) => {
-    if (match.indicator_type === "email") {
-      return emails.has(String(match.indicator || "").trim().toLowerCase());
-    }
-    return ["domain", "hostname"].includes(match.indicator_type || "")
-      && domains.has(normalizedDomain(match.indicator));
-  });
+  return (report.otx_intelligence?.matches || []).filter((match) =>
+    ["domain", "hostname"].includes(match.indicator_type || "")
+    && domains.has(normalizedDomain(match.indicator)),
+  );
 }
 
 function otxPulseLinks(pulses: OtxPulseSummary[], limit = 2): string {
@@ -1461,9 +1204,8 @@ function otxInlineEvidence(matches: OtxMatch[]): string {
   const pulses = matches.flatMap((match) => match.pulses || []);
   const pulseLinks = otxPulseLinks(pulses);
   const pulseCount = Math.max(0, ...matches.map((match) => Number(match.pulse_count || 0)));
-  const detail = `${pulseCount || matches.length} synchronized Pulse${(pulseCount || matches.length) === 1 ? "" : "s"}`;
-  const scoped = matches.some((match) => match.match_type === "url_scope");
-  const label = strong ? scoped ? "OTX threat match · specific URL scope" : "OTX threat match · exact indicator" : "OTX context match · shared service";
+  const detail = `${pulseCount || matches.length} OTX Pulse${(pulseCount || matches.length) === 1 ? "" : "s"}`;
+  const label = strong ? "OTX malicious match · exact indicator" : "OTX exact association · neutral context";
   return `<em class="inline-otx inline-otx-${strong ? "strong" : "supporting"}"><b>${label}</b><span>${pulseLinks || escapeHtml(detail)}</span></em>`;
 }
 
@@ -1569,14 +1311,13 @@ function reportMarkup(report: AnalysisReport): string {
     const reputation = reputationCheckTone(reputationResult);
     const otxMatches = otxMatchesForLink(report, link);
     const strongOtxMatch = otxMatches.some(isStrongOtxMatch);
-    const supportingOtxMatch = otxMatches.length > 0 && !strongOtxMatch;
     const invoiceDeliveryMismatch = Boolean(link.financial_attachment_mismatch);
     const tone = dangerous || structuralDanger || invoiceDeliveryMismatch || reputation === "fail" || strongOtxMatch
       ? "fail"
       : link.display_mismatch || reputation === "warn" || structuralWarning
         ? "warn"
         : safeSignatureTracking || reputation === "pass" ? "pass" : "neutral";
-    const status = reputation === "fail" ? "Detected by VirusTotal" : invoiceDeliveryMismatch ? (link.dangerous_download ? "Invoice link points to a script/executable" : "Invoice delivery is unrelated to sender domain") : dangerous ? (link.is_ip ? "Direct IP" : link.dangerous_download ? "Executable or script download" : "Lookalike domain") : structuralDanger ? "Hidden destination userinfo" : link.display_mismatch ? "Destination differs from visible text" : strongOtxMatch ? "Matched in OTX threat intelligence" : reputation === "warn" ? "Review required" : safeSignatureTracking ? "Signature tracking redirect" : reputation === "pass" ? "VirusTotal clean" : supportingOtxMatch ? "Shared service appears in OTX context" : link.nested_redirect_count ? "Nested redirect destination" : link.nonstandard_port ? "Non-standard port" : link.unicode_path_or_query ? "Unicode path or query" : "Valid URL structure";
+    const status = reputation === "fail" ? "Detected by VirusTotal" : invoiceDeliveryMismatch ? (link.dangerous_download ? "Invoice link points to a script/executable" : "Invoice delivery is unrelated to sender domain") : dangerous ? (link.is_ip ? "Direct IP" : link.dangerous_download ? "Executable or script download" : "Lookalike domain") : structuralDanger ? "Hidden destination userinfo" : link.display_mismatch ? "Destination differs from visible text" : strongOtxMatch ? "Exact match under the OTX malicious policy" : reputation === "warn" ? "Review required" : safeSignatureTracking ? "Signature tracking redirect" : reputation === "pass" ? "VirusTotal clean" : link.nested_redirect_count ? "Nested redirect destination" : link.nonstandard_port ? "Non-standard port" : link.unicode_path_or_query ? "Unicode path or query" : "Valid URL structure";
     const host = link.host || "URL without host";
     const vtUrl = reputationResult?.permalink || `https://www.virustotal.com/gui/domain/${encodeURIComponent(host)}`;
     const whoisUrl = `https://www.whois.com/whois/${encodeURIComponent(host)}`;
@@ -1615,7 +1356,7 @@ function reportMarkup(report: AnalysisReport): string {
     const reputationResult = attachment.file_reputation;
     const reputation = reputationCheckTone(reputationResult);
     const otxMatches = otxMatchesForAttachment(report, attachment.hash_sha256);
-    const otxMatch = otxMatches.length > 0;
+    const otxMatch = otxMatches.some(isStrongOtxMatch);
     const attachmentSize = attachment.size_bytes ?? attachment.size;
     const detail = `${attachment.content_type || "unknown type"} · ${formatAttachmentSize(attachmentSize)} · ${attachment.magic_detected_format || "unrecognised format"}`;
     const archiveMeta = attachment.archive_security ? `${attachment.archive_security.entry_count || 0} entries${attachment.archive_security.nested_archive_count ? ` · ${attachment.archive_security.nested_archive_count} nested` : ""}${attachment.archive_security.encrypted_entry_count ? ` · ${attachment.archive_security.encrypted_entry_count} encrypted` : ""}` : "";
@@ -1772,25 +1513,13 @@ function addReputationPanel(report: AnalysisReport): void {
   const otxRows = (otx?.matches || []).map((match) => {
     const strong = isStrongOtxMatch(match);
     const pulseLinks = otxPulseLinks(match.pulses || [], 5);
-    const detail = strong
-      ? match.match_type === "url_scope"
-        ? `High-risk match inside specific OTX URL scope ${match.matched_indicator || ""}`.trim()
-        : "High-risk exact OTX indicator match"
-      : "Shared service referenced by OTX · not a malicious-domain verdict";
+    const detail = strong ? "High-confidence exact malicious match" : "Exact Pulse association · neutral context only";
     return `<li class="static-check static-check-${strong ? "fail" : "neutral"}"><strong>${escapeHtml((match.indicator_type || "indicator").toUpperCase())} · ${escapeHtml(match.indicator || "Unknown indicator")}</strong><small>${detail} · ${escapeHtml(match.source || "email evidence")}</small>${pulseLinks ? `<p class="otx-pulse-links">${pulseLinks}</p>` : ""}</li>`;
   }).join("");
-  const otxNoMatch = otx?.truncated
-    ? "No match in the locally available OTX data. Public search coverage was limited by OTX; this is neutral evidence, not proof of safety."
-    : "No match in the synchronized 365-day database. This is neutral evidence, not proof of safety.";
-  const otxContent = otxRows || `<li class="reputation-empty">${escapeHtml(otx?.status === "no_match" ? otxNoMatch : "No synchronized OTX Pulse database was available for this analysis.")}</li>`;
-  const otxSourceCounts = Number(otx?.subscribed_pulse_count || 0) + Number(otx?.public_phishing_pulse_count || 0)
-    ? `${Number(otx?.pulse_count || 0).toLocaleString()} unique Pulses · ${Number(otx?.subscribed_pulse_count || 0).toLocaleString()} subscribed · ${Number(otx?.public_phishing_pulse_count || 0).toLocaleString()} public phishing`
-    : `${Number(otx?.pulse_count || 0).toLocaleString()} Pulses`;
-  const otxMeta = otx?.synced_at
-    ? `${otxSourceCounts} · ${Number(otx.indicator_count || 0).toLocaleString()} indicators${otx.skipped_pulse_count ? ` · ${Number(otx.skipped_pulse_count).toLocaleString()} unavailable skipped` : ""} · synchronized ${formatAnalysisDate(otx.synced_at)}`
-    : "Background synchronization is configured in Settings";
+  const otxContent = otxRows || `<li class="reputation-empty">${escapeHtml(otx?.message || "OTX exact on-demand lookup was unavailable for this analysis.")}</li>`;
+  const otxMeta = `${Number(otx?.checked_indicator_count || 0).toLocaleString()} exact indicators checked · ${Number(otx?.strong_match_count || 0).toLocaleString()} high-confidence${otx?.failed_indicator_count ? ` · ${Number(otx.failed_indicator_count).toLocaleString()} unavailable` : ""}`;
   tabs.insertAdjacentHTML("beforeend", '<button class="report-tab" data-report-tab="reputation" type="button">Reputation</button>');
-  shell.insertAdjacentHTML("beforeend", `<section class="report-panel" data-report-panel="reputation"><div class="reputation-intro"><p class="page-kicker">EXTERNAL INTELLIGENCE</p><h3>Indicator reputation</h3><p>VirusTotal receives URLs, hashes and sender domains; AbuseIPDB and ipwho.is receive public IP addresses only. RDAP receives sender domains only. OTX Pulses are synchronized separately, then matched locally without contacting OTX during analysis.</p></div><div class="reputation-grid"><section class="evidence-card"><h3>Links · VirusTotal</h3><ul>${urls}</ul></section><section class="evidence-card"><h3>Attachments · VirusTotal</h3><ul>${files}</ul></section><section class="evidence-card"><h3>Hops · AbuseIPDB and geolocation</h3><ul>${hops}</ul></section><section class="evidence-card"><h3>Sender domains · VirusTotal, RDAP and infrastructure</h3><ul>${domains}</ul></section><section class="evidence-card reputation-otx"><div class="evidence-card-heading"><h3>OTX · synchronized locally</h3><small>${escapeHtml(otxMeta)}</small></div><ul>${otxContent}</ul></section></div></section>`);
+  shell.insertAdjacentHTML("beforeend", `<section class="report-panel" data-report-panel="reputation"><div class="reputation-intro"><p class="page-kicker">EXTERNAL INTELLIGENCE</p><h3>Indicator reputation</h3><p>VirusTotal receives URLs, hashes and sender domains; AbuseIPDB and ipwho.is receive public IP addresses only. RDAP receives sender domains only. OTX accepts only exact native indicators: URLs and hashes require an explicit malicious tag, domains require phishing, and IPs also require independent corroboration.</p></div><div class="reputation-grid"><section class="evidence-card"><h3>Links · VirusTotal</h3><ul>${urls}</ul></section><section class="evidence-card"><h3>Attachments · VirusTotal</h3><ul>${files}</ul></section><section class="evidence-card"><h3>Hops · AbuseIPDB and geolocation</h3><ul>${hops}</ul></section><section class="evidence-card"><h3>Sender domains · VirusTotal, RDAP and infrastructure</h3><ul>${domains}</ul></section><section class="evidence-card reputation-otx"><div class="evidence-card-heading"><h3>OTX · exact on-demand lookup</h3><small>${escapeHtml(otxMeta)}</small></div><ul>${otxContent}</ul></section></div></section>`);
 }
 
 type GlobeHop = { lat: number; lon: number; ip: string; fromHost: string; byHost: string; city: string; country: string; isp: string; score?: number; reports?: number; abuseSummary: string; role: "sender" | "injection" | "relay" | "recipient"; order: number; checkpoints: AuthenticationCheckpoint[]; strongOtxIpMatch: boolean };
@@ -2013,17 +1742,16 @@ function integrateReputation(report: AnalysisReport): void {
   const senderOtx = otxSenderMatches(report);
   if (senderOtx.length) {
     const matches = senderOtx.map((match) => {
-      const strong = isStrongOtxMatch(match);
-      const label = match.indicator_type === "email" ? "Sender email" : match.indicator_type === "domain" ? "Sender domain" : "Sender hostname";
-      return `<li class="otx-context-row static-check static-check-${strong ? "fail" : "neutral"}"><strong>${escapeHtml(label)} · ${escapeHtml(match.indicator || "unknown indicator")}</strong>${otxInlineEvidence([match])}</li>`;
+      const label = match.indicator_type === "domain" ? "Sender domain" : "Sender hostname";
+      return `<li class="otx-context-row static-check static-check-${isStrongOtxMatch(match) ? "fail" : "neutral"}"><strong>${escapeHtml(label)} · ${escapeHtml(match.indicator || "unknown indicator")}</strong>${otxInlineEvidence([match])}</li>`;
     }).join("");
-    sender?.insertAdjacentHTML("beforeend", `<section class="evidence-card inline-reputation inline-otx-card"><h3>Sender · OTX intelligence</h3><p>Local matches from synchronized phishing Pulses.</p><ul>${matches}</ul></section>`);
+    sender?.insertAdjacentHTML("beforeend", `<section class="evidence-card inline-reputation inline-otx-card"><h3>Sender · OTX intelligence</h3><p>Exact on-demand Pulse associations; only phishing-tagged domains can affect risk.</p><ul>${matches}</ul></section>`);
   }
   const auth = panel("auth");
   const hops = orderedReceivedHops(report.received_hops).map((hop, index) => {
     const ips = hop.all_ips || (hop.sender_ip ? [hop.sender_ip] : []);
     const reputations = ips.map((ip) => report.hop_reputation?.[ip] || {});
-    const hopHasOtxMatch = ips.some((ip) => otxMatchesForIp(report, ip).length > 0);
+    const hopHasOtxMatch = ips.some((ip) => otxMatchesForIp(report, ip).some(isStrongOtxMatch));
     const tone = hopHasOtxMatch ? "fail" : hopCheckTone(reputations);
     const details = ips.map((ip) => {
       const reputation = report.hop_reputation?.[ip] || {};
@@ -2305,7 +2033,6 @@ function microsoftLogo(): string {
 }
 
 function renderLogin(): void {
-  stopOtxBackgroundSync();
   root.innerHTML = `<section class="shell" aria-labelledby="title"><aside class="brand-panel"><div class="brand"><img class="brand-mark" src="${fishstopMailCheckUrl}" alt="" aria-hidden="true" /><span>fish<span>stop</span></span></div><div class="hero-copy"><p class="eyebrow">EMAIL DEFENSE DESK</p><h1>Every message<br><em>deserves a check.</em></h1><p class="intro">Quickly identify phishing, scams and Business Email Compromise in email files.</p></div><div class="signal"><span class="signal-dot"></span><span>Private, local protection</span></div><p class="version">FISHSTOP · DESKTOP EDITION</p></aside><section class="login-panel"><div class="login-content"><h2 id="title">Sign in to FishStop</h2><p class="subtitle">Use your Google or Microsoft account to access your personal analysis workspace.</p><div class="auth-options"><button class="provider google" id="google-login" type="button"><span class="provider-icon" aria-hidden="true">${googleLogo()}</span><span>Continue with Google</span><b aria-hidden="true">→</b></button><button class="provider microsoft" id="microsoft-login" type="button"><span class="provider-icon" aria-hidden="true">${microsoftLogo()}</span><span>Continue with Microsoft</span><b aria-hidden="true">→</b></button></div><p class="privacy">By continuing, you agree to the <a href="https://fishstop-eml.streamlit.app/?page=terms" target="_blank" rel="noopener noreferrer">Terms of Service</a> and <a href="https://fishstop-eml.streamlit.app/?page=privacy" target="_blank" rel="noopener noreferrer">Privacy Policy</a>.</p><p class="status" role="status" aria-live="polite"></p></div><footer><span>© 2026 FishStop</span><span>Analyse. Understand. Protect.</span></footer></section></section>`;
   const brandPanel = document.querySelector<HTMLElement>(".brand-panel");
   let pointerFrame = 0;
@@ -2529,7 +2256,7 @@ function contentFor(section: Section, user: AuthUser): string {
     const keys = reputationKeys(user);
     const reputationReady = Boolean(keys.virustotal || keys.abuseipdb || keys.otx);
     const keyRow = (provider: "virustotal" | "abuseipdb" | "otx", name: string, value: string) => `<li class="${value ? "ready" : "missing"}" data-reputation-provider="${provider}"><i aria-hidden="true">${value ? "✓" : "—"}</i><div class="credential-static-copy"><strong>${name}</strong><small>${value ? `Stored locally · ${escapeHtml(maskedSecret(value))}` : "Key not configured"}</small></div><label class="credential-inline-field"><span>${name}</span><input form="reputation-settings" name="${provider}" type="password" autocomplete="new-password" aria-label="${name}" placeholder="${value ? "Enter a new key or leave unchanged" : `Enter the ${provider === "otx" ? "OTX" : provider === "virustotal" ? "VirusTotal" : "AbuseIPDB"} token`}" /></label><b>${value ? "Ready" : "Required"}</b></li>`;
-    return `<div class="page-heading"><div><p class="page-kicker">LOCAL CONFIGURATION</p><h1>Settings</h1><p>External intelligence and local analysis runtime.</p></div></div><div class="settings-grid"><section class="settings-card settings-reputation"><p class="page-kicker">EXTERNAL INTELLIGENCE</p><h2>Reputation</h2><p class="settings-note">FishStop uses a reputation-database engine to check technical indicators against known threats. Email content remains on your device.</p><ul class="credential-list">${keyRow("virustotal", "VirusTotal API key", keys.virustotal)}${keyRow("abuseipdb", "AbuseIPDB API key", keys.abuseipdb)}${keyRow("otx", "AlienVault OTX API key", keys.otx)}</ul><button class="soft-action edit-credentials" id="edit-reputation-keys" type="button">${reputationReady ? "Edit keys" : "Configure keys"}</button><form id="reputation-settings" ${reputationReady ? "hidden" : ""}><label>VirusTotal API key<input name="virustotal" type="password" autocomplete="new-password" placeholder="${keys.virustotal ? "Leave empty to keep the current key" : "Enter the VirusTotal token"}" /></label><label>AbuseIPDB API key<input name="abuseipdb" type="password" autocomplete="new-password" placeholder="${keys.abuseipdb ? "Leave empty to keep the current key" : "Enter the AbuseIPDB token"}" /></label><label>AlienVault OTX API key <small>Required</small><input name="otx" type="password" autocomplete="new-password" placeholder="${keys.otx ? "Leave empty to keep the current key" : "Enter the OTX token"}" /></label><div><button class="primary-action" type="submit">Save changes</button>${reputationReady ? `<button class="cancel-credentials" id="cancel-reputation-edit" type="button">Cancel</button>` : ""}<span id="settings-status" aria-live="polite"></span></div></form><section class="otx-sync-panel" data-status="checking" aria-live="polite"><span class="otx-sync-mark" aria-hidden="true"></span><div><strong>OTX Pulse database</strong><small id="otx-sync-status">Checking the local database…</small></div><div class="otx-database-actions"><button class="soft-action" id="sync-otx-intelligence" type="button" disabled>Checking…</button><button class="danger-action" id="clear-otx-intelligence" type="button" disabled>Delete database</button></div>${otxProgressMarkup()}</section></section><section class="settings-card ollama-lab"><p class="page-kicker">LOCAL AI ENVIRONMENT</p><h2>Machine and automatic model</h2><p class="settings-note">FishStop uses a local AI model to understand email context and its declared identity without sending sensitive data off the device.</p><div class="machine-profile" id="machine-profile" aria-live="polite"><p>Reading machine information…</p></div></section></div>`;
+    return `<div class="page-heading"><div><p class="page-kicker">LOCAL CONFIGURATION</p><h1>Settings</h1><p>External intelligence and local analysis runtime.</p></div></div><div class="settings-grid"><section class="settings-card settings-reputation"><p class="page-kicker">EXTERNAL INTELLIGENCE</p><h2>Reputation</h2><p class="settings-note">FishStop queries OTX on demand using exact native indicators only. URLs and hashes require an explicit malicious tag, domains require phishing, and IPs require independent corroboration. No Pulse database is downloaded or synchronized.</p><ul class="credential-list">${keyRow("virustotal", "VirusTotal API key", keys.virustotal)}${keyRow("abuseipdb", "AbuseIPDB API key", keys.abuseipdb)}${keyRow("otx", "AlienVault OTX API key", keys.otx)}</ul><button class="soft-action edit-credentials" id="edit-reputation-keys" type="button">${reputationReady ? "Edit keys" : "Configure keys"}</button><form id="reputation-settings" ${reputationReady ? "hidden" : ""}><label>VirusTotal API key<input name="virustotal" type="password" autocomplete="new-password" placeholder="${keys.virustotal ? "Leave empty to keep the current key" : "Enter the VirusTotal token"}" /></label><label>AbuseIPDB API key<input name="abuseipdb" type="password" autocomplete="new-password" placeholder="${keys.abuseipdb ? "Leave empty to keep the current key" : "Enter the AbuseIPDB token"}" /></label><label>AlienVault OTX API key <small>Required</small><input name="otx" type="password" autocomplete="new-password" placeholder="${keys.otx ? "Leave empty to keep the current key" : "Enter the OTX token"}" /></label><div><button class="primary-action" type="submit">Save changes</button>${reputationReady ? `<button class="cancel-credentials" id="cancel-reputation-edit" type="button">Cancel</button>` : ""}<span id="settings-status" aria-live="polite"></span></div></form></section><section class="settings-card ollama-lab"><p class="page-kicker">LOCAL AI ENVIRONMENT</p><h2>Machine and automatic model</h2><p class="settings-note">FishStop uses a local AI model to understand email context and its declared identity without sending sensitive data off the device.</p><div class="machine-profile" id="machine-profile" aria-live="polite"><p>Reading machine information…</p></div></section></div>`;
   }
   const dashboardHighRiskCount = history.filter((record) => assessment(record.report).tone === "danger").length;
   const dashboardReviewCount = history.filter((record) => assessment(record.report).tone === "review").length;
@@ -2581,7 +2308,6 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
     .finally(() => {
       void refreshProtectionStatus(user);
       void refreshReputationSettings(user);
-      ensureOtxBackgroundSync(user);
     });
   if (section === "history") document.querySelectorAll<HTMLElement>(".history-item").forEach((item) => {
     const record = readAnalysisHistory(user).find((entry) => entry.id === item.dataset.openHistory);
@@ -2670,7 +2396,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       renderDashboard(user, "history");
     }).catch(() => { /* Keep existing history visible when secure deletion fails. */ });
   });
-  document.querySelector<HTMLButtonElement>("#logout")?.addEventListener("click", () => { activeAnalysis = null; stopOtxBackgroundSync(); localStorage.removeItem(USER_STORAGE_KEY); renderLogin(); });
+  document.querySelector<HTMLButtonElement>("#logout")?.addEventListener("click", () => { activeAnalysis = null; localStorage.removeItem(USER_STORAGE_KEY); renderLogin(); });
   const inlineCredentialForm = document.querySelector<HTMLFormElement>("#reputation-settings");
   if (inlineCredentialForm) {
     inlineCredentialForm.removeAttribute("hidden");
@@ -2716,40 +2442,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       document.querySelector<HTMLButtonElement>("#edit-reputation-keys")?.setAttribute("aria-expanded", "false");
       await refreshReputationSettings(user);
       void refreshProtectionStatus(user, true);
-      if (otx) {
-        otxAutoSyncAttempted.add(user.sub);
-        await runOtxSync(user, true);
-      } else {
-        await refreshOtxStatus(user);
-      }
     }).catch((error) => { if (status) status.textContent = `Could not save credentials: ${String(error)}`; });
-  });
-  document.querySelector<HTMLButtonElement>("#sync-otx-intelligence")?.addEventListener("click", () => {
-    otxAutoSyncAttempted.add(user.sub);
-    void runOtxSync(user, true);
-  });
-  document.querySelector<HTMLButtonElement>("#clear-otx-intelligence")?.addEventListener("click", () => {
-    if (otxMaintenanceInProgress.has(user.sub)) return;
-    if (!window.confirm("Delete the local OTX Pulse database? The API key and saved email analyses will not be removed.")) return;
-    otxMaintenanceInProgress.add(user.sub);
-    const detail = document.querySelector<HTMLElement>("#otx-sync-status");
-    const deleteButton = document.querySelector<HTMLButtonElement>("#clear-otx-intelligence");
-    const syncButton = document.querySelector<HTMLButtonElement>("#sync-otx-intelligence");
-    if (detail) detail.textContent = "Deleting the local OTX database…";
-    if (deleteButton) deleteButton.disabled = true;
-    if (syncButton) syncButton.disabled = true;
-    void invoke<OtxCacheStatus>("clear_otx_intelligence", { userSub: user.sub })
-      .then((result) => {
-        otxMaintenanceInProgress.delete(user.sub);
-        if (storedUser()?.sub === user.sub) renderOtxStatus(result);
-      })
-      .catch((error) => {
-        otxMaintenanceInProgress.delete(user.sub);
-        if (storedUser()?.sub !== user.sub) return;
-        if (detail) detail.textContent = `Could not delete the OTX database: ${String(error)}`;
-        if (deleteButton) deleteButton.disabled = false;
-        if (syncButton) syncButton.disabled = false;
-      });
   });
   const ollamaLab = document.querySelector<HTMLElement>(".ollama-lab");
   const machineProfile = document.querySelector<HTMLElement>("#machine-profile");
@@ -2963,12 +2656,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
     }
     finally {
       unlistenAnalysisProgress?.();
-      void invoke("finish_analysis", { analysisId })
-        .then(() => {
-          const currentUser = storedUser();
-          if (currentUser?.sub === user.sub) void maybeAutoSyncOtx(currentUser, true);
-        })
-        .catch(() => undefined);
+      void invoke("finish_analysis", { analysisId }).catch(() => undefined);
       if (activeAnalysis === session) document.querySelector<HTMLButtonElement>("#eml-drop")?.removeAttribute("disabled");
     }
   };

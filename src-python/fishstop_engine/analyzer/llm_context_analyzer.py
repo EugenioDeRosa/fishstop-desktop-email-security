@@ -839,15 +839,14 @@ def _technical_context_lines(soc: dict, body_for_llm: str = "", link_reputation:
 
     otx = soc.get("otx_intelligence") or {}
     for match in (otx.get("matches") or [])[:5]:
-        supporting = match.get("confidence") == "supporting"
+        strong = match.get("confidence") == "strong" and match.get("match_type") == "exact"
         evidence_label = (
-            "contextual evidence only; shared infrastructure is not a malicious-domain verdict"
-            if supporting
-            else "positive malicious evidence"
+            "OTX exact on-demand match (positive malicious evidence): "
+            if strong
+            else "OTX exact on-demand association (neutral context, not malicious evidence): "
         )
         lines.append(
-            f"OTX synchronized Pulse match ({evidence_label}): "
-            f"type={match.get('indicator_type') or '-'} "
+            evidence_label + f"type={match.get('indicator_type') or '-'} "
             f"indicator={_clip(match.get('indicator', ''), 180)} "
             f"match_type={match.get('match_type') or 'exact'} "
             f"matched_indicator={_clip(match.get('matched_indicator', ''), 180) or '-'} "
@@ -857,7 +856,7 @@ def _technical_context_lines(soc: dict, body_for_llm: str = "", link_reputation:
         )
     if otx.get("status") == "no_match":
         lines.append(
-            "No match was found in the synchronized 365-day OTX database; this is neutral evidence "
+            "No exact match was found by the OTX on-demand lookup; this is neutral evidence "
             "and must not be described as proof that the message is safe"
         )
 
@@ -2583,10 +2582,10 @@ def _technical_risk(soc: dict, semantic: dict | None = None) -> tuple[str, list[
     strong_otx_matches = [
         match
         for match in ((soc.get("otx_intelligence") or {}).get("matches") or [])
-        if match.get("confidence") != "supporting"
+        if match.get("confidence") == "strong" and match.get("match_type") == "exact"
     ]
     if strong_otx_matches:
-        malicious.append("an email indicator exactly matches synchronized OTX threat intelligence")
+        malicious.append("an email indicator exactly matches an OTX Pulse under the high-confidence malicious policy")
 
     if any(link.get("is_ip") for link in (soc.get("links") or [])):
         suspicious.append("the message contains a direct-IP URL")

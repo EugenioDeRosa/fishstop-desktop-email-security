@@ -8,6 +8,7 @@ SQLite database and email analysis performs only point lookups.
 
 from __future__ import annotations
 
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from email.utils import getaddresses
 from functools import lru_cache
@@ -20,6 +21,7 @@ from pathlib import Path
 import re
 import shutil
 import sqlite3
+import threading
 import time
 from typing import Callable
 from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
@@ -39,6 +41,8 @@ OTX_PULSE_DETAILS = f"{OTX_BASE_URL}/api/v1/pulses"
 PUBLIC_PHISHING_QUERY = 'tag:"phishing"'
 PAGE_SIZE = 50
 INDICATOR_PAGE_SIZE = 2_000
+INDICATOR_WORKERS = 4
+MAX_INDICATOR_WORKERS = 8
 MAX_PULSES_PER_INDICATOR = 5
 INITIAL_LOOKBACK_DAYS = 365
 INCREMENTAL_OVERLAP_DAYS = 1
@@ -737,12 +741,34 @@ def _public_budget_reason(
     connection: sqlite3.Connection,
     started_at: float,
 ) -> str:
+    pause_file = os.getenv("FISHSTOP_OTX_PAUSE_FILE", "").strip()
+    if pause_file and Path(pause_file).is_file():
+        return "analysis"
     if time.monotonic() - started_at >= PUBLIC_SYNC_SOFT_SECONDS:
         return "time"
     allocated = _database_allocated_bytes(connection)
     if allocated >= PUBLIC_DATABASE_HARD_BYTES:
         return "database"
     return ""
+
+
+def _indicator_worker_count() -> int:
+    """Return a conservative, user-tunable amount of OTX concurrency."""
+    value = os.getenv("FISHSTOP_OTX_WORKERS", str(INDICATOR_WORKERS))
+    try:
+        workers = int(value)
+    except (TypeError, ValueError):
+        workers = INDICATOR_WORKERS
+    return max(1, min(MAX_INDICATOR_WORKERS, workers))
+
+
+def _otx_worker_session(parent_session):
+    """Create a private requests Session for one downloader thread."""
+    worker_session = requests.Session()
+    headers = getattr(parent_session, "headers", None)
+    if headers:
+        worker_session.headers.update(dict(headers))
+    return worker_session
 
 
 def _enqueue_public_pulse(
@@ -777,7 +803,7 @@ def _process_public_pulse_queue(
     started_at: float,
     report_progress: Callable[[dict], None],
 ) -> tuple[int, str]:
-    """Index each discovered Pulse incrementally without letting one failure block the queue."""
+    """Download Pulse pages concurrently while keeping SQLite writes serialized."""
     rows = connection.execute(
         """SELECT q.*, p.name
            FROM public_pulse_queue q JOIN pulses p ON p.id = q.pulse_id
@@ -785,6 +811,10 @@ def _process_public_pulse_queue(
     ).fetchall()
     queue_total = len(rows)
     skipped = 0
+    worker_count = _indicator_worker_count()
+    thread_local = threading.local()
+    worker_sessions: list = []
+    worker_sessions_lock = threading.Lock()
 
     def defer_or_drop(pulse_id: str, attempts: int) -> None:
         with connection:
@@ -809,114 +839,185 @@ def _process_public_pulse_queue(
                     (attempts, _utc_iso(_utc_now(), synced_at), pulse_id),
                 )
 
-    for queue_index, row in enumerate(rows, start=1):
-        reason = _public_budget_reason(connection, started_at)
-        if reason:
-            return skipped, reason
-        pulse_id = str(row["pulse_id"])
-        next_page = str(row["next_url"])
-        processed = int(row["processed"])
-        total = int(row["total"])
-        stored_supported = int(row["stored"])
-        first_page = processed == 0
-        failed = False
-        while next_page:
-            reason = _public_budget_reason(connection, started_at)
-            if reason:
-                return skipped, reason
-            try:
-                payload = _request_json(
-                    session,
-                    next_page,
-                    params={"limit": INDICATOR_PAGE_SIZE, "include_inactive": 0}
-                    if first_page else None,
-                    timeout=DETAIL_TIMEOUT,
-                    attempts=DETAIL_ATTEMPTS,
-                )
-            except OtxAuthenticationError:
-                raise
-            except (OtxTransientError, requests.RequestException, RuntimeError):
-                skipped += 1
-                failed = True
-                defer_or_drop(pulse_id, int(row["attempts"]) + 1)
-                break
-            indicators = payload.get("results")
-            if not isinstance(indicators, list):
-                indicators = payload.get("indicators")
-            if not isinstance(indicators, list):
-                skipped += 1
-                failed = True
-                defer_or_drop(pulse_id, int(row["attempts"]) + 1)
-                break
-            with connection:
-                if first_page:
-                    connection.execute(
-                        "DELETE FROM pulse_indicators WHERE pulse_id = ?", (pulse_id,)
+    def download_page(state: dict) -> dict:
+        worker_session = getattr(thread_local, "session", None)
+        if worker_session is None:
+            worker_session = _otx_worker_session(session)
+            thread_local.session = worker_session
+            with worker_sessions_lock:
+                worker_sessions.append(worker_session)
+        first_page = state["processed"] == 0
+        return _request_json(
+            worker_session,
+            state["next_url"],
+            params={"limit": INDICATOR_PAGE_SIZE, "include_inactive": 0}
+            if first_page else None,
+            timeout=DETAIL_TIMEOUT,
+            attempts=DETAIL_ATTEMPTS,
+        )
+
+    pending = [
+        {
+            "row": row,
+            "queue_index": queue_index,
+            "pulse_id": str(row["pulse_id"]),
+            "next_url": str(row["next_url"]),
+            "processed": int(row["processed"]),
+            "total": int(row["total"]),
+            "stored": int(row["stored"]),
+        }
+        for queue_index, row in enumerate(rows, start=1)
+    ]
+    resolved = 0
+    progress_percentage = 55
+
+    try:
+        with ThreadPoolExecutor(
+            max_workers=worker_count,
+            thread_name_prefix="otx-indicators",
+        ) as executor:
+            while pending:
+                reason = _public_budget_reason(connection, started_at)
+                if reason:
+                    return skipped, reason
+
+                # One page per Pulse per batch keeps progress fair and preserves
+                # the existing page-level resume checkpoint.
+                batch = pending[:worker_count]
+                del pending[:worker_count]
+                reason = _public_budget_reason(connection, started_at)
+                if reason:
+                    return skipped, reason
+                futures: dict[Future, dict] = {
+                    executor.submit(download_page, state): state for state in batch
+                }
+
+                for future in as_completed(futures):
+                    state = futures[future]
+                    row = state["row"]
+                    pulse_id = state["pulse_id"]
+                    first_page = state["processed"] == 0
+                    try:
+                        payload = future.result()
+                    except OtxAuthenticationError:
+                        raise
+                    except (OtxTransientError, requests.RequestException, RuntimeError):
+                        skipped += 1
+                        resolved += 1
+                        defer_or_drop(pulse_id, int(row["attempts"]) + 1)
+                        continue
+
+                    indicators = payload.get("results")
+                    if not isinstance(indicators, list):
+                        indicators = payload.get("indicators")
+                    if not isinstance(indicators, list):
+                        skipped += 1
+                        resolved += 1
+                        defer_or_drop(pulse_id, int(row["attempts"]) + 1)
+                        continue
+                    try:
+                        following_page = _safe_next_page(payload.get("next"))
+                    except RuntimeError:
+                        skipped += 1
+                        resolved += 1
+                        defer_or_drop(pulse_id, int(row["attempts"]) + 1)
+                        continue
+
+                    with connection:
+                        if first_page:
+                            connection.execute(
+                                "DELETE FROM pulse_indicators WHERE pulse_id = ?",
+                                (pulse_id,),
+                            )
+                        state["stored"] += _store_indicator_batch(
+                            connection, pulse_id, indicators
+                        )
+                        state["processed"] += len(indicators)
+                        try:
+                            state["total"] = max(
+                                state["total"],
+                                int(payload.get("count") or state["processed"]),
+                            )
+                        except (TypeError, ValueError):
+                            state["total"] = max(
+                                state["total"], state["processed"]
+                            )
+                        state["next_url"] = following_page or ""
+                        connection.execute(
+                            """UPDATE public_pulse_queue
+                               SET next_url = ?, processed = ?, total = ?, stored = ?,
+                                   state = 'pending', updated_at = ?
+                               WHERE pulse_id = ?""",
+                            (
+                                state["next_url"],
+                                state["processed"],
+                                state["total"],
+                                state["stored"],
+                                _utc_iso(_utc_now(), synced_at),
+                                pulse_id,
+                            ),
+                        )
+
+                    if following_page:
+                        pending.append(state)
+                    else:
+                        resolved += 1
+                        with connection:
+                            connection.execute(
+                                """UPDATE pulse_sources SET complete = 1
+                                   WHERE pulse_id = ? AND source = 'public_phishing'""",
+                                (pulse_id,),
+                            )
+                            connection.execute(
+                                "DELETE FROM public_pulse_queue WHERE pulse_id = ?",
+                                (pulse_id,),
+                            )
+                            if state["stored"] == 0:
+                                connection.execute(
+                                    "DELETE FROM pulse_sources "
+                                    "WHERE pulse_id = ? AND source = 'public_phishing'",
+                                    (pulse_id,),
+                                )
+                                connection.execute(
+                                    "DELETE FROM pulses WHERE id = ? AND NOT EXISTS "
+                                    "(SELECT 1 FROM pulse_sources WHERE pulse_id = ?)",
+                                    (pulse_id, pulse_id),
+                                )
+
+                    pulse_fraction = (
+                        min(1.0, state["processed"] / state["total"])
+                        if state["total"] else 0.0
                     )
-                stored_supported += _store_indicator_batch(
-                    connection, pulse_id, indicators
-                )
-                processed += len(indicators)
-                try:
-                    total = max(total, int(payload.get("count") or processed))
-                except (TypeError, ValueError):
-                    total = max(total, processed)
-                following_page = _safe_next_page(payload.get("next"))
-                connection.execute(
-                    """UPDATE public_pulse_queue
-                       SET next_url = ?, processed = ?, total = ?, stored = ?,
-                           state = 'pending', updated_at = ?
-                       WHERE pulse_id = ?""",
-                    (
-                        following_page or "",
-                        processed,
-                        total,
-                        stored_supported,
-                        _utc_iso(_utc_now(), synced_at),
-                        pulse_id,
-                    ),
-                )
-            first_page = False
-            next_page = following_page or ""
-            pulse_fraction = min(1.0, processed / total) if total else 0.0
-            report_progress({
-                "phase": "public_indicators",
-                "metric": "current_pulse_indicators",
-                "processed": processed,
-                "total": total or None,
-                "pulse_index": queue_index,
-                "pulse_total": queue_total,
-                "pulse_name": str(row["name"])[:160],
-                "percentage": round(
-                    55 + 40 * ((queue_index - 1 + pulse_fraction) / max(1, queue_total))
-                ),
-                "message": (
-                    f"Pulse {queue_index:,} of {queue_total:,} · "
-                    f"{processed:,} of {total:,} indicators indexed · "
-                    f"{str(row['name'])[:100]}"
-                ),
-            })
-        if failed:
-            continue
-        with connection:
-            connection.execute(
-                """UPDATE pulse_sources SET complete = 1
-                   WHERE pulse_id = ? AND source = 'public_phishing'""",
-                (pulse_id,),
-            )
-            connection.execute(
-                "DELETE FROM public_pulse_queue WHERE pulse_id = ?", (pulse_id,)
-            )
-            if stored_supported == 0:
-                connection.execute(
-                    "DELETE FROM pulse_sources WHERE pulse_id = ? AND source = 'public_phishing'",
-                    (pulse_id,),
-                )
-                connection.execute(
-                    "DELETE FROM pulses WHERE id = ? AND NOT EXISTS "
-                    "(SELECT 1 FROM pulse_sources WHERE pulse_id = ?)",
-                    (pulse_id, pulse_id),
-                )
+                    progress_units = (
+                        resolved if not following_page else resolved + pulse_fraction
+                    )
+                    candidate_percentage = round(
+                        55 + 40 * (progress_units / max(1, queue_total))
+                    )
+                    progress_percentage = max(
+                        progress_percentage, min(95, candidate_percentage)
+                    )
+                    report_progress({
+                        "phase": "public_indicators",
+                        "metric": "current_pulse_indicators",
+                        "processed": state["processed"],
+                        "total": state["total"] or None,
+                        "pulse_index": state["queue_index"],
+                        "pulse_total": queue_total,
+                        "pulse_name": str(row["name"])[:160],
+                        "percentage": progress_percentage,
+                        "message": (
+                            f"Pulse {state['queue_index']:,} of {queue_total:,} · "
+                            f"{state['processed']:,} of {state['total']:,} indicators indexed · "
+                            f"{str(row['name'])[:100]}"
+                        ),
+                    })
+    finally:
+        for worker_session in worker_sessions:
+            try:
+                worker_session.close()
+            except Exception:
+                pass
     return skipped, ""
 
 def sync_subscribed_pulses(
@@ -1009,6 +1110,15 @@ def sync_subscribed_pulses(
                 public_cursor_days,
                 public_window_end_days,
             )
+            subscribed_resume_url = _metadata(
+                connection, "subscribed_search_resume_url"
+            )
+            if subscribed_resume_url:
+                subscribed_resume_url = _safe_next_page(subscribed_resume_url) or ""
+                if not urlsplit(subscribed_resume_url).path.endswith(
+                    "/pulses/subscribed"
+                ):
+                    subscribed_resume_url = ""
             public_resume_url = _metadata(connection, "public_search_resume_url")
             if public_resume_url:
                 public_resume_url = _safe_next_page(public_resume_url) or ""
@@ -1131,20 +1241,29 @@ def sync_subscribed_pulses(
                         f"{next_page}?{urlencode(next_params)}"
                         if next_params else next_page
                     )
-                    if source == "public_phishing":
-                        request_budget_reason = _public_budget_reason(
-                            connection, started_at
-                        )
-                        if request_budget_reason:
-                            public_search_truncated = True
-                            public_limit_reason = request_budget_reason
-                            with connection:
+                    request_budget_reason = _public_budget_reason(
+                        connection, started_at
+                    )
+                    if request_budget_reason and (
+                        source == "public_phishing"
+                        or request_budget_reason == "analysis"
+                    ):
+                        public_search_truncated = True
+                        public_limit_reason = request_budget_reason
+                        with connection:
+                            if source == "subscribed":
+                                _set_metadata(
+                                    connection,
+                                    "subscribed_search_resume_url",
+                                    requested_page,
+                                )
+                            else:
                                 _set_metadata(
                                     connection,
                                     "public_search_resume_url",
                                     requested_page,
                                 )
-                            return request_budget_reason
+                        return request_budget_reason
                     payload = _request_json(session, next_page, params=next_params)
                     next_params = None
                     pulses = payload.get("results") or []
@@ -1197,22 +1316,34 @@ def sync_subscribed_pulses(
                         })
                         return budget_reason
                     next_page = following_page
-                    if source == "public_phishing":
-                        with connection:
+                    with connection:
+                        if source == "public_phishing":
                             _set_metadata(connection, "public_search_resume_url", next_page or "")
+                        else:
+                            _set_metadata(
+                                connection,
+                                "subscribed_search_resume_url",
+                                next_page or "",
+                            )
                 if source == "public_phishing":
                     public_search_truncated = False
                     public_limit_reason = ""
+                else:
+                    with connection:
+                        _set_metadata(connection, "subscribed_search_resume_url", "")
                 return ""
 
-            consume_pages(
-                OTX_SUBSCRIBED_PULSES,
-                {"limit": PAGE_SIZE, "modified_since": incremental_from.isoformat()},
+            subscribed_result = consume_pages(
+                subscribed_resume_url or OTX_SUBSCRIBED_PULSES,
+                {} if subscribed_resume_url else {
+                    "limit": PAGE_SIZE,
+                    "modified_since": incremental_from.isoformat(),
+                },
                 "subscribed",
                 5,
                 25,
             )
-            while public_cursor_days < public_window_days:
+            while not subscribed_result and public_cursor_days < public_window_days:
                 public_window_end_days = min(
                     public_window_days,
                     public_cursor_days + public_slice_days,
@@ -1309,7 +1440,7 @@ def sync_subscribed_pulses(
                     ),
                 })
 
-            if public_cursor_days >= public_window_days:
+            if not subscribed_result and public_cursor_days >= public_window_days:
                 public_search_truncated = False
                 public_limit_reason = ""
                 with connection:
@@ -1318,7 +1449,7 @@ def sync_subscribed_pulses(
                     if bootstrap_public:
                         _set_metadata(connection, "public_coverage_complete", 1)
 
-            if public_limit_reason not in {"time", "database"}:
+            if public_limit_reason not in {"time", "database", "analysis"}:
                 queue_skipped, queue_reason = _process_public_pulse_queue(
                     session,
                     connection,
@@ -1391,6 +1522,7 @@ def sync_subscribed_pulses(
             "database": "the 1 GB database limit",
             "partial": "temporarily unavailable public Pulse pages",
             "service": "OTX's search-result depth for a one-day window",
+            "analysis": "a local email analysis",
         }
         reason = reason_labels.get(status.get("limit_reason"), "its local safety budget")
         status["message"] = (

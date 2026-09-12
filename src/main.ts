@@ -143,6 +143,7 @@ type LocalEngineStatus = { static_engine: boolean; python_runtime: boolean };
 type ReputationKeyStatus = { virustotal: boolean; abuseipdb: boolean; otx: boolean };
 type OtxCacheStatus = { configured: boolean; status: "disabled" | "not_synced" | "ready" | "stale"; synced_at: string; pulse_count: number; subscribed_pulse_count: number; public_phishing_pulse_count: number; indicator_count: number; pending_pulse_count: number; coverage_days: number; skipped_pulse_count: number; truncated: boolean; limit_reason: string; stale: boolean; lookback_days: number; database_bytes: number; message: string };
 type OtxSyncProgress = { user_sub: string; phase: string; metric?: string; processed: number; total?: number; pulse_index?: number; pulse_total?: number; pulse_name?: string; percentage?: number; message: string };
+type AnalysisProgress = { analysis_id: string; stage: string; completed_check?: number; message: string };
 type AiAnalysisResult = NonNullable<AnalysisReport["phi4_analysis"]> & { identity_analysis?: NonNullable<AnalysisReport["identity_analysis"]> };
 type OllamaRuntimeStatus = {
   runtime_ready: boolean; model_ready: boolean; managed: boolean; model: string;
@@ -242,6 +243,10 @@ function renderOtxStatus(status: OtxCacheStatus): void {
   }
   button.disabled = busy;
   button.textContent = busy ? "Synchronizing…" : status.status === "not_synced" ? "Sync now" : "Refresh Pulses";
+  if (status.truncated && status.limit_reason === "analysis") {
+    detail.textContent = "OTX synchronization paused safely during email analysis. It will resume automatically.";
+    return;
+  }
   if (!status.synced_at) {
     detail.textContent = status.message;
     return;
@@ -419,6 +424,7 @@ async function runOtxSync(user: AuthUser, force: boolean): Promise<void> {
 }
 
 async function maybeAutoSyncOtx(user: AuthUser, scheduled = false): Promise<void> {
+  if (activeAnalysis?.status === "processing") return;
   const shouldAutoSync = scheduled || !otxAutoSyncAttempted.has(user.sub);
   if (!scheduled && shouldAutoSync) otxAutoSyncAttempted.add(user.sub);
   if (!shouldAutoSync) {
@@ -427,7 +433,7 @@ async function maybeAutoSyncOtx(user: AuthUser, scheduled = false): Promise<void
     return;
   }
   const status = await refreshOtxStatus(user);
-  const resumable = Boolean(status?.truncated && ["time", "partial"].includes(status.limit_reason));
+  const resumable = Boolean(status?.truncated && ["time", "partial", "analysis"].includes(status.limit_reason));
   const needsRefresh = Boolean(status && (
     status.status !== "ready"
     || status.lookback_days < OTX_LOOKBACK_DAYS
@@ -867,10 +873,10 @@ function inboxIconMarkup(): string {
   return `<svg class="inbox-nav-icon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false" style="display:block;overflow:visible"><rect x="3.25" y="5.25" width="17.5" height="13.5" rx="2.4"></rect><path d="m4.35 7.05 6.05 4.65a2.6 2.6 0 0 0 3.2 0l6.05-4.65"></path></svg>`;
 }
 
-function analysisLoadingMarkup(fileName: string, completedChecks: number[] = []): string {
-  const checks = ["Static checks and reputation", "Declared identity", "Intent analysis", "Content summary", "Verdict explanation", "Final report"];
+function analysisLoadingMarkup(fileName: string, completedChecks: number[] = [], progressMessage = "Each signal is processed on this device."): string {
+  const checks = ["Static checks and reputation", "Local AI model preparation", "Content and intent analysis", "Declared identity", "Verdict synthesis", "Final report"];
   const completed = new Set(completedChecks);
-  return `<section class="analysis-loading" aria-live="polite"><div class="loading-orbit"><i></i><b aria-hidden="true">${searchIconMarkup()}</b></div><div><p class="page-kicker">LOCAL ANALYSIS IN PROGRESS</p><h2>Checking ${escapeHtml(fileName)}</h2><p class="loading-copy">Each signal is processed on this device.</p></div><ol>${checks.map((label, index) => `<li data-loading-check="${index}" class="${completed.has(index) ? "done" : ""}"><span>✓</span>${label}</li>`).join("")}</ol></section>`;
+  return `<section class="analysis-loading" aria-live="polite"><div class="loading-orbit"><i></i><b aria-hidden="true">${searchIconMarkup()}</b></div><div><p class="page-kicker">LOCAL ANALYSIS IN PROGRESS</p><h2>Checking ${escapeHtml(fileName)}</h2><p class="loading-copy">${escapeHtml(progressMessage)}</p></div><ol>${checks.map((label, index) => `<li data-loading-check="${index}" class="${completed.has(index) ? "done" : ""}"><span>✓</span>${label}</li>`).join("")}</ol></section>`;
 }
 
 function markLoadingCheck(container: HTMLElement, index: number): void {
@@ -2482,9 +2488,9 @@ function analysisPageContent(user: AuthUser, source: "file" | "inbox" = "file"):
         ? `Analysis complete: ${title}.`
         : "Only technical indicators such as IP addresses, domains, URLs and file hashes are sent to external reputation services when their API keys are configured.";
   const result = hasReport
-    ? (isProcessing ? analysisLoadingMarkup(active!.fileName, active!.completedChecks) : reportMarkup(active!.report!))
+    ? (isProcessing ? analysisLoadingMarkup(active!.fileName, active!.completedChecks, active!.progressMessage) : reportMarkup(active!.report!))
     : isProcessing
-      ? analysisLoadingMarkup(active!.fileName, active!.completedChecks)
+      ? analysisLoadingMarkup(active!.fileName, active!.completedChecks, active!.progressMessage)
       : "";
   const intake = source === "file"
     ? `<section class="eml-intake" id="eml-intake" ${isProcessing || hasReport ? "hidden" : ""}><button class="drop-zone" id="eml-drop" type="button"><span class="drop-icon">↥</span><strong>Drop an .eml file here</strong><span>or select it from your computer · max 40 MB</span></button><input id="eml-input" type="file" accept=".eml,message/rfc822" hidden /></section>`
@@ -2899,19 +2905,42 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
     if (result) result.innerHTML = analysisLoadingMarkup(fileName, session.completedChecks);
     uploadStatus.textContent = session.progressMessage || `Local analysis of ${fileName} in progress…`;
     dropZone?.setAttribute("disabled", "true");
+    let lastProgressPaint = 0;
+    let progressTail = Promise.resolve();
+    const queueProgress = (check: number | undefined, message?: string) => {
+      if (message) {
+        session.progressMessage = message;
+        if (analysisIsVisible(session)) {
+          const status = document.querySelector<HTMLElement>("#upload-status");
+          if (status) status.textContent = message;
+          const copy = document.querySelector<HTMLElement>("#analysis-result .loading-copy");
+          if (copy) copy.textContent = message;
+        }
+      }
+      if (check === undefined || session.completedChecks?.includes(check)) return;
+      progressTail = progressTail.then(async () => {
+        const elapsed = performance.now() - lastProgressPaint;
+        if (lastProgressPaint && elapsed < 260) await pause(260 - elapsed);
+        if (activeAnalysis !== session) return;
+        updateAnalysisProgress(session, check, message);
+        lastProgressPaint = performance.now();
+      });
+    };
+    const unlistenAnalysisProgress = await listen<AnalysisProgress>("analysis-progress", (event) => {
+      if (event.payload.analysis_id !== analysisId || activeAnalysis !== session) return;
+      queueProgress(event.payload.completed_check, event.payload.message);
+    }).catch(() => null);
     try {
       const report = await request(analysisId);
       if (activeAnalysis !== session) return;
       session.report = report;
-      updateAnalysisProgress(session, 0, "Identity, intent and AI summaries in progress…");
+      queueProgress(0, "Static checks complete. Preparing the local AI model…");
       await runAiAnalysis(user, report, null, document.createElement("div"), startedAt, analysisId, () => activeAnalysis === session, (engine) => {
-        if (activeAnalysis === session) updateAnalysisProgress(session, engine === "identity" ? 1 : engine === "phi4" ? 2 : engine === "content-summary" ? 3 : 4);
+        if (activeAnalysis === session) queueProgress(engine === "identity" ? 3 : engine === "phi4" ? 4 : undefined);
       });
       if (activeAnalysis !== session) return;
       session.recordId = await saveAnalysis(user, report, Math.round(performance.now() - startedAt));
-      // Let the browser paint the completed AI-summary step before completing
-      // the final-report step, then keep the fully checked state visible.
-      await pause(180);
+      await progressTail;
       if (activeAnalysis !== session) return;
       updateAnalysisProgress(session, 5);
       session.status = "complete";
@@ -2933,7 +2962,13 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       }
     }
     finally {
-      void invoke("finish_analysis", { analysisId }).catch(() => undefined);
+      unlistenAnalysisProgress?.();
+      void invoke("finish_analysis", { analysisId })
+        .then(() => {
+          const currentUser = storedUser();
+          if (currentUser?.sub === user.sub) void maybeAutoSyncOtx(currentUser, true);
+        })
+        .catch(() => undefined);
       if (activeAnalysis === session) document.querySelector<HTMLButtonElement>("#eml-drop")?.removeAttribute("disabled");
     }
   };

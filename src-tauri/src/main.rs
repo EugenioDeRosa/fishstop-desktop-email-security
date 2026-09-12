@@ -9,7 +9,7 @@ use std::{
     net::TcpListener,
     path::{Path, PathBuf},
     process::{Command, Output, Stdio},
-    sync::{Arc, Mutex},
+    sync::{Arc, Condvar, Mutex},
     thread,
     time::{Duration, Instant},
 };
@@ -161,6 +161,14 @@ struct OtxSyncProgress {
     message: String,
 }
 
+#[derive(Clone, Serialize)]
+struct AnalysisProgress {
+    analysis_id: String,
+    stage: String,
+    completed_check: Option<u8>,
+    message: String,
+}
+
 fn reputation_key_entry(user_sub: &str) -> Result<Entry, String> {
     if user_sub.trim().is_empty() {
         return Err("A signed-in user is required to access secure credentials.".to_string());
@@ -225,6 +233,17 @@ fn otx_cache_file(app: &tauri::AppHandle, user_sub: &str) -> Result<PathBuf, Str
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     Ok(directory.join(format!("{identifier}.sqlite3")))
+}
+
+fn otx_analysis_pause_file(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let directory = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("Could not locate FishStop data: {error}"))?
+        .join("otx");
+    fs::create_dir_all(&directory)
+        .map_err(|error| format!("Could not prepare OTX cache storage: {error}"))?;
+    Ok(directory.join(".analysis-pause"))
 }
 
 fn history_cipher(key: &[u8; 32]) -> Result<Aes256Gcm, String> {
@@ -601,6 +620,7 @@ async fn sync_otx_intelligence(
     user_sub: String,
     force: bool,
     cache: tauri::State<'_, Arc<Mutex<ReputationCredentialCache>>>,
+    coordinator: tauri::State<'_, Arc<OtxWorkCoordinator>>,
 ) -> Result<OtxCacheStatus, String> {
     let credentials = load_reputation_credentials(&user_sub, &cache)?;
     if credentials.otx.trim().is_empty() {
@@ -613,17 +633,29 @@ async fn sync_otx_intelligence(
             return Ok(current);
         }
     }
+    let pause_file = otx_analysis_pause_file(&app)?;
+    if !coordinator.begin_sync()? {
+        let mut current = read_otx_cache_status(&path, true)?;
+        current.truncated = true;
+        current.limit_reason = "analysis".to_string();
+        current.message = "OTX synchronization is paused while an email is being analyzed and will resume automatically."
+            .to_string();
+        return Ok(current);
+    }
+    let coordinator = Arc::clone(&coordinator);
     let api_key = credentials.otx;
     let sync_path = path.clone();
     let progress_app = app.clone();
     let progress_user = user_sub.clone();
     tauri::async_runtime::spawn_blocking(move || {
+        let _sync_lease = OtxSyncLease(coordinator);
         let output = engine_command().and_then(|mut command| {
             command
                 .arg("otx-sync")
                 .arg(&sync_path)
                 .env("OTX_API_KEY", api_key)
-                .env("FISHSTOP_OTX_PROGRESS", "1");
+                .env("FISHSTOP_OTX_PROGRESS", "1")
+                .env("FISHSTOP_OTX_PAUSE_FILE", pause_file);
             run_otx_sync_with_progress(
                 command,
                 OTX_SYNC_TIMEOUT,
@@ -1627,6 +1659,7 @@ async fn analyze_mailbox_message(
     analysis_id: String,
     cache: tauri::State<'_, Arc<Mutex<ReputationCredentialCache>>>,
     cancellation: tauri::State<'_, Arc<AnalysisCancellation>>,
+    coordinator: tauri::State<'_, Arc<OtxWorkCoordinator>>,
 ) -> Result<serde_json::Value, String> {
     if message_id.trim().is_empty() || message_id.len() > 2048 {
         return Err("Invalid mailbox message identifier.".to_string());
@@ -1634,10 +1667,13 @@ async fn analyze_mailbox_message(
     let otx_cache_path = otx_cache_file(&app, &user_sub)?;
     let cache = Arc::clone(&cache);
     let cancellation = Arc::clone(&cancellation);
+    let coordinator = Arc::clone(&coordinator);
+    let pause_file = otx_analysis_pause_file(&app)?;
     tauri::async_runtime::spawn_blocking(move || {
         if cancellation.is_cancelled(&analysis_id) {
             return Err("Analysis cancelled.".to_string());
         }
+        coordinator.begin_analysis(&analysis_id, &pause_file)?;
         let token = mailbox_access_token(&user_sub, &provider, &cache)?;
         let contents = match provider.as_str() {
             "google" => download_google_message(&token, &message_id),
@@ -1761,11 +1797,109 @@ impl AnalysisCancellation {
     }
 }
 
+#[derive(Default)]
+struct OtxWorkState {
+    sync_running: bool,
+    analyses: HashSet<String>,
+}
+
+#[derive(Default)]
+struct OtxWorkCoordinator {
+    state: Mutex<OtxWorkState>,
+    sync_idle: Condvar,
+}
+
+impl OtxWorkCoordinator {
+    fn begin_sync(&self) -> Result<bool, String> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "OTX workload coordination is unavailable.".to_string())?;
+        if state.sync_running || !state.analyses.is_empty() {
+            return Ok(false);
+        }
+        state.sync_running = true;
+        Ok(true)
+    }
+
+    fn finish_sync(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.sync_running = false;
+            self.sync_idle.notify_all();
+        }
+    }
+
+    fn begin_analysis(&self, analysis_id: &str, pause_file: &Path) -> Result<(), String> {
+        {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| "OTX workload coordination is unavailable.".to_string())?;
+            state.analyses.insert(analysis_id.to_string());
+        }
+        if let Err(error) = fs::write(pause_file, b"email-analysis\n") {
+            if let Ok(mut state) = self.state.lock() {
+                state.analyses.remove(analysis_id);
+            }
+            return Err(format!(
+                "Could not pause OTX synchronization before analysis: {error}"
+            ));
+        }
+
+        // A request already in flight cannot be interrupted without throwing
+        // away its page. Allow its bounded retries to finish, then let Python
+        // publish the checkpoint atomically before analysis starts.
+        let deadline = Instant::now() + Duration::from_secs(120);
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "OTX workload coordination is unavailable.".to_string())?;
+        while state.sync_running {
+            let now = Instant::now();
+            if now >= deadline {
+                state.analyses.remove(analysis_id);
+                if state.analyses.is_empty() {
+                    let _ = fs::remove_file(pause_file);
+                }
+                return Err(
+                    "OTX synchronization did not reach a safe checkpoint before analysis. Try again shortly."
+                        .to_string(),
+                );
+            }
+            let remaining = deadline.saturating_duration_since(now);
+            let (next_state, _) = self
+                .sync_idle
+                .wait_timeout(state, remaining)
+                .map_err(|_| "OTX workload coordination is unavailable.".to_string())?;
+            state = next_state;
+        }
+        Ok(())
+    }
+
+    fn finish_analysis(&self, analysis_id: &str, pause_file: &Path) {
+        if let Ok(mut state) = self.state.lock() {
+            state.analyses.remove(analysis_id);
+            if state.analyses.is_empty() {
+                let _ = fs::remove_file(pause_file);
+            }
+        }
+    }
+}
+
+struct OtxSyncLease(Arc<OtxWorkCoordinator>);
+
+impl Drop for OtxSyncLease {
+    fn drop(&mut self) {
+        self.0.finish_sync();
+    }
+}
+
 fn run_command_with_timeout_cancellable(
     mut command: Command,
     timeout: Duration,
     description: &str,
     cancellation: Option<(Arc<AnalysisCancellation>, String)>,
+    analysis_progress: Option<(tauri::AppHandle, String)>,
 ) -> Result<Output, String> {
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = command
@@ -1775,7 +1909,7 @@ fn run_command_with_timeout_cancellable(
         .stdout
         .take()
         .ok_or_else(|| format!("{description} has no stdout pipe"))?;
-    let mut stderr = child
+    let stderr = child
         .stderr
         .take()
         .ok_or_else(|| format!("{description} has no stderr pipe"))?;
@@ -1783,9 +1917,46 @@ fn run_command_with_timeout_cancellable(
         let mut bytes = Vec::new();
         stdout.read_to_end(&mut bytes).map(|_| bytes)
     });
-    let stderr_reader = thread::spawn(move || {
-        let mut bytes = Vec::new();
-        stderr.read_to_end(&mut bytes).map(|_| bytes)
+    let stderr_reader = thread::spawn(move || -> std::io::Result<Vec<u8>> {
+        let mut reader = BufReader::new(stderr);
+        let mut captured = Vec::new();
+        loop {
+            let mut line = String::new();
+            if reader.read_line(&mut line)? == 0 {
+                break;
+            }
+            let payload = serde_json::from_str::<serde_json::Value>(line.trim()).ok();
+            let is_analysis_progress = payload
+                .as_ref()
+                .and_then(|value| value.get("type"))
+                .and_then(|value| value.as_str())
+                == Some("analysis-progress");
+            if let (Some((app, analysis_id)), Some(value)) =
+                (analysis_progress.as_ref(), payload.filter(|_| is_analysis_progress))
+            {
+                let progress = AnalysisProgress {
+                    analysis_id: analysis_id.clone(),
+                    stage: value
+                        .get("stage")
+                        .and_then(|item| item.as_str())
+                        .unwrap_or("analysis")
+                        .to_string(),
+                    completed_check: value
+                        .get("completed_check")
+                        .and_then(|item| item.as_u64())
+                        .map(|item| item.min(5) as u8),
+                    message: value
+                        .get("message")
+                        .and_then(|item| item.as_str())
+                        .unwrap_or("Local AI analysis in progress…")
+                        .to_string(),
+                };
+                let _ = app.emit("analysis-progress", progress);
+            } else {
+                captured.extend_from_slice(line.as_bytes());
+            }
+        }
+        Ok(captured)
     });
     let started_at = Instant::now();
 
@@ -1846,7 +2017,7 @@ fn run_command_with_timeout(
     timeout: Duration,
     description: &str,
 ) -> Result<Output, String> {
-    run_command_with_timeout_cancellable(command, timeout, description, None)
+    run_command_with_timeout_cancellable(command, timeout, description, None, None)
 }
 
 fn run_otx_sync_with_progress(
@@ -1953,6 +2124,7 @@ fn run_eml_engine(
             STATIC_ENGINE_TIMEOUT,
             "the FishStop engine",
             Some((cancellation, analysis_id)),
+            None,
         )
     });
     let _ = fs::remove_file(&temporary_eml);
@@ -2055,11 +2227,18 @@ async fn analyze_eml(
     analysis_id: String,
     cache: tauri::State<'_, Arc<Mutex<ReputationCredentialCache>>>,
     cancellation: tauri::State<'_, Arc<AnalysisCancellation>>,
+    coordinator: tauri::State<'_, Arc<OtxWorkCoordinator>>,
 ) -> Result<serde_json::Value, String> {
     let otx_cache_path = otx_cache_file(&app, &user_sub)?;
     let cache = Arc::clone(&cache);
     let cancellation = Arc::clone(&cancellation);
+    let coordinator = Arc::clone(&coordinator);
+    let pause_file = otx_analysis_pause_file(&app)?;
     tauri::async_runtime::spawn_blocking(move || {
+        if cancellation.is_cancelled(&analysis_id) {
+            return Err("Analysis cancelled.".to_string());
+        }
+        coordinator.begin_analysis(&analysis_id, &pause_file)?;
         analyze_eml_with_engine(
             path,
             user_sub,
@@ -2082,11 +2261,18 @@ async fn analyze_eml_contents(
     analysis_id: String,
     cache: tauri::State<'_, Arc<Mutex<ReputationCredentialCache>>>,
     cancellation: tauri::State<'_, Arc<AnalysisCancellation>>,
+    coordinator: tauri::State<'_, Arc<OtxWorkCoordinator>>,
 ) -> Result<serde_json::Value, String> {
     let otx_cache_path = otx_cache_file(&app, &user_sub)?;
     let cache = Arc::clone(&cache);
     let cancellation = Arc::clone(&cancellation);
+    let coordinator = Arc::clone(&coordinator);
+    let pause_file = otx_analysis_pause_file(&app)?;
     tauri::async_runtime::spawn_blocking(move || {
+        if cancellation.is_cancelled(&analysis_id) {
+            return Err("Analysis cancelled.".to_string());
+        }
+        coordinator.begin_analysis(&analysis_id, &pause_file)?;
         analyze_eml_contents_with_engine(
             file_name,
             contents,
@@ -2108,6 +2294,7 @@ fn analyze_ai_with_engine(
     gpu_accelerated: bool,
     analysis_id: String,
     cancellation: Arc<AnalysisCancellation>,
+    app: tauri::AppHandle,
 ) -> Result<serde_json::Value, String> {
     if command != "phi4" {
         return Err("Unsupported AI engine.".to_string());
@@ -2158,7 +2345,8 @@ fn analyze_ai_with_engine(
             engine,
             ai_engine_timeout(gpu_accelerated),
             "the AI engine",
-            Some((cancellation, analysis_id)),
+            Some((cancellation, analysis_id.clone())),
+            Some((app, analysis_id)),
         )
     });
     let _ = fs::remove_file(&temporary_report);
@@ -2199,11 +2387,29 @@ async fn analyze_phi4(
             if cancellation.is_cancelled(&analysis_id) {
                 return Err("Analysis cancelled.".to_string());
             }
+            let _ = app.emit(
+                "analysis-progress",
+                AnalysisProgress {
+                    analysis_id: analysis_id.clone(),
+                    stage: "model-loading".to_string(),
+                    completed_check: None,
+                    message: "Loading the local AI model…".to_string(),
+                },
+            );
             ollama_runtime::warm_default_model(&app, &runtime)?;
             if cancellation.is_cancelled(&analysis_id) {
                 return Err("Analysis cancelled.".to_string());
             }
             let prepared_model = ollama_runtime::prepare_model(&app, &runtime)?;
+            let _ = app.emit(
+                "analysis-progress",
+                AnalysisProgress {
+                    analysis_id: analysis_id.clone(),
+                    stage: "model-ready".to_string(),
+                    completed_check: Some(1),
+                    message: "The local AI model is ready. Analyzing content and intent…".to_string(),
+                },
+            );
             analyze_ai_with_engine(
                 "phi4",
                 report,
@@ -2211,6 +2417,7 @@ async fn analyze_phi4(
                 prepared_model.gpu_accelerated,
                 analysis_id,
                 cancellation,
+                app.clone(),
             )
         })();
         let _ = ollama_runtime::unload_default_model();
@@ -2234,10 +2441,15 @@ fn cancel_analysis(
 
 #[tauri::command]
 fn finish_analysis(
+    app: tauri::AppHandle,
     analysis_id: String,
     cancellation: tauri::State<'_, Arc<AnalysisCancellation>>,
-) {
+    coordinator: tauri::State<'_, Arc<OtxWorkCoordinator>>,
+) -> Result<(), String> {
     cancellation.finish(&analysis_id);
+    let pause_file = otx_analysis_pause_file(&app)?;
+    coordinator.finish_analysis(&analysis_id, &pause_file);
+    Ok(())
 }
 
 #[tauri::command]
@@ -2354,9 +2566,13 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(Arc::new(AnalysisCancellation::default()))
+        .manage(Arc::new(OtxWorkCoordinator::default()))
         .manage(Arc::new(Mutex::new(OllamaRuntime::default())))
         .manage(Arc::new(Mutex::new(ReputationCredentialCache::default())))
         .setup(|_app| {
+            if let Ok(pause_file) = otx_analysis_pause_file(_app.handle()) {
+                let _ = fs::remove_file(pause_file);
+            }
             // Windows keeps the executable icon and the live window/taskbar
             // icon separately. Reapply Tauri's bundled icon to the main
             // window so both surfaces always use the same FishStop artwork.
@@ -2415,6 +2631,38 @@ mod tests {
 
         cancellation.finish("analysis-a");
         assert!(!cancellation.is_cancelled("analysis-a"));
+    }
+
+    #[test]
+    fn email_analysis_waits_for_otx_checkpoint_and_releases_the_pause() {
+        let coordinator = Arc::new(OtxWorkCoordinator::default());
+        let pause_file = std::env::temp_dir().join(format!(
+            "fishstop-otx-pause-{}",
+            random_url_safe(12)
+        ));
+        assert!(coordinator.begin_sync().unwrap());
+
+        let waiting_coordinator = Arc::clone(&coordinator);
+        let waiting_pause_file = pause_file.clone();
+        let waiter = thread::spawn(move || {
+            waiting_coordinator.begin_analysis("analysis-a", &waiting_pause_file)
+        });
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !pause_file.is_file() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(pause_file.is_file());
+        assert!(!coordinator.begin_sync().unwrap());
+
+        coordinator.finish_sync();
+        assert!(waiter.join().unwrap().is_ok());
+        assert!(!coordinator.begin_sync().unwrap());
+
+        coordinator.finish_analysis("analysis-a", &pause_file);
+        assert!(!pause_file.exists());
+        assert!(coordinator.begin_sync().unwrap());
+        coordinator.finish_sync();
     }
 
     #[test]

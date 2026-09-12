@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -114,6 +115,164 @@ class LocalOtxIntelligenceTests(unittest.TestCase):
                     2,
                     connection.execute("SELECT COUNT(*) FROM indicators").fetchone()[0],
                 )
+
+    def test_public_indicator_queue_downloads_different_pulses_concurrently(self):
+        pulse_ids = (
+            "0123456789abcdef01234567",
+            "89abcdef0123456701234567",
+        )
+        now = datetime.now(timezone.utc)
+        barrier = threading.Barrier(2)
+        lock = threading.Lock()
+        active = 0
+        maximum_active = 0
+        session_ids = set()
+
+        def request(session, url, **_kwargs):
+            nonlocal active, maximum_active
+            pulse_id = next(item for item in pulse_ids if item in url)
+            with lock:
+                session_ids.add(id(session))
+                active += 1
+                maximum_active = max(maximum_active, active)
+            try:
+                barrier.wait(timeout=2)
+                return {
+                    "count": 1,
+                    "next": None,
+                    "results": [{
+                        "type": "domain",
+                        "indicator": f"{pulse_id}.example",
+                    }],
+                }
+            finally:
+                with lock:
+                    active -= 1
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "otx.sqlite3"
+            with _database_connection(path) as connection:
+                _initialize_database(connection)
+                with connection:
+                    for pulse_id in pulse_ids:
+                        _enqueue_public_pulse(
+                            connection,
+                            {**PULSE, "id": pulse_id, "name": f"Pulse {pulse_id}"},
+                            now,
+                        )
+                with (
+                    patch("fishstop_engine.otx_intelligence._request_json", request),
+                    patch(
+                        "fishstop_engine.otx_intelligence._indicator_worker_count",
+                        return_value=2,
+                    ),
+                    patch(
+                        "fishstop_engine.otx_intelligence._public_budget_reason",
+                        return_value="",
+                    ),
+                ):
+                    _process_public_pulse_queue(
+                        object(), connection, now, 0, lambda _event: None
+                    )
+
+                self.assertEqual(2, maximum_active)
+                self.assertEqual(2, len(session_ids))
+                self.assertEqual(
+                    0,
+                    connection.execute(
+                        "SELECT COUNT(*) FROM public_pulse_queue"
+                    ).fetchone()[0],
+                )
+                self.assertEqual(
+                    2,
+                    connection.execute("SELECT COUNT(*) FROM indicators").fetchone()[0],
+                )
+
+    def test_analysis_pause_checkpoints_and_resumes_subscribed_pagination(self):
+        second_id = "89abcdef0123456701234567"
+        calls = []
+
+        class Response:
+            status_code = 200
+            headers = {}
+
+            def __init__(self, payload):
+                self.payload = payload
+
+            @staticmethod
+            def raise_for_status():
+                return None
+
+            def json(self):
+                return self.payload
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "otx.sqlite3"
+            pause_file = Path(directory) / "analysis.pause"
+
+            class Session:
+                def __init__(self):
+                    self.headers = {}
+
+                def get(self, url, **_kwargs):
+                    calls.append(url)
+                    if "/pulses/subscribed" in url:
+                        if "page=2" in url:
+                            return Response({
+                                "next": None,
+                                "results": [{
+                                    **PULSE,
+                                    "id": second_id,
+                                    "name": "Second subscribed Pulse",
+                                    "indicators": [{
+                                        "type": "domain",
+                                        "indicator": "second.example",
+                                    }],
+                                }],
+                            })
+                        pause_file.write_text("analysis", encoding="utf-8")
+                        return Response({
+                            "next": (
+                                "https://otx.alienvault.com/api/v1/"
+                                "pulses/subscribed?page=2"
+                            ),
+                            "results": [{
+                                **PULSE,
+                                "name": "First subscribed Pulse",
+                                "indicators": [{
+                                    "type": "domain",
+                                    "indicator": "first.example",
+                                }],
+                            }],
+                        })
+                    if "/search/pulses" in url:
+                        return Response({"next": None, "results": []})
+                    raise AssertionError(f"Unexpected OTX URL: {url}")
+
+            with (
+                patch("fishstop_engine.otx_intelligence.requests.Session", Session),
+                patch.dict(
+                    "os.environ",
+                    {"FISHSTOP_OTX_PAUSE_FILE": str(pause_file)},
+                ),
+                patch(
+                    "fishstop_engine.otx_intelligence.PUBLIC_SEARCH_WINDOW_DAYS",
+                    365,
+                ),
+            ):
+                paused = sync_subscribed_pulses(str(path), "test-key")
+                self.assertTrue(paused["truncated"])
+                self.assertEqual("analysis", paused["limit_reason"])
+                self.assertEqual(1, paused["indicator_count"])
+
+                pause_file.unlink()
+                calls.clear()
+                resumed = sync_subscribed_pulses(str(path), "test-key")
+
+            self.assertFalse(resumed["truncated"])
+            self.assertEqual(2, resumed["indicator_count"])
+            self.assertTrue(any("subscribed?page=2" in url for url in calls))
+            self.assertFalse(any(url.endswith("/pulses/subscribed") for url in calls))
 
     def test_page_51_bad_request_is_recognized_as_search_depth_limit(self):
         class Response:

@@ -56,6 +56,25 @@ def _write_json(payload: Any, *, flush: bool = False) -> None:
         sys.stdout.flush()
 
 
+def _write_analysis_progress(stage: str, message: str, completed_check: int | None = None) -> None:
+    """Send live AI progress on stderr without contaminating the JSON result."""
+    payload: dict[str, Any] = {
+        "type": "analysis-progress",
+        "stage": stage,
+        "message": message,
+    }
+    if completed_check is not None:
+        payload["completed_check"] = completed_check
+    encoded = _json_bytes(payload) + b"\n"
+    binary_stderr = getattr(sys.stderr, "buffer", None)
+    if binary_stderr is not None:
+        binary_stderr.write(encoded)
+        binary_stderr.flush()
+        return
+    sys.stderr.write(encoded.decode("utf-8"))
+    sys.stderr.flush()
+
+
 def _stdin_lines() -> Any:
     """Read protocol messages as UTF-8 even when Windows uses a legacy code page."""
     binary_stdin = getattr(sys.stdin, "buffer", None)
@@ -106,10 +125,34 @@ def analyze_phi4(report_path: str) -> dict[str, Any]:
     last_event: dict[str, Any] = {}
     for event in stream_phi4_email_analysis(report):
         last_event = event
+        if event.get("status") == "progress":
+            stage = str(event.get("stage") or "content")
+            current = int(event.get("current") or 0)
+            total = int(event.get("total") or 0)
+            if stage == "merge":
+                message = "The AI model finished reading the email and is combining the results…"
+            elif stage == "retry":
+                message = "The AI model is refining the structured analysis…"
+            elif total > 1 and current > 0:
+                message = f"The AI model is analyzing email section {current} of {total}…"
+            else:
+                message = "The AI model is analyzing the complete email…"
+            completed_check = 2 if stage == "merge" else None
+            _write_analysis_progress(stage, message, completed_check)
         if event.get("status") == "error":
             raise RuntimeError(str(event.get("message") or "Phi-4 analysis failed."))
     if last_event.get("status") != "ok":
         raise RuntimeError("Phi-4 did not return a final result.")
+    _write_analysis_progress(
+        "identity",
+        "Declared identity and domain coherence have been evaluated.",
+        3,
+    )
+    _write_analysis_progress(
+        "verdict",
+        "The risk policy has produced the final verdict.",
+        4,
+    )
     return _json_safe({
         "status": "ok", "analysis": last_event.get("analysis"),
         "backend": last_event.get("backend"), "model": last_event.get("model"),

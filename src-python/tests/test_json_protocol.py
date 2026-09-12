@@ -54,6 +54,19 @@ class JsonProtocolTests(unittest.TestCase):
 
         self.assertEqual(['{"subject":"Caffè €"}\n'], lines)
 
+    def test_analysis_progress_uses_stderr_without_contaminating_stdout(self) -> None:
+        stdout = _BinaryOutput()
+        stderr = _BinaryOutput()
+
+        with patch.object(sys, "stdout", stdout), patch.object(sys, "stderr", stderr):
+            main._write_analysis_progress("merge", "Combining results…", 2)
+
+        self.assertEqual(b"", stdout.buffer.getvalue())
+        payload = json.loads(stderr.buffer.getvalue().decode("utf-8"))
+        self.assertEqual("analysis-progress", payload["type"])
+        self.assertEqual("merge", payload["stage"])
+        self.assertEqual(2, payload["completed_check"])
+
 
 if __name__ == "__main__":
     unittest.main()

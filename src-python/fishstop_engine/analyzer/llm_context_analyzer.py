@@ -762,9 +762,16 @@ def _technical_context_lines(soc: dict, body_for_llm: str = "", link_reputation:
         )
     alternative_analysis = soc.get("mime_alternative_analysis") or {}
     if alternative_analysis.get("status") == "divergent":
+        alternative_message = re.sub(
+            r"\s+", " ", str(alternative_analysis.get("message") or "")
+        ).strip()
         lines.append(
-            "MIME alternatives differ substantially: all divergent visible variants "
-            "are included in the untrusted email body and must be evaluated"
+            "MIME alternatives differ substantially: "
+            + (
+                alternative_message
+                if alternative_message
+                else "all divergent visible variants are included in the untrusted email body and must be evaluated"
+            )
         )
 
     for att in attachments[:5]:
@@ -1834,10 +1841,11 @@ def normalize_semantic_extraction(raw: dict, soc: dict | None = None) -> dict:
         "evidence_phrase": evidence_phrase,
         "intent_verifier_used": _as_bool(raw.get("intent_verifier_used")),
         "primary_requested_action": _clip(raw.get("primary_requested_action") or "", 48),
-        "content_summary": _clip(
-            summary or raw.get("reason") or "The model did not summarize the content.",
-            240,
-        ),
+        "content_summary": re.sub(
+            r"\s+",
+            " ",
+            str(summary or raw.get("reason") or "The model did not summarize the content."),
+        ).strip(),
     }
 
 
@@ -3987,6 +3995,14 @@ def stream_phi4_email_analysis(
                     semantic,
                     soc=section_soc,
                 )
+                if section_number == total_sections:
+                    yield {
+                        "status": "progress",
+                        "stage": "primary-complete",
+                        "current": section_number,
+                        "total": total_sections,
+                        "message": f"{model} completed the primary content and intent pass",
+                    }
                 terminal_policy_evidence = bool(grounded_diversion) or (
                     _technical_risk(soc, verifier_primary)[0] == "malicious"
                 )
@@ -4002,6 +4018,14 @@ def stream_phi4_email_analysis(
                     if _needs_extortion_verifier(verifier_primary, section_soc):
                         checks.append("extortion")
 
+                    if checks:
+                        yield {
+                            "status": "progress",
+                            "stage": "verification",
+                            "current": section_number,
+                            "total": total_sections,
+                            "message": f"{model} is verifying the risk-sensitive interpretation",
+                        }
                     audit = _request_adaptive_audit(
                         section_soc,
                         checks,
@@ -4126,7 +4150,7 @@ def stream_phi4_email_analysis(
         semantic = _merge_semantic_candidates(semantic_candidates, soc)
         model_summary = re.sub(r"\s+", " ", str(semantic.get("summary") or "")).strip()
         semantic["summary"] = (
-            _clip(model_summary, 400)
+            model_summary
             if _valid_content_summary(model_summary)
             else _fallback_content_summary(soc, semantic)
         )

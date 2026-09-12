@@ -126,29 +126,23 @@ def analyze_phi4(report_path: str) -> dict[str, Any]:
             current = int(event.get("current") or 0)
             total = int(event.get("total") or 0)
             if stage == "merge":
-                message = "The AI model finished reading the email and is combining the results…"
+                message = "Applying identity, corroboration and final risk policy…"
+            elif stage == "primary-complete":
+                message = "Primary content and intent analysis complete. Checking risk-sensitive details…"
+            elif stage == "verification":
+                message = "The AI model is verifying the risk-sensitive interpretation…"
             elif stage == "retry":
                 message = "The AI model is refining the structured analysis…"
             elif total > 1 and current > 0:
                 message = f"The AI model is analyzing email section {current} of {total}…"
             else:
                 message = "The AI model is analyzing the complete email…"
-            completed_check = 2 if stage == "merge" else None
+            completed_check = 3 if stage == "merge" else 2 if stage == "primary-complete" else None
             _write_analysis_progress(stage, message, completed_check)
         if event.get("status") == "error":
             raise RuntimeError(str(event.get("message") or "Phi-4 analysis failed."))
     if last_event.get("status") != "ok":
         raise RuntimeError("Phi-4 did not return a final result.")
-    _write_analysis_progress(
-        "identity",
-        "Declared identity and domain coherence have been evaluated.",
-        3,
-    )
-    _write_analysis_progress(
-        "verdict",
-        "The risk policy has produced the final verdict.",
-        4,
-    )
     return _json_safe({
         "status": "ok", "analysis": last_event.get("analysis"),
         "backend": last_event.get("backend"), "model": last_event.get("model"),

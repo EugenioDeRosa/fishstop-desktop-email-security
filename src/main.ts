@@ -65,8 +65,8 @@ type AnalysisReport = {
   mime_duplicate_header_count?: number;
   mime_review_finding_count?: number;
   mime_notice_finding_count?: number;
-  mime_findings?: Array<{ kind?: string; code?: string; category?: "security_ambiguity" | "damaged_content" | "compatibility_notice"; level?: "HIGH" | "MEDIUM" | "LOW" | "INFO"; part_path?: string; header?: string; count?: number; message?: string }>;
-  mime_alternative_analysis?: { status?: "not_applicable" | "consistent" | "divergent"; groups_analyzed?: number; divergent_group_count?: number; message?: string; groups?: Array<{ part_path?: string; alternative_count?: number; content_types?: string[]; minimum_similarity?: number; divergent?: boolean; alternatives?: Array<{ part_path?: string; content_type?: string; effective_content_type?: string; character_count?: number; token_count?: number }> }> };
+  mime_findings?: Array<{ kind?: string; code?: string; category?: "security_ambiguity" | "damaged_content" | "compatibility_notice"; level?: "HIGH" | "MEDIUM" | "LOW" | "INFO"; part_path?: string; header?: string; count?: number; values_diverge?: boolean; domains_diverge?: boolean; distinct_values?: string[]; distinct_domains?: string[]; message?: string }>;
+  mime_alternative_analysis?: { status?: "not_applicable" | "consistent" | "divergent"; groups_analyzed?: number; divergent_group_count?: number; message?: string; groups?: Array<{ part_path?: string; alternative_count?: number; content_types?: string[]; minimum_similarity?: number; divergent?: boolean; link_mismatch?: boolean; message?: string; link_differences?: Array<{ left_part_path?: string; right_part_path?: string; left_only_urls?: string[]; right_only_urls?: string[]; introduced_domains?: string[]; lookalike_domains?: string[]; lookalike_brands?: string[]; link_context_alert_domains?: string[]; message?: string }>; alternatives?: Array<{ part_path?: string; content_type?: string; effective_content_type?: string; character_count?: number; token_count?: number; urls?: string[]; url_domains?: string[]; cta_urls?: string[] }> }> };
   return_path_domain_mismatch?: boolean; reply_to_mismatch?: boolean; display_name_spoofing?: string;
   links?: Array<{ url?: string; host?: string; registered_domain?: string; is_ip?: boolean; scheme?: string; source?: string; display_text?: string; display_host?: string; display_registered_domain?: string; display_mismatch?: boolean; resolved_display_destination?: boolean; signature_tracking_redirect?: boolean; html_call_to_action?: boolean; has_userinfo?: boolean; has_credentials?: boolean; nonstandard_port?: boolean; port?: number; nested_redirect_count?: number; redirect_hosts?: string[]; redirect_downloads?: Array<{ filename?: string; extension?: string; dangerous?: boolean }>; unicode_host?: boolean; unicode_path_or_query?: boolean; role?: string; actionable?: boolean; sources?: string[]; download_filename?: string; download_extension?: string; download_source?: string; dangerous_download?: boolean; financial_attachment_mismatch?: boolean; context_risk_level?: string; context_risk_message?: string }>;
   link_reputation?: Record<string, ReputationResult>;
@@ -109,7 +109,7 @@ type AnalysisReport = {
 };
 type ReputationResult = { status?: string; message?: string; detection_ratio?: string; malicious?: number; suspicious?: number; total_engines?: number; threat_label?: string; file_type?: string; file_name?: string; last_analysis?: string | number; permalink?: string; abuseConfidenceScore?: number; totalReports?: number; country?: string; country_code?: string; city?: string; region?: string; isp?: string; org?: string; asn?: string; timezone?: string; lat?: number; lon?: number; is_proxy?: boolean; is_hosting?: boolean; resolved_ip?: string; resolved_domain?: string; used_parent_fallback?: string; url?: string; title?: string; crowdsourced_context_summary?: string };
 type AnalysisRecord = { id: string; analyzedAt: string; report: AnalysisReport; analysisDurationMs?: number };
-type ActiveAnalysis = { userSub: string; fileName: string; source?: "file" | "inbox"; status: "processing" | "complete" | "error"; analysisId?: string; report?: AnalysisReport; recordId?: string | null; error?: string; completedChecks?: number[]; progressMessage?: string };
+type ActiveAnalysis = { userSub: string; fileName: string; source?: "file" | "inbox"; status: "processing" | "complete" | "error"; analysisId?: string; report?: AnalysisReport; recordId?: string | null; error?: string; completedChecks?: number[]; progressMessage?: string; progressPercent?: number };
 type StatisticsPeriod = "today" | "week" | "month" | "3m" | "6m" | "9m" | "12m" | "all";
 type CopyEvent = { copiedAt: string };
 
@@ -147,8 +147,12 @@ type OllamaRuntimeStatus = {
 };
 type OllamaModelProgress = { status: string; total?: number; completed?: number };
 type ManagedModelOperation = { phase: "installing" | "removing"; status: string; total?: number; completed?: number };
+type MailboxInboxSnapshot = { email: string; messages: MailboxMessage[] };
 let managedModelOperation: ManagedModelOperation | null = null;
 let ollamaRuntimeSnapshot: OllamaRuntimeStatus | null = null;
+const mailboxInboxCache = new Map<string, MailboxInboxSnapshot>();
+const mailboxInboxRequests = new Map<string, Promise<MailboxMessage[]>>();
+const mailboxInboxEpochs = new Map<string, number>();
 
 function escapeHtml(value: string): string {
   return value.replace(/[&<>'"]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[character] || character));
@@ -615,25 +619,47 @@ function inboxIconMarkup(): string {
   return `<svg class="inbox-nav-icon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false" style="display:block;overflow:visible"><rect x="3.25" y="5.25" width="17.5" height="13.5" rx="2.4"></rect><path d="m4.35 7.05 6.05 4.65a2.6 2.6 0 0 0 3.2 0l6.05-4.65"></path></svg>`;
 }
 
-function analysisLoadingMarkup(fileName: string, completedChecks: number[] = [], progressMessage = "Each signal is processed on this device."): string {
-  const checks = ["Static checks and reputation", "Local AI model preparation", "Content and intent analysis", "Declared identity", "Verdict synthesis", "Final report"];
+function analysisLoadingMarkup(fileName: string, completedChecks: number[] = [], progressMessage = "Each signal is processed on this device.", heuristicProgress = 0): string {
+  const checks = ["Static checks and reputation", "Local AI model preparation", "Primary content and intent analysis", "Risk verification and identity policy"];
   const completed = new Set(completedChecks);
-  return `<section class="analysis-loading" aria-live="polite"><div class="loading-orbit"><i></i><b aria-hidden="true">${searchIconMarkup()}</b></div><div><p class="page-kicker">LOCAL ANALYSIS IN PROGRESS</p><h2>Checking ${escapeHtml(fileName)}</h2><p class="loading-copy">${escapeHtml(progressMessage)}</p></div><ol>${checks.map((label, index) => `<li data-loading-check="${index}" class="${completed.has(index) ? "done" : ""}"><span>✓</span>${label}</li>`).join("")}</ol></section>`;
+  const completedCount = checks.filter((_, index) => completed.has(index)).length;
+  const progressMilestones = [5, 40, 90, 97];
+  const milestoneProgress = completedCount ? progressMilestones[completedCount - 1] : 0;
+  const percentage = Math.max(milestoneProgress, Math.min(100, heuristicProgress));
+  return `<section class="analysis-loading" aria-live="polite" role="progressbar" aria-label="Analysis progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percentage}" style="--analysis-progress:${percentage}%"><div class="loading-orbit"><i></i><b aria-hidden="true">${searchIconMarkup()}</b></div><div><p class="page-kicker">LOCAL ANALYSIS IN PROGRESS</p><h2>Checking ${escapeHtml(fileName)}</h2><p class="loading-copy">${escapeHtml(progressMessage)}</p></div><ol>${checks.map((label, index) => `<li data-loading-check="${index}" class="${completed.has(index) ? "done" : index === completedCount ? "active" : ""}"><span>✓</span>${label}</li>`).join("")}</ol></section>`;
+}
+
+function setAnalysisProgressVisual(session: ActiveAnalysis, percentage: number): void {
+  const bounded = Math.max(0, Math.min(100, percentage));
+  session.progressPercent = Math.max(session.progressPercent || 0, bounded);
+  if (!analysisIsVisible(session)) return;
+  const loading = document.querySelector<HTMLElement>("#analysis-result .analysis-loading");
+  if (!loading) return;
+  loading.setAttribute("aria-valuenow", String(Math.round(session.progressPercent)));
+  loading.style.setProperty("--analysis-progress", `${session.progressPercent.toFixed(2)}%`);
 }
 
 function markLoadingCheck(container: HTMLElement, index: number): void {
-  const item = container.querySelector<HTMLElement>(`[data-loading-check="${index}"]`);
-  if (!item || item.classList.contains("done")) return;
-  item.classList.add("done");
-  if (!motionAllowed()) return;
-  void animate(item, {
-    opacity: [0.72, 1],
-    transform: ["translateX(4px)", "translateX(0)"],
-  }, { duration: 0.22, ease: [0.22, 1, 0.36, 1] });
-  const mark = item.querySelector<HTMLElement>("span");
-  if (mark) void animate(mark, {
-    transform: ["scale(.68)", "scale(1.12)", "scale(1)"],
-  }, { duration: 0.28, ease: [0.22, 1, 0.36, 1] });
+  const items = Array.from(container.querySelectorAll<HTMLElement>("[data-loading-check]"));
+  items.forEach((item, itemIndex) => {
+    if (itemIndex > index || item.classList.contains("done")) return;
+    item.classList.remove("active");
+    item.classList.add("done");
+    if (!motionAllowed()) return;
+    void animate(item, { opacity: [0.72, 1], transform: ["translateX(4px)", "translateX(0)"] }, { duration: 0.22, ease: [0.22, 1, 0.36, 1] });
+    const mark = item.querySelector<HTMLElement>("span");
+    if (mark) void animate(mark, { transform: ["scale(.68)", "scale(1.12)", "scale(1)"] }, { duration: 0.28, ease: [0.22, 1, 0.36, 1] });
+  });
+  const completedCount = items.filter((item) => item.classList.contains("done")).length;
+  items.forEach((item, itemIndex) => item.classList.toggle("active", itemIndex === completedCount));
+  const progressMilestones = [5, 40, 90, 97];
+  const loading = container.querySelector<HTMLElement>(".analysis-loading");
+  if (loading) {
+    const milestone = completedCount ? progressMilestones[Math.min(completedCount, progressMilestones.length) - 1] : 0;
+    const percentage = Math.max(milestone, Number(loading.getAttribute("aria-valuenow") || 0));
+    loading.setAttribute("aria-valuenow", String(percentage));
+    loading.style.setProperty("--analysis-progress", `${percentage}%`);
+  }
 }
 
 function completeAnalysisLoading(container: HTMLElement): void {
@@ -976,9 +1002,7 @@ function conciseAiVerdict(report: AnalysisReport, fallback: string): string {
   const summary = (analysis?.content_summary || analysis?.semantic_reason || "").replace(/\s+/g, " ").trim();
   const evidence = (analysis?.corroboration?.details || []).filter(Boolean).slice(0, 2).join("; ");
   const combined = [summary, evidence].filter(Boolean).join(" · ");
-  if (!combined) return fallback;
-  const clipped = combined.slice(0, 250);
-  return clipped.length < combined.length ? `${clipped.replace(/[,:;\s]+$/, "")}…` : clipped;
+  return combined || fallback;
 }
 
 function assessment(report: AnalysisReport): { tone: "safe" | "review" | "danger"; label: string; detail: string } {
@@ -1408,7 +1432,7 @@ function reportMarkup(report: AnalysisReport): string {
   const alternativeRows = (mimeAnalysis?.groups || []).filter((group) => group.divergent).map((group) => staticCheckItem(
     "warn",
     `Alternative group ${group.part_path || "unknown"}`,
-    `${group.alternative_count || 0} variant(s) · ${(group.content_types || []).join(", ") || "unknown types"} · minimum similarity ${Math.round((group.minimum_similarity ?? 1) * 100)}%.`,
+    group.message || `${group.alternative_count || 0} variant(s) · ${(group.content_types || []).join(", ") || "unknown types"} · minimum similarity ${Math.round((group.minimum_similarity ?? 1) * 100)}%.`,
     "Security ambiguity · all variants analysed",
   )).join("");
   const mimeSummary = mimeHasSecurityAmbiguity
@@ -1419,7 +1443,9 @@ function reportMarkup(report: AnalysisReport): string {
         ? "Minor email-format compatibility issues were found; they do not affect the security verdict."
         : "Email structure checked. No conflicting interpretations were detected.";
   const mimeRows = `${mimeFindingRows}${alternativeRows}` || staticCheckItem("pass", "Message structure checked", "Text, HTML and MIME structure can be interpreted consistently.", "Passed");
-  const mimeInspection = `<section class="html-form-inspection static-surface-${mimeTone}"><div><p class="page-kicker">MESSAGE STRUCTURE</p><h3>Email format consistency</h3><p>${escapeHtml(mimeSummary)}</p></div><ul>${mimeRows}</ul></section>`;
+  const mimeInspection = report.mime_status === "clean"
+    ? ""
+    : `<section class="html-form-inspection static-surface-${mimeTone}"><div><p class="page-kicker">MESSAGE STRUCTURE</p><h3>Email format consistency</h3><p>${escapeHtml(mimeSummary)}</p></div><ul>${mimeRows}</ul></section>`;
   const fields = (items: Array<[string, string | undefined | null | boolean]>) => `<dl class="field-list">${items.filter(([, value]) => value !== undefined && value !== null && value !== "").map(([label, value]) => `<div><dt>${label}</dt><dd>${escapeHtml(String(value))}</dd></div>`).join("") || "<div><dd>No data available.</dd></div>"}</dl>`;
   const menu = [["summary", "Summary"], ["sender", "Sender"], ["auth", "Authentication"], ["links", "Links"], ["files", "Files"], ["content", "Content"], ["technical", "Technical"]];
   const tabs = menu.map(([id, label], index) => `<button class="report-tab ${index === 0 ? "active" : ""}" data-report-tab="${id}" type="button">${label}</button>`).join("");
@@ -1948,9 +1974,10 @@ function setPhiSemanticPanel(container: HTMLElement, analysis: NonNullable<NonNu
   panel.innerHTML = `<p class="page-kicker">LOCAL AI</p><h3>Content summary</h3><p class="semantic-summary">${escapeHtml(contentSummary)}</p>${signals.length || details.length || signalEvidence ? `<details class="semantic-details"><summary>Reasoning and evidence <span>${signals.length + details.length + Number(Boolean(signalEvidence))}</span></summary>${signals.length ? `<p><b>Signals:</b> ${escapeHtml(signals.map(semanticLabel).join(" · "))}</p>` : ""}${signalEvidence ? `<p><b>Context:</b> ${escapeHtml(signalEvidence)}</p>` : ""}${details.length ? `<ul>${details.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>` : ""}</details>` : ""}<small class="semantic-meta">${durationMs ? `${(durationMs / 1000).toFixed(1)} s · ` : ""}${passSummary}${corroboration.supports_decision ? "Independent evidence is available" : "Assessment should be confirmed with technical evidence"}</small>`;
 }
 
-async function runAiAnalysis(user: AuthUser, report: AnalysisReport, recordId: string | null, container: HTMLElement, startedAt: number, analysisId: string, isCurrent: () => boolean, onSettled?: (engine: "identity" | "phi4" | "content-summary" | "summary") => void): Promise<void> {
+async function runAiAnalysis(user: AuthUser, report: AnalysisReport, recordId: string | null, container: HTMLElement, startedAt: number, analysisId: string, isCurrent: () => boolean, onSettled?: (engine: "identity" | "phi4" | "content-summary" | "summary") => void, onRuntime?: (runtime: OllamaRuntimeStatus | null) => void): Promise<void> {
   const runtime = await invoke<OllamaRuntimeStatus>("ollama_runtime_status").catch(() => ollamaRuntimeSnapshot);
   if (runtime) ollamaRuntimeSnapshot = runtime;
+  onRuntime?.(runtime || null);
   const model = runtime?.model || DEFAULT_OLLAMA_MODEL;
   renderAiPanels(container);
   if (!isCurrent()) return;
@@ -2121,11 +2148,14 @@ function analysisIsVisible(session: ActiveAnalysis): boolean {
 
 function updateAnalysisProgress(session: ActiveAnalysis, check: number, message?: string): void {
   session.completedChecks ||= [];
-  if (!session.completedChecks.includes(check)) session.completedChecks.push(check);
+  for (let index = 0; index <= check; index += 1) {
+    if (!session.completedChecks.includes(index)) session.completedChecks.push(index);
+  }
   if (message) session.progressMessage = message;
   if (!analysisIsVisible(session)) return;
   const result = document.querySelector<HTMLDivElement>("#analysis-result");
   if (result) markLoadingCheck(result, check);
+  setAnalysisProgressVisual(session, [5, 40, 90, 97, 100][Math.min(check, 4)] || 0);
   const status = document.querySelector<HTMLElement>("#upload-status");
   if (status && message) status.textContent = message;
 }
@@ -2136,6 +2166,17 @@ function mailboxProvider(user: AuthUser): "google" | "microsoft" {
 
 function mailboxProviderName(user: AuthUser): string {
   return mailboxProvider(user) === "microsoft" ? "Outlook" : "Gmail";
+}
+
+function mailboxInboxCacheKey(user: AuthUser): string {
+  return `${user.sub}:${mailboxProvider(user)}`;
+}
+
+function clearMailboxInboxCache(user: AuthUser): void {
+  const key = mailboxInboxCacheKey(user);
+  mailboxInboxCache.delete(key);
+  mailboxInboxRequests.delete(key);
+  mailboxInboxEpochs.set(key, (mailboxInboxEpochs.get(key) || 0) + 1);
 }
 
 async function mailboxInboxAvailable(user: AuthUser): Promise<boolean> {
@@ -2168,31 +2209,56 @@ function mailboxAuthorizationExpired(error: unknown): boolean {
   return /authorization expired|invalid[_ ]grant|unauthorized|reauthori[sz]|refresh token|\b401\b/i.test(String(error));
 }
 
-async function refreshMailboxPanel(user: AuthUser): Promise<void> {
+function renderMailboxMessages(state: HTMLElement, user: AuthUser, snapshot: MailboxInboxSnapshot): void {
+  const messages = snapshot.messages;
+  state.className = "inbox-state";
+  state.innerHTML = `<div class="inbox-connected-heading"><div><strong>${escapeHtml(snapshot.email || user.email)}</strong><small>Read-only · 10 most recent Inbox messages</small></div><div><button class="soft-action" id="refresh-mailbox" type="button">Refresh</button><button class="inbox-disconnect" id="disconnect-mailbox" type="button">Disconnect</button></div></div><div class="inbox-message-list">${messages.length ? messages.map(mailboxMessageMarkup).join("") : '<p class="inbox-empty">No recent messages were returned by this inbox.</p>'}</div>`;
+}
+
+async function refreshMailboxPanel(user: AuthUser, force = false): Promise<void> {
   const panel = document.querySelector<HTMLElement>("#inbox-intake");
   const state = document.querySelector<HTMLElement>("#inbox-state");
   if (!panel || !state) return;
   const provider = mailboxProvider(user);
   const name = mailboxProviderName(user);
+  const cacheKey = mailboxInboxCacheKey(user);
+  const cacheEpoch = mailboxInboxEpochs.get(cacheKey) || 0;
   if (!await mailboxInboxAvailable(user)) {
     if (!panel.isConnected) return;
     state.className = "inbox-state inbox-connect-state inbox-coming-soon";
     state.innerHTML = `<div class="inbox-connect-copy"><strong>Gmail inbox analysis is coming soon</strong><p>You can still download a message as an EML file and analyse it locally.</p></div><span class="inbox-coming-soon-badge">COMING SOON</span>`;
     return;
   }
+  const cached = mailboxInboxCache.get(cacheKey);
+  if (cached && !force) {
+    renderMailboxMessages(state, user, cached);
+    return;
+  }
   try {
     const status = await invoke<MailboxStatus>("mailbox_status", { userSub: user.sub, provider });
     if (!panel.isConnected) return;
     if (!status.connected) {
+      clearMailboxInboxCache(user);
       state.className = "inbox-state inbox-connect-state";
       state.innerHTML = `<div class="inbox-connect-copy"><strong>Connect ${name}</strong><p>Read-only access. FishStop cannot send, delete or move messages.</p></div><button class="primary-action" id="connect-mailbox" type="button">Connect ${name}</button>`;
       return;
     }
     state.className = "inbox-state";
     state.innerHTML = `<span class="inbox-spinner" aria-hidden="true"></span><p>Loading the latest messages from ${escapeHtml(status.email || user.email)}…</p>`;
-    const messages = await invoke<MailboxMessage[]>("list_recent_mailbox_messages", { userSub: user.sub, provider, limit: 10 });
+    let request = mailboxInboxRequests.get(cacheKey);
+    if (!request || force) {
+      const createdRequest = invoke<MailboxMessage[]>("list_recent_mailbox_messages", { userSub: user.sub, provider, limit: 10 });
+      request = createdRequest.finally(() => {
+        if (mailboxInboxRequests.get(cacheKey) === request) mailboxInboxRequests.delete(cacheKey);
+      });
+      mailboxInboxRequests.set(cacheKey, request);
+    }
+    const messages = await request;
+    if ((mailboxInboxEpochs.get(cacheKey) || 0) !== cacheEpoch) return;
+    const snapshot = { email: status.email || user.email, messages };
+    mailboxInboxCache.set(cacheKey, snapshot);
     if (!panel.isConnected) return;
-    state.innerHTML = `<div class="inbox-connected-heading"><div><strong>${escapeHtml(status.email || user.email)}</strong><small>Read-only · 10 most recent Inbox messages</small></div><div><button class="soft-action" id="refresh-mailbox" type="button">Refresh</button><button class="inbox-disconnect" id="disconnect-mailbox" type="button">Disconnect</button></div></div><div class="inbox-message-list">${messages.length ? messages.map(mailboxMessageMarkup).join("") : '<p class="inbox-empty">No recent messages were returned by this inbox.</p>'}</div>`;
+    renderMailboxMessages(state, user, snapshot);
   } catch (error) {
     if (!panel.isConnected) return;
     const reconnect = mailboxAuthorizationExpired(error);
@@ -2215,9 +2281,9 @@ function analysisPageContent(user: AuthUser, source: "file" | "inbox" = "file"):
         ? `Analysis complete: ${title}.`
         : "Only technical indicators such as IP addresses, domains, URLs and file hashes are sent to external reputation services when their API keys are configured.";
   const result = hasReport
-    ? (isProcessing ? analysisLoadingMarkup(active!.fileName, active!.completedChecks, active!.progressMessage) : reportMarkup(active!.report!))
+    ? (isProcessing ? analysisLoadingMarkup(active!.fileName, active!.completedChecks, active!.progressMessage, active!.progressPercent) : reportMarkup(active!.report!))
     : isProcessing
-      ? analysisLoadingMarkup(active!.fileName, active!.completedChecks, active!.progressMessage)
+      ? analysisLoadingMarkup(active!.fileName, active!.completedChecks, active!.progressMessage, active!.progressPercent)
       : "";
   const intake = source === "file"
     ? `<section class="eml-intake" id="eml-intake" ${isProcessing || hasReport ? "hidden" : ""}><button class="drop-zone" id="eml-drop" type="button"><span class="drop-icon">↥</span><strong>Drop an .eml file here</strong><span>or select it from your computer · max 40 MB</span></button><input id="eml-input" type="file" accept=".eml,message/rfc822" hidden /></section>`
@@ -2396,7 +2462,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       renderDashboard(user, "history");
     }).catch(() => { /* Keep existing history visible when secure deletion fails. */ });
   });
-  document.querySelector<HTMLButtonElement>("#logout")?.addEventListener("click", () => { activeAnalysis = null; localStorage.removeItem(USER_STORAGE_KEY); renderLogin(); });
+  document.querySelector<HTMLButtonElement>("#logout")?.addEventListener("click", () => { activeAnalysis = null; clearMailboxInboxCache(user); localStorage.removeItem(USER_STORAGE_KEY); renderLogin(); });
   const inlineCredentialForm = document.querySelector<HTMLFormElement>("#reputation-settings");
   if (inlineCredentialForm) {
     inlineCredentialForm.removeAttribute("hidden");
@@ -2582,6 +2648,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       analysisId,
       completedChecks: [],
       progressMessage: `Local analysis of ${fileName} in progress…`,
+      progressPercent: 0,
     };
     activeAnalysis = session;
     const startedAt = performance.now();
@@ -2600,6 +2667,27 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
     dropZone?.setAttribute("disabled", "true");
     let lastProgressPaint = 0;
     let progressTail = Promise.resolve();
+    let heuristicTimer: number | undefined;
+    const startHeuristicProgress = (runtime: OllamaRuntimeStatus | null) => {
+      if (heuristicTimer !== undefined) window.clearInterval(heuristicTimer);
+      const platform = (runtime?.platform || "").toLowerCase();
+      const architecture = (runtime?.architecture || "").toLowerCase();
+      const accelerator = (runtime?.accelerator || "").toLowerCase();
+      const isAppleSilicon = /darwin|mac/.test(platform) && /arm|aarch64/.test(architecture);
+      const accelerated = Boolean(runtime?.loaded_on_gpu) || isAppleSilicon || /gpu|cuda|metal|apple/.test(accelerator);
+      const expectedDurationMs = accelerated ? 30_000 : 120_000;
+      const heuristicStartedAt = performance.now();
+      const paintHeuristicProgress = () => {
+        if (activeAnalysis !== session || session.status !== "processing") return;
+        const elapsedRatio = (performance.now() - heuristicStartedAt) / expectedDurationMs;
+        const estimated = elapsedRatio <= 1
+          ? 90 * (1 - Math.pow(1 - Math.max(0, elapsedRatio), 1.7))
+          : 90 + 9 * (1 - Math.exp(-1.4 * (elapsedRatio - 1)));
+        setAnalysisProgressVisual(session, Math.min(99, estimated));
+      };
+      paintHeuristicProgress();
+      heuristicTimer = window.setInterval(paintHeuristicProgress, 250);
+    };
     const queueProgress = (check: number | undefined, message?: string) => {
       if (message) {
         session.progressMessage = message;
@@ -2629,13 +2717,13 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       session.report = report;
       queueProgress(0, "Static checks complete. Preparing the local AI model…");
       await runAiAnalysis(user, report, null, document.createElement("div"), startedAt, analysisId, () => activeAnalysis === session, (engine) => {
-        if (activeAnalysis === session) queueProgress(engine === "identity" ? 3 : engine === "phi4" ? 4 : undefined);
-      });
+        if (activeAnalysis === session) queueProgress(engine === "phi4" ? 3 : undefined);
+      }, startHeuristicProgress);
       if (activeAnalysis !== session) return;
       session.recordId = await saveAnalysis(user, report, Math.round(performance.now() - startedAt));
       await progressTail;
       if (activeAnalysis !== session) return;
-      updateAnalysisProgress(session, 5);
+      updateAnalysisProgress(session, 4);
       session.status = "complete";
       const completedResult = analysisIsVisible(session) ? document.querySelector<HTMLDivElement>("#analysis-result") : null;
       if (completedResult?.isConnected && completedResult.querySelector(".analysis-loading")) {
@@ -2655,6 +2743,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       }
     }
     finally {
+      if (heuristicTimer !== undefined) window.clearInterval(heuristicTimer);
       unlistenAnalysisProgress?.();
       void invoke("finish_analysis", { analysisId }).catch(() => undefined);
       if (activeAnalysis === session) document.querySelector<HTMLButtonElement>("#eml-drop")?.removeAttribute("disabled");
@@ -2690,9 +2779,10 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       button.disabled = true;
       button.textContent = `Reconnecting ${mailboxProviderName(user)}…`;
       try {
+        clearMailboxInboxCache(user);
         await invoke("disconnect_mailbox", { userSub: user.sub });
         await invoke("connect_mailbox", { userSub: user.sub, provider });
-        await refreshMailboxPanel(user);
+        await refreshMailboxPanel(user, true);
       } catch (error) {
         const state = document.querySelector<HTMLElement>("#inbox-state");
         if (state) {
@@ -2707,7 +2797,8 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       button.textContent = `Connecting ${mailboxProviderName(user)}…`;
       try {
         await invoke("connect_mailbox", { userSub: user.sub, provider });
-        await refreshMailboxPanel(user);
+        clearMailboxInboxCache(user);
+        await refreshMailboxPanel(user, true);
       } catch (error) {
         const state = document.querySelector<HTMLElement>("#inbox-state");
         if (state) {
@@ -2719,12 +2810,13 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
     }
     if (button.id === "refresh-mailbox") {
       button.disabled = true;
-      await refreshMailboxPanel(user);
+      await refreshMailboxPanel(user, true);
       return;
     }
     if (button.id === "disconnect-mailbox") {
       button.disabled = true;
       try {
+        clearMailboxInboxCache(user);
         await invoke("disconnect_mailbox", { userSub: user.sub });
         await refreshMailboxPanel(user);
       } catch (error) {

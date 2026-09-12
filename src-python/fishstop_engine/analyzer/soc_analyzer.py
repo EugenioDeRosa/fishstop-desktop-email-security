@@ -20,6 +20,7 @@ import unicodedata
 from collections import Counter
 from difflib import SequenceMatcher
 from email import policy
+from email.utils import getaddresses
 from typing import Optional
 
 from fishstop_engine.analysis_limits import (
@@ -288,6 +289,61 @@ def _duplicate_mime_header_level(header_name: str, path: str) -> str:
     return "LOW"
 
 
+_ADDRESS_IDENTITY_HEADERS = {"from", "sender", "reply-to", "return-path"}
+
+
+def _normalized_duplicate_header_values(header_name: str, values: list[str]) -> tuple[list[str], list[str]]:
+    """Return comparable header identities and their registrable domains."""
+    normalized_values: list[str] = []
+    domains: list[str] = []
+    if header_name in _ADDRESS_IDENTITY_HEADERS:
+        for value in values:
+            addresses = [address.lower().strip() for _, address in getaddresses([value]) if address]
+            normalized_values.append(",".join(addresses) or re.sub(r"\s+", " ", value).strip().lower())
+            domains.extend(
+                registered_domain(address.rsplit("@", 1)[-1])
+                for address in addresses
+                if "@" in address
+            )
+    else:
+        normalized_values = [re.sub(r"\s+", " ", value).strip().lower() for value in values]
+    return list(dict.fromkeys(normalized_values)), list(dict.fromkeys(filter(None, domains)))
+
+
+def _duplicate_header_finding(header_name: str, path: str, values: list[str]) -> dict:
+    display_name = "-".join(piece.capitalize() for piece in header_name.split("-"))
+    distinct_values, distinct_domains = _normalized_duplicate_header_values(header_name, values)
+    values_diverge = len(distinct_values) > 1
+    domains_diverge = header_name in _ADDRESS_IDENTITY_HEADERS and len(distinct_domains) > 1
+    if not values_diverge:
+        level = "INFO"
+        category = "compatibility_notice"
+        detail = "the repeated values are equivalent, so no conflicting sender or interpretation was found."
+    else:
+        level = _duplicate_mime_header_level(header_name, path)
+        category = "security_ambiguity"
+        if domains_diverge:
+            detail = f"the values identify different domains ({', '.join(distinct_domains)})."
+        elif header_name in _ADDRESS_IDENTITY_HEADERS:
+            detail = "the values identify different sender addresses."
+        else:
+            detail = "the values differ and may be interpreted inconsistently."
+    return {
+        "kind": "duplicate_header",
+        "code": "DuplicateSingletonHeader",
+        "level": level,
+        "category": category,
+        "part_path": path,
+        "header": display_name,
+        "count": len(values),
+        "values_diverge": values_diverge,
+        "domains_diverge": domains_diverge,
+        "distinct_values": distinct_values[:5],
+        "distinct_domains": distinct_domains[:5],
+        "message": f"MIME part {path} contains {len(values)} `{display_name}` headers; {detail}",
+    }
+
+
 def _extract_domain(email_or_addr: str) -> str:
     """Returns the domain portion of an email address, lowercased."""
     m = re.search(r"@([\w.\-]+)", email_or_addr or "")
@@ -541,23 +597,14 @@ def _collect_mime_findings(msg) -> tuple[list[dict], int, int, int, int]:
             if path == "1"
             else _MIME_PART_SINGLETON_HEADERS
         )
-        header_counts: dict[str, int] = {}
-        for name, _ in part.raw_items():
+        header_values: dict[str, list[str]] = {}
+        for name, value in part.raw_items():
             normalized_name = str(name).lower()
-            header_counts[normalized_name] = header_counts.get(normalized_name, 0) + 1
-        for header_name, count in header_counts.items():
-            if header_name not in allowed_singletons or count <= 1:
+            header_values.setdefault(normalized_name, []).append(str(value))
+        for header_name, values in header_values.items():
+            if header_name not in allowed_singletons or len(values) <= 1:
                 continue
-            display_name = "-".join(piece.capitalize() for piece in header_name.split("-"))
-            if add({
-                "kind": "duplicate_header",
-                "code": "DuplicateSingletonHeader",
-                "level": _duplicate_mime_header_level(header_name, path),
-                "part_path": path,
-                "header": display_name,
-                "count": count,
-                "message": f"MIME part {path} contains {count} `{display_name}` headers; interpretation is ambiguous.",
-            }):
+            if add(_duplicate_header_finding(header_name, path, values)):
                 duplicate_count += 1
 
         defect_sources = [("message", defect) for defect in getattr(part, "defects", ())]
@@ -600,6 +647,8 @@ def _alternative_comparison_tokens(value: str) -> list[str]:
 
 
 def _alternative_pair_is_divergent(left: dict, right: dict, similarity: float) -> bool:
+    if set(left.get("urls") or ()) != set(right.get("urls") or ()):
+        return True
     largest = max(int(left.get("token_count") or 0), int(right.get("token_count") or 0))
     if largest < 6:
         return False
@@ -628,6 +677,78 @@ def _alternative_similarity(left_tokens: list[str], right_tokens: list[str]) -> 
     return max(sequence, dice)
 
 
+def _alternative_link_metadata(variant: dict) -> tuple[list[str], list[str], list[str]]:
+    """Extract actionable web links from the original MIME alternative."""
+    content_type = str(variant.get("effective_content_type") or variant.get("content_type") or "")
+    source = str(variant.get("source") or "")
+    links = extract_links(
+        body_plain=source if content_type == "text/plain" else "",
+        body_html=source if content_type == "text/html" else "",
+    )
+    actionable = [
+        link for link in links
+        if link.get("actionable") is not False
+        and str(link.get("scheme") or "").lower() in {"http", "https"}
+    ]
+    urls = list(dict.fromkeys(str(link.get("url") or "") for link in actionable if link.get("url")))
+    domains = list(dict.fromkeys(
+        str(link.get("registered_domain") or link.get("host") or "").lower()
+        for link in actionable
+        if link.get("registered_domain") or link.get("host")
+    ))
+    cta_urls = list(dict.fromkeys(
+        str(link.get("url") or "") for link in actionable
+        if link.get("html_call_to_action") and link.get("url")
+    ))
+    return urls[:20], domains[:20], cta_urls[:20]
+
+
+def _alternative_link_difference(left: dict, right: dict) -> dict | None:
+    left_urls, right_urls = set(left.get("urls") or ()), set(right.get("urls") or ())
+    if left_urls == right_urls:
+        return None
+    left_only_urls = sorted(left_urls - right_urls)
+    right_only_urls = sorted(right_urls - left_urls)
+    left_domains, right_domains = set(left.get("url_domains") or ()), set(right.get("url_domains") or ())
+    left_only_domains = sorted(left_domains - right_domains)
+    right_only_domains = sorted(right_domains - left_domains)
+    left_label = str(left.get("effective_content_type") or left.get("content_type") or left.get("part_path") or "first")
+    right_label = str(right.get("effective_content_type") or right.get("content_type") or right.get("part_path") or "second")
+    if right_only_domains:
+        message = (
+            f"The {right_label} alternative introduces link domain(s) "
+            f"{', '.join(right_only_domains[:5])} absent from the {left_label} alternative"
+        )
+        if left_only_domains:
+            message += f"; the {left_label} alternative alone uses {', '.join(left_only_domains[:5])}"
+        introduced_domains = list(dict.fromkeys([*right_only_domains, *left_only_domains]))
+    elif left_only_domains:
+        message = (
+            f"The {left_label} alternative introduces link domain(s) "
+            f"{', '.join(left_only_domains[:5])} absent from the {right_label} alternative"
+        )
+        introduced_domains = left_only_domains
+    elif not left_only_urls:
+        message = f"The {right_label} alternative introduces link destination(s) absent from the {left_label} alternative"
+        introduced_domains = []
+    elif not right_only_urls:
+        message = f"The {left_label} alternative introduces link destination(s) absent from the {right_label} alternative"
+        introduced_domains = []
+    else:
+        message = f"The {left_label} and {right_label} alternatives use different link destinations"
+        introduced_domains = []
+    return {
+        "left_part_path": left.get("part_path"),
+        "right_part_path": right.get("part_path"),
+        "left_only_urls": left_only_urls[:10],
+        "right_only_urls": right_only_urls[:10],
+        "left_only_domains": left_only_domains[:10],
+        "right_only_domains": right_only_domains[:10],
+        "introduced_domains": introduced_domains[:10],
+        "message": message + ".",
+    }
+
+
 def _analyze_mime_alternatives(body_variants: list[dict]) -> tuple[dict, set[str]]:
     groups: dict[str, list[dict]] = {}
     for variant in body_variants:
@@ -643,6 +764,7 @@ def _analyze_mime_alternatives(body_variants: list[dict]) -> tuple[dict, set[str
         token_sequences: dict[str, list[str]] = {}
         for variant in variants:
             tokens = _alternative_comparison_tokens(str(variant.get("text") or ""))
+            urls, url_domains, cta_urls = _alternative_link_metadata(variant)
             token_sequences[variant["path"]] = tokens
             metadata.append({
                 "part_path": variant["path"],
@@ -650,10 +772,14 @@ def _analyze_mime_alternatives(body_variants: list[dict]) -> tuple[dict, set[str
                 "effective_content_type": variant["effective_content_type"],
                 "character_count": len(str(variant.get("text") or "")),
                 "token_count": len(tokens),
+                "urls": urls,
+                "url_domains": url_domains,
+                "cta_urls": cta_urls,
             })
 
         minimum_similarity = 1.0
         divergent = False
+        link_differences: list[dict] = []
         for left_index, left in enumerate(metadata):
             for right in metadata[left_index + 1:]:
                 left_tokens = token_sequences[left["part_path"]]
@@ -663,6 +789,9 @@ def _analyze_mime_alternatives(body_variants: list[dict]) -> tuple[dict, set[str
                 else:
                     similarity = _alternative_similarity(left_tokens, right_tokens)
                 minimum_similarity = min(minimum_similarity, similarity)
+                link_difference = _alternative_link_difference(left, right)
+                if link_difference:
+                    link_differences.append(link_difference)
                 if _alternative_pair_is_divergent(left, right, similarity):
                     divergent = True
                     divergent_paths.update({left["part_path"], right["part_path"]})
@@ -673,6 +802,9 @@ def _analyze_mime_alternatives(body_variants: list[dict]) -> tuple[dict, set[str
             "content_types": list(dict.fromkeys(item["content_type"] for item in metadata)),
             "minimum_similarity": round(minimum_similarity, 3),
             "divergent": divergent,
+            "link_mismatch": bool(link_differences),
+            "link_differences": link_differences,
+            "message": link_differences[0]["message"] if link_differences else "",
             "alternatives": metadata,
         })
 
@@ -681,11 +813,19 @@ def _analyze_mime_alternatives(body_variants: list[dict]) -> tuple[dict, set[str
         status = "not_applicable"
         message = "No multipart/alternative body with multiple text variants was found."
     elif divergent_count:
+        link_messages = [
+            difference.get("message")
+            for group in group_results
+            for difference in group.get("link_differences") or []
+            if difference.get("message")
+        ]
         status = "divergent"
         message = (
             f"{divergent_count} multipart/alternative group(s) contain substantially "
             "different visible content; every divergent variant is included in AI analysis."
         )
+        if link_messages:
+            message = f"{link_messages[0]} Every divergent variant is included in AI analysis."
     else:
         status = "consistent"
         message = "MIME text alternatives contain materially consistent visible content."
@@ -696,6 +836,62 @@ def _analyze_mime_alternatives(body_variants: list[dict]) -> tuple[dict, set[str
         "groups": group_results,
         "message": message,
     }, divergent_paths)
+
+
+def _enrich_alternative_link_findings(
+    analysis: dict,
+    lookalike_alerts: list[dict],
+    link_context_alerts: list[dict],
+) -> None:
+    """Attach domain intelligence to links that exist in only one alternative."""
+    risky_lookalikes: dict[str, list[str]] = {}
+    for alert in lookalike_alerts:
+        if str(alert.get("level") or "HIGH").upper() not in {"HIGH", "MEDIUM"}:
+            continue
+        domain = registered_domain(str(alert.get("registered_domain") or alert.get("host") or ""))
+        if not domain:
+            continue
+        brand = str(alert.get("matched_brand") or "").strip()
+        risky_lookalikes.setdefault(domain, [])
+        if brand and brand != "-" and brand not in risky_lookalikes[domain]:
+            risky_lookalikes[domain].append(brand)
+
+    contextual_domains = {
+        registered_domain(str(alert.get("host") or ""))
+        for alert in link_context_alerts
+        if alert.get("host")
+    }
+    contextual_domains.discard("")
+    enriched_messages: list[str] = []
+    for group in analysis.get("groups") or []:
+        for difference in group.get("link_differences") or []:
+            introduced = set(difference.get("introduced_domains") or ())
+            lookalike_domains = sorted(introduced & risky_lookalikes.keys())
+            context_domains = sorted(introduced & contextual_domains)
+            difference["lookalike_domains"] = lookalike_domains
+            difference["lookalike_brands"] = list(dict.fromkeys(
+                brand for domain in lookalike_domains for brand in risky_lookalikes.get(domain, [])
+            ))
+            difference["link_context_alert_domains"] = context_domains
+            message = str(difference.get("message") or "").rstrip()
+            if lookalike_domains:
+                brands = difference["lookalike_brands"]
+                brand_detail = f" resembling {', '.join(brands)}" if brands else ""
+                message += (
+                    f" The domain(s) {', '.join(lookalike_domains)} are also flagged as "
+                    f"lookalike infrastructure{brand_detail}."
+                )
+            if context_domains:
+                message += (
+                    f" The domain(s) {', '.join(context_domains)} also trigger contextual link-risk checks."
+                )
+            difference["message"] = message
+            if message:
+                enriched_messages.append(message)
+        if group.get("link_differences"):
+            group["message"] = group["link_differences"][0].get("message") or group.get("message") or ""
+    if enriched_messages:
+        analysis["message"] = f"{enriched_messages[0]} Every divergent variant is included in AI analysis."
 
 
 def _combine_divergent_alternatives(body_variants: list[dict], paths: set[str]) -> str:
@@ -1033,6 +1229,7 @@ class EmlSOCAnalyzer:
                         "content_type": ct,
                         "effective_content_type": effective_content_type,
                         "text": variant_text,
+                        "source": text,
                     })
             elif ct == "text/html":
                 text = _decode_text_part(part)
@@ -1052,6 +1249,7 @@ class EmlSOCAnalyzer:
                         "content_type": ct,
                         "effective_content_type": "text/html",
                         "text": variant_text,
+                        "source": text,
                     })
 
         combined_html = "\n".join(html_parts)
@@ -1222,6 +1420,11 @@ class EmlSOCAnalyzer:
             and link.get("actionable") is not False
         ])
         report["link_context_alerts"] = self._assess_link_context(report)
+        _enrich_alternative_link_findings(
+            report["mime_alternative_analysis"],
+            report["lookalike_alerts"],
+            report["link_context_alerts"],
+        )
 
         # ── 11. Flag SOC ──────────────────────────────────────────────────
         report["flags"] = self._build_flags(report)

@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from fishstop_engine.analyzer.llm_context_analyzer import _technical_risk
+from fishstop_engine.analyzer.llm_context_analyzer import _technical_context_lines, _technical_risk
 from fishstop_engine.analyzer.soc_analyzer import EmlSOCAnalyzer
 
 
@@ -35,6 +35,45 @@ class MimeAmbiguityTests(unittest.TestCase):
             flag["level"] == "MEDIUM" and flag["field"] == "MIME structure"
             for flag in report["flags"]
         ))
+
+    def test_equivalent_duplicate_sender_is_informational(self):
+        report = self._analyze(
+            b"From: Example Sender <sender@example.com>\r\n"
+            b"From: sender@example.com\r\n"
+            b"Subject: Duplicate but equivalent sender\r\n"
+            b"\r\n"
+            b"Hello.\r\n"
+        )
+
+        finding = next(
+            finding for finding in report["mime_findings"]
+            if finding["kind"] == "duplicate_header"
+        )
+        self.assertEqual("INFO", finding["level"])
+        self.assertEqual("compatibility_notice", finding["category"])
+        self.assertFalse(finding["values_diverge"])
+        self.assertFalse(finding["domains_diverge"])
+        self.assertEqual("notice", report["mime_status"])
+
+    def test_duplicate_sender_on_different_domains_is_security_ambiguity(self):
+        report = self._analyze(
+            b"From: sender@example.com\r\n"
+            b"From: sender@evil.example\r\n"
+            b"Subject: Conflicting sender\r\n"
+            b"\r\n"
+            b"Hello.\r\n"
+        )
+
+        finding = next(
+            finding for finding in report["mime_findings"]
+            if finding["kind"] == "duplicate_header"
+        )
+        self.assertEqual("MEDIUM", finding["level"])
+        self.assertEqual("security_ambiguity", finding["category"])
+        self.assertTrue(finding["values_diverge"])
+        self.assertTrue(finding["domains_diverge"])
+        self.assertIn("example.com", finding["distinct_domains"])
+        self.assertIn("evil.example", finding["distinct_domains"])
 
     def test_malformed_base64_defects_are_reported(self):
         report = self._analyze(
@@ -192,6 +231,32 @@ class MimeAmbiguityTests(unittest.TestCase):
             for flag in report["flags"]
         ))
         self.assertNotIn("[MIME alternative:", report["body_for_ai"])
+
+    def test_link_difference_is_strong_even_when_alternative_text_matches(self):
+        text = "Hello customer, review your account status in the secure portal today."
+        report = self._analyze(self._multipart_message(
+            f"{text} https://paypal.com/login",
+            f'<p>{text}</p><a class="button" href="https://paypa1.com/login">Open portal</a>',
+        ))
+
+        analysis = report["mime_alternative_analysis"]
+        group = analysis["groups"][0]
+        difference = group["link_differences"][0]
+        self.assertEqual("divergent", analysis["status"])
+        self.assertTrue(group["link_mismatch"])
+        self.assertGreater(group["minimum_similarity"], 0.70)
+        self.assertIn("paypa1.com", difference["right_only_domains"])
+        self.assertIn("paypa1.com", difference["lookalike_domains"])
+        self.assertIn("text/html alternative introduces link domain(s) paypa1.com", analysis["message"])
+        self.assertIn("lookalike infrastructure", analysis["message"])
+        self.assertTrue(any(
+            flag["field"] == "MIME alternatives" and "paypa1.com" in flag["message"]
+            for flag in report["flags"]
+        ))
+        self.assertTrue(any(
+            "paypa1.com" in line and "lookalike infrastructure" in line
+            for line in _technical_context_lines(report)
+        ))
 
     def test_reordered_equivalent_alternatives_are_not_marked_divergent(self):
         report = self._analyze(self._multipart_message(

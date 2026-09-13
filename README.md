@@ -16,6 +16,61 @@ Versione attuale: **1.0.0**.
 - Collegamento facoltativo e in sola lettura della casella Gmail o Outlook associata all'accesso. FishStop mostra gli ultimi 10 messaggi e scarica il MIME/EML completo solo quando si avvia l'analisi.
 - Cronologia locale, statistiche per periodo, report tecnico consultabile ed esportazione JSON.
 
+## Report JSON per SIEM
+
+Il pulsante **Download JSON** nella scheda tecnica esporta un evento di sicurezza compatto, pensato per l'ingestione in SIEM, data lake e pipeline SOC. Il formato non replica lo stato interno dell'interfaccia: espone soltanto dati operativi e usa un contratto versionato tramite `schema_version`.
+
+Le sezioni principali sono:
+
+- `event`: identificativo, categoria, prodotto e data di esportazione;
+- `email`: metadati RFC essenziali e hash SHA-256 del file EML;
+- `verdict`: classificazione, severità, punteggio di rischio, confidence e motivazione;
+- `authentication`: risultati normalizzati SPF, DKIM e DMARC e anomalie di allineamento;
+- `network`: IP sorgente e percorso SMTP in ordine cronologico, senza header grezzi;
+- `indicators`: URL, domini, IP e hash deduplicati, con contesto e reputazione disponibile;
+- `attachments`: nome, tipo, dimensione, hash, rischio e anomalie degli allegati;
+- `findings`: evidenze normalizzate con ID, categoria e severità;
+- `content`: sintesi semantica e azione richiesta, senza esportare il corpo completo;
+- `analysis`: stato e metadati essenziali dei motori di analisi.
+
+Lo schema FishStop è intenzionalmente indipendente dal fornitore, ma i nomi e i tipi sono facilmente mappabili verso Elastic Common Schema, Splunk CIM e Microsoft Sentinel. I campi senza valore, gli oggetti vuoti e gli array vuoti vengono omessi. Non vengono esportati il corpo integrale, l'HTML, l'anteprima EML, gli header grezzi, prompt o output interni del modello, coordinate geografiche e dati usati soltanto dalla UI.
+
+Esempio ridotto:
+
+```json
+{
+  "schema_version": "1.0",
+  "event": {
+    "kind": "alert",
+    "category": ["email", "threat"],
+    "provider": "FishStop"
+  },
+  "email": {
+    "message_id": "<example@example.com>",
+    "subject": "Invoice overdue",
+    "from": {
+      "address": "billing@example.com",
+      "domain": "example.com"
+    },
+    "eml_sha256": "..."
+  },
+  "verdict": {
+    "classification": "suspicious",
+    "severity": "medium",
+    "risk_score": 55,
+    "reason": "The message requests payment through an unverified link."
+  },
+  "indicators": [
+    {
+      "type": "url",
+      "value": "https://example.net/login",
+      "risk": "suspicious",
+      "source": "message_body"
+    }
+  ]
+}
+```
+
 ## Scaricare FishStop
 
 Gli installer aggiornati sono disponibili nella pagina [FishSTOP Latest](https://github.com/EugenioDeRosa/fishstop-desktop-email-security/releases/latest).
@@ -38,7 +93,26 @@ Il primo avvio e la configurazione iniziale richiedono una connessione Internet.
 4. Trascina **FishStop** nella cartella **Applicazioni**.
 5. Espelli l'immagine disco e avvia FishStop da **Applicazioni**.
 
-Se macOS blocca il primo avvio perché non riconosce lo sviluppatore, apri **Impostazioni di Sistema → Privacy e sicurezza**, individua il messaggio relativo a FishStop e scegli **Apri comunque**. Esegui questa operazione soltanto se hai scaricato l'app dalla release ufficiale indicata sopra.
+Se macOS blocca il primo avvio perché non riconosce lo sviluppatore, apri **Impostazioni di Sistema → Privacy e sicurezza**, individua il messaggio relativo a FishStop e scegli **Apri comunque**.
+
+Se **Apri comunque** non compare o l'app continua a non avviarsi:
+
+1. Verifica che **FishStop.app** sia nella cartella **Applicazioni**.
+2. Apri **Terminale** da **Applicazioni → Utility**.
+3. Esegui questo comando:
+
+   ```bash
+   sudo xattr -dr com.apple.quarantine "/Applications/FishStop.app"
+   ```
+
+4. Inserisci la password del Mac quando richiesta e premi **Invio**. Durante la digitazione la password non viene mostrata nel Terminale.
+5. Avvia nuovamente FishStop da **Applicazioni** oppure esegui:
+
+   ```bash
+   open "/Applications/FishStop.app"
+   ```
+
+Il percorso `/Applications/FishStop.app` è valido per tutti gli utenti quando l'app è stata spostata nella cartella **Applicazioni** come indicato sopra. Rimuovi l'attributo di quarantena soltanto se hai scaricato FishStop dalla release ufficiale.
 
 > Gli archivi `.app.tar.gz` presenti nella release sono artefatti di distribuzione. Per l'installazione normale usa il file `.dmg` adatto al processore del Mac.
 

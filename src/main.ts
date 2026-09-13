@@ -114,6 +114,27 @@ type AnalysisReport = {
   conversation_excluded_link_count?: number;
   conversation_analysis?: ConversationManifest & { selection?: ConversationSelection & { excluded_ids?: string[] } };
 };
+type SiemIndicator = {
+  type: "url" | "domain" | "ip" | "sha256";
+  value: string;
+  risk?: string;
+  source: string;
+  reputation?: Record<string, unknown>;
+  context?: Record<string, unknown>;
+};
+type SiemReport = {
+  schema_version: "1.0";
+  event: Record<string, unknown>;
+  email: Record<string, unknown>;
+  verdict: Record<string, unknown>;
+  authentication?: Record<string, unknown>;
+  network?: Record<string, unknown>;
+  indicators?: SiemIndicator[];
+  attachments?: Array<Record<string, unknown>>;
+  findings?: Array<Record<string, unknown>>;
+  content?: Record<string, unknown>;
+  analysis?: Record<string, unknown>;
+};
 type ReputationResult = { status?: string; message?: string; detection_ratio?: string; malicious?: number; suspicious?: number; total_engines?: number; threat_label?: string; file_type?: string; file_name?: string; last_analysis?: string | number; permalink?: string; abuseConfidenceScore?: number; totalReports?: number; country?: string; country_code?: string; city?: string; region?: string; isp?: string; org?: string; asn?: string; timezone?: string; lat?: number; lon?: number; is_proxy?: boolean; is_hosting?: boolean; resolved_ip?: string; resolved_domain?: string; used_parent_fallback?: string; url?: string; title?: string; crowdsourced_context_summary?: string };
 type AnalysisRecord = { id: string; analyzedAt: string; report: AnalysisReport; analysisDurationMs?: number };
 type ActiveAnalysis = { userSub: string; fileName: string; source?: "file" | "inbox"; status: "processing" | "complete" | "error"; analysisId?: string; report?: AnalysisReport; recordId?: string | null; error?: string; completedChecks?: number[]; progressMessage?: string; progressPercent?: number };
@@ -603,10 +624,154 @@ function formatAttachmentSize(size?: number): string {
   return `${(size / 1_000_000).toFixed(2)} MB`;
 }
 
-function structuredReportData(report: AnalysisReport): AnalysisReport {
-  const structured = { ...report };
-  delete structured.raw_eml_preview;
-  return structured;
+function compactObject<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return value.map(compactObject).filter((item) => item !== undefined && item !== null && item !== "") as T;
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>)
+      .map(([key, item]) => [key, compactObject(item)])
+      .filter(([, item]) => item !== undefined && item !== null && item !== ""
+        && (!Array.isArray(item) || item.length > 0)
+        && (typeof item !== "object" || Array.isArray(item) || Object.keys(item as object).length > 0))) as T;
+  }
+  return value;
+}
+
+function structuredMailbox(value?: string): Record<string, unknown> | undefined {
+  const raw = String(value || "").trim();
+  if (!raw) return undefined;
+  const match = raw.match(/^(.*?)\s*<([^<>]+)>\s*$/);
+  const address = (match?.[2] || raw).trim();
+  const domain = address.includes("@") ? address.split("@").pop()?.toLowerCase() : undefined;
+  return compactObject({ address, display_name: match?.[1].trim().replace(/^['"]|['"]$/g, ""), domain });
+}
+
+function structuredMailboxes(value?: string): Array<Record<string, unknown>> {
+  return String(value || "").split(/,(?=(?:[^\"]*\"[^\"]*\")*[^\"]*$)/)
+    .map((item) => structuredMailbox(item)).filter((item): item is Record<string, unknown> => Boolean(item));
+}
+
+function publicReputation(result?: ReputationResult): Record<string, unknown> | undefined {
+  if (!result) return undefined;
+  return compactObject({
+    status: result.status,
+    detection_ratio: result.detection_ratio,
+    malicious: result.malicious,
+    suspicious: result.suspicious,
+    total_engines: result.total_engines,
+    threat_label: result.threat_label,
+    abuse_confidence_score: result.abuseConfidenceScore,
+    total_reports: result.totalReports,
+    last_analysis: result.last_analysis,
+  });
+}
+
+function structuredReportData(report: AnalysisReport): SiemReport {
+  const verdict = assessment(report);
+  const semantic = report.phi4_analysis?.analysis;
+  const severity = verdict.tone === "danger" ? "high" : verdict.tone === "review" ? "medium" : "low";
+  const riskScore = verdict.tone === "danger" ? 90 : verdict.tone === "review" ? 55 : 15;
+  const auth = (protocol: "SPF" | "DKIM" | "DMARC") => {
+    const result = authFromEmlHeader(report, protocol);
+    return compactObject({ status: result.status?.toLowerCase(), identity: result.identity, source: result.source });
+  };
+
+  const indicators: SiemIndicator[] = [];
+  const seenIndicators = new Set<string>();
+  const addIndicator = (indicator: SiemIndicator) => {
+    const key = `${indicator.type}:${indicator.value.toLowerCase()}`;
+    if (!indicator.value || seenIndicators.has(key)) return;
+    seenIndicators.add(key);
+    indicators.push(compactObject(indicator));
+  };
+  (report.links || []).forEach((link) => {
+    if (!link.url || (link.scheme || "").toLowerCase() === "mailto") return;
+    addIndicator({
+      type: "url", value: link.url, source: link.source || "message_body",
+      risk: link.context_risk_level || report.link_reputation?.[link.url]?.status,
+      reputation: publicReputation(report.link_reputation?.[link.url]),
+      context: compactObject({
+        host: link.host, registered_domain: link.registered_domain, role: link.role,
+        actionable: link.actionable, display_mismatch: link.display_mismatch,
+        call_to_action: link.html_call_to_action, dangerous_download: link.dangerous_download,
+      }),
+    });
+    if (link.registered_domain) addIndicator({ type: "domain", value: link.registered_domain, source: "message_link" });
+  });
+  (report.received_hops || []).flatMap((hop) => hop.all_ips || (hop.sender_ip ? [hop.sender_ip] : []))
+    .forEach((ip) => addIndicator({ type: "ip", value: ip, source: "received_header", risk: report.hop_reputation?.[ip]?.status, reputation: publicReputation(report.hop_reputation?.[ip]) }));
+  (report.attachments || []).forEach((attachment) => {
+    if (attachment.hash_sha256) addIndicator({ type: "sha256", value: attachment.hash_sha256, source: "attachment", risk: attachment.file_reputation?.status, reputation: publicReputation(attachment.file_reputation), context: compactObject({ filename: attachment.filename }) });
+  });
+
+  const findings: Array<Record<string, unknown>> = (report.flags || []).map((flag, index) => compactObject({
+    id: `static.${String(flag.field || "finding").toLowerCase().replace(/[^a-z0-9]+/g, "_")}.${index + 1}`,
+    severity: flag.level.toLowerCase(), category: "static_analysis", field: flag.field, description: flag.message,
+  }));
+  (report.lookalike_alerts || []).forEach((alert, index) => findings.push(compactObject({
+    id: `identity.lookalike.${index + 1}`, severity: (alert.level || "HIGH").toLowerCase(), category: "identity",
+    field: "domain", description: alert.detail || `Possible lookalike domain for ${alert.matched_brand || "a known brand"}.`,
+    evidence: { domain: alert.registered_domain || alert.host, matched_brand: alert.matched_brand, technique: alert.technique, edit_distance: alert.edit_distance },
+  })));
+
+  const result: SiemReport = {
+    schema_version: "1.0",
+    event: {
+      id: report.eml_sha256 || report.message_id,
+      kind: "alert", category: ["email", "threat"], type: ["info"], provider: "FishStop",
+      exported_at: new Date().toISOString(),
+    },
+    email: {
+      message_id: report.message_id, subject: report.subject, sent_at: report.date,
+      from: structuredMailbox(report.from_), to: structuredMailboxes(report.to), reply_to: structuredMailbox(report.reply_to),
+      return_path: structuredMailbox(report.return_path), delivered_to: structuredMailboxes(report.delivered_to),
+      eml_sha256: report.eml_sha256, importance: report.importance,
+    },
+    verdict: {
+      classification: verdict.tone === "danger" ? "malicious" : verdict.tone === "review" ? "suspicious" : "likely_legitimate",
+      severity, risk_score: riskScore, confidence: semantic?.confidence, reason: verdict.detail,
+      threat_type: semantic?.threat_type, scam_type: semantic?.scam_type,
+    },
+    authentication: {
+      spf: auth("SPF"), dkim: auth("DKIM"), dmarc: auth("DMARC"),
+      sender_aligned: report.spf_sender_aligned, injection_ip_authorized: report.injection_ip_spf_authorized,
+      reply_to_mismatch: report.reply_to_mismatch, return_path_mismatch: report.return_path_domain_mismatch,
+      display_name_spoofing: report.display_name_spoofing,
+    },
+    network: {
+      source_ip: report.injection_sender_ip,
+      hops: orderedReceivedHops(report.received_hops).map((hop, index) => compactObject({
+        sequence: index + 1, from_host: hop.from_host, by_host: hop.by_host,
+        source_ips: hop.all_ips || (hop.sender_ip ? [hop.sender_ip] : []), received_at: hop.received_at,
+      })),
+    },
+    indicators,
+    attachments: (report.attachments || []).map((attachment) => compactObject({
+      filename: attachment.filename, content_type: attachment.content_type,
+      size_bytes: attachment.size_bytes ?? attachment.size, sha256: attachment.hash_sha256,
+      role: attachment.mime_role, actionable: attachment.actionable, detected_format: attachment.magic_detected_format,
+      risk: attachment.attachment_security?.risk_level || attachment.pdf_security?.risk_level || attachment.archive_security?.risk_level || attachment.file_reputation?.status,
+      anomaly: attachment.anomaly,
+      findings: attachment.attachment_security?.findings,
+      reputation: publicReputation(attachment.file_reputation),
+    })),
+    findings,
+    content: {
+      summary: report.ai_content_summary?.summary || semantic?.content_summary,
+      requested_action: semantic?.requested_action, action_channel: semantic?.action_channel,
+      claimed_brand: semantic?.claimed_brand, coercion: semantic?.coercion,
+      identity_risk: semantic?.identity_risk, content_risk: semantic?.content_risk, technical_risk: semantic?.technical_risk,
+    },
+    analysis: {
+      static_engine: "FishStop", ai_status: report.phi4_analysis?.status,
+      ai_model: report.phi4_analysis?.model, ai_backend: report.identity_analysis?.backend,
+      duration_ms: report.phi4_analysis?.duration_ms,
+      mime_status: report.mime_status, mime_defect_count: report.mime_defect_count,
+      authentication_scope: report.selected_target_authentication_scope || report.authentication_scope,
+    },
+  };
+  return compactObject(result);
 }
 
 /**

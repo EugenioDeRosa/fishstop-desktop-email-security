@@ -1602,11 +1602,10 @@ class EmlSOCAnalyzer:
                 EmlSOCAnalyzer._extract_address(report.get("from_") or "") or ""
             )
             is_bulk_sender = bool(report.get("is_bulk_sender"))
-            bulk_count = int(report.get("bulk_sender_signal_count") or 0)
             bulk_note = (
-                f"Bulk sender detected ({bulk_count} header signals), so this mismatch can be legitimate."
+                "This appears to be a mailing service, where this difference can be legitimate."
                 if is_bulk_sender
-                else f"Bulk sender not detected ({bulk_count} header signals), so this mismatch is more suspicious."
+                else "This difference is unusual for this message."
             )
             mismatch = (
                 f"The Return-Path domain (`{report['return_path_domain']}`) differs from "
@@ -1620,13 +1619,13 @@ class EmlSOCAnalyzer:
                 flag(
                     "LOW" if is_bulk_sender else "MEDIUM",
                     "Return-Path",
-                    f"{mismatch} DMARC did not pass ({dmarc_status.upper()}), so the mismatch is relevant technical context. {bulk_note}",
+                    f"{mismatch} The sender could not be fully verified. {bulk_note}",
                 )
             else:
                 flag(
                     "LOW",
                     "Return-Path",
-                    f"{mismatch} DMARC is unavailable, so this is weak evidence that must be correlated with other signals. {bulk_note}",
+                    f"{mismatch} Sender verification was unavailable. {bulk_note}",
                 )
         elif report.get("return_path") and not report.get("return_path_domain"):
             flag("LOW", "Return-Path", "Return-Path present but domain cannot be extracted")
@@ -1646,7 +1645,7 @@ class EmlSOCAnalyzer:
             flag(
                 "MEDIUM" if report.get("mime_review_finding_count") else "LOW",
                 "MIME structure",
-                f"{omitted_mime_findings} additional MIME finding(s) are available in the structured report.",
+                f"{omitted_mime_findings} additional message-format detail(s) require attention.",
             )
 
         alternative_analysis = report.get("mime_alternative_analysis") or {}
@@ -1661,10 +1660,9 @@ class EmlSOCAnalyzer:
         if report.get("html_strip_applied"):
             body_source = str(report.get("body_source") or "")
             message = (
-                "Email body is HTML: tags were removed before AI analysis. "
-                "Possible hidden text obfuscation in tags."
+                "The message formatting may contain text that is not immediately visible."
                 if body_source.startswith("text/html")
-                else "An HTML alternative was normalized and compared with the plain-text body before AI analysis."
+                else "Different versions of the message content were checked for inconsistencies."
             )
             flag("INFO", "Body", message)
 
@@ -1716,8 +1714,8 @@ class EmlSOCAnalyzer:
         inj = report.get("injection_server", {})
         if inj.get("sender_ip"):
             flag("INFO", "Received",
-                 f"Injection server: {inj.get('sender_domain') or inj.get('from_host', '?')} "
-                 f"[{inj['sender_ip']}] - verify IP/domain reputation")
+                 f"Sending server observed: {inj.get('sender_domain') or inj.get('from_host', '?')} "
+                 f"[{inj['sender_ip']}]")
 
         # Anomalie allegati
         for att in report.get("attachments", []):
@@ -1730,11 +1728,8 @@ class EmlSOCAnalyzer:
             for behavior in (pdf_security.get("behaviors") or [])[:8]:
                 flag(
                     _pdf_indicator_flag_level(behavior.get("severity")),
-                    "PDF Content",
-                    f"'{att['filename']}': internal PDF behavior - "
-                    f"{behavior.get('label') or behavior.get('key') or 'behavior'} "
-                    f"x{behavior.get('count') or 1} "
-                    f"(pdf_risk={pdf_security.get('risk_level') or 'unknown'})",
+                    "PDF content",
+                    f"'{att['filename']}': {behavior.get('label') or 'A potentially unsafe PDF feature was found'}.",
                 )
             if pdf_security.get("suspicious"):
                 flag(
@@ -1746,7 +1741,7 @@ class EmlSOCAnalyzer:
                 flag(
                     "INFO",
                     "PDF Attachment",
-                     f"'{att['filename']}': PDF static scan - {pdf_security.get('summary')}",
+                     f"'{att['filename']}': {pdf_security.get('summary')}",
                 )
             for finding in (archive_security.get("findings") or [])[:8]:
                 risk = str(finding.get("severity") or "").lower()
@@ -1759,8 +1754,7 @@ class EmlSOCAnalyzer:
                 )
             if att.get("magic_bytes_hex"):
                 flag("INFO", "Attachment",
-                     f"'{att['filename']}': magic bytes {att['magic_bytes_hex'][:8]}... "
-                     f"-> detected format: {att['magic_detected_format'] or 'unknown'}")
+                     f"'{att['filename']}': detected file type: {att['magic_detected_format'] or 'unknown'}")
 
         # Link anomalie: IP-direct e lookalike
         html_ctas = [

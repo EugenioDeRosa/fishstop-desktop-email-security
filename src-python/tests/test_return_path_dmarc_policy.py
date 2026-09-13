@@ -43,13 +43,13 @@ class ReturnPathDmarcPolicyTests(unittest.TestCase):
         report = self.analyze("fail")
         flags = self.return_path_flags(report)
         self.assertEqual("MEDIUM", flags[0]["level"])
-        self.assertIn("relevant technical context", flags[0]["message"])
+        self.assertIn("sender could not be fully verified", flags[0]["message"])
 
     def test_unavailable_dmarc_keeps_mismatch_as_weak_signal(self):
         report = self.analyze(None)
         flags = self.return_path_flags(report)
         self.assertEqual("LOW", flags[0]["level"])
-        self.assertIn("weak evidence", flags[0]["message"])
+        self.assertIn("Sender verification was unavailable", flags[0]["message"])
 
     def test_qwen_context_omits_mismatch_when_dmarc_passes(self):
         self.assertEqual("", _return_path_mismatch_context(self.analyze("pass")))

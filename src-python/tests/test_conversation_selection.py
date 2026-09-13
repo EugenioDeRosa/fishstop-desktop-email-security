@@ -94,7 +94,7 @@ class ConversationSelectionTests(unittest.TestCase):
         self.assertEqual("complete_delivered_file", report["container_analysis_scope"])
         self.assertEqual(["message-3"], report["conversation_analysis"]["selection"]["prior_context_ids"])
         self.assertEqual(["message-1"], report["conversation_analysis"]["selection"]["later_context_ids"])
-        self.assertIn("MIME structure and attachments", report["conversation_analysis"]["technical_scope_message"])
+        self.assertIn("Attachments belong to the complete email", report["conversation_analysis"]["technical_scope_message"])
 
     def test_single_message_does_not_require_selection(self):
         manifest = inspect_conversation_bytes(

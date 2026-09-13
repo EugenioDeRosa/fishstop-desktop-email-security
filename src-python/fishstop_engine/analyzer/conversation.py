@@ -243,11 +243,11 @@ def inspect_conversation_bytes(raw_bytes: bytes) -> dict:
         "message_count": len(segments),
         "segments": segments,
         "technical_scope_message": (
-            "SPF, DKIM, DMARC, routing hops and the injection IP apply only to the delivered outer message. "
-            "MIME structure and attachments describe the complete delivered file and cannot be assigned with certainty "
-            "to an embedded turn. Embedded senders are claims recovered from forwarded content."
+            "FishStop can verify the sender of the delivered message. Forwarded messages do not include enough "
+            "information to verify their original sender independently. Attachments belong to the complete email "
+            "and may not be attributable to a specific message in the conversation."
             if len(segments) > 1 else
-            "Authentication and routing evidence apply to this delivered message."
+            "FishStop can assess the sender and delivery information for this message."
         ),
     }
 

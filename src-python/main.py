@@ -168,13 +168,13 @@ def analyze_phi4(report_path: str) -> dict[str, Any]:
             current = int(event.get("current") or 0)
             total = int(event.get("total") or 0)
             if stage == "merge":
-                message = "Applying identity, corroboration and final risk policy…"
+                message = "Preparing the final assessment…"
             elif stage == "primary-complete":
-                message = "Primary content and intent analysis complete. Checking risk-sensitive details…"
+                message = "Reviewing important details…"
             elif stage == "verification":
-                message = "The AI model is verifying the risk-sensitive interpretation…"
+                message = "Reviewing the message context…"
             elif stage == "retry":
-                message = "The AI model is refining the structured analysis…"
+                message = "Finalizing the analysis…"
             elif total > 1 and current > 0:
                 message = f"The AI model is analyzing email section {current} of {total}…"
             else:

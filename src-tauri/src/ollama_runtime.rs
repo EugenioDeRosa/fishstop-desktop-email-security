@@ -119,6 +119,13 @@ struct PullProgress {
     completed: Option<u64>,
 }
 
+#[derive(Deserialize)]
+struct MlxDownloadProgress {
+    status: String,
+    total: u64,
+    completed: u64,
+}
+
 #[derive(Serialize, Clone)]
 pub struct ModelProgress {
     pub status: String,
@@ -325,16 +332,37 @@ fn install_experimental_mlx_model(app: &AppHandle) -> Result<(), String> {
         .app_data_dir()
         .map_err(|error| format!("Could not locate FishSTOP data: {error}"))?
         .join("mlx-cache");
-    let status = experimental_mlx_command(app)?
+    let mut command = experimental_mlx_command(app)?;
+    command
         .arg("--download")
         .arg(&partial)
         .env("HF_HOME", cache)
         .env("HF_HUB_DISABLE_TELEMETRY", "1")
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let mut child = command
+        .spawn()
         .map_err(|error| format!("Could not start the MLX model download: {error}"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "Could not monitor the MLX model download.".to_string())?;
+    for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+        if let Ok(progress) = serde_json::from_str::<MlxDownloadProgress>(&line) {
+            let _ = app.emit(
+                "ollama-model-progress",
+                ModelProgress {
+                    status: progress.status,
+                    total: Some(progress.total),
+                    completed: Some(progress.completed),
+                },
+            );
+        }
+    }
+    let status = child
+        .wait()
+        .map_err(|error| format!("Could not finish the MLX model download: {error}"))?;
     if !status.success() {
         let _ = fs::remove_dir_all(&partial);
         return Err("The Qwen MLX model download failed.".to_string());

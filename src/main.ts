@@ -2583,7 +2583,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
           installManagedQwen.hidden = true;
           removeManagedQwen.hidden = false;
         } else {
-          managedModelStatus.textContent = "Install the Qwen MLX model before running semantic analysis.";
+          managedModelStatus.textContent = "Install Qwen optimized for MLX before running semantic analysis. The MLX engine is already included in FishStop.";
           installManagedQwen.hidden = false;
           installManagedQwen.disabled = false;
           removeManagedQwen.hidden = true;

@@ -1824,6 +1824,9 @@ fn analyze_ai_with_engine(
                 ollama_request_timeout_seconds(gpu_accelerated).to_string(),
             )
             .env("OLLAMA_KEEP_ALIVE", "-1m");
+        if ollama_model == ollama_runtime::EXPERIMENTAL_MLX_MODEL {
+            engine.env("FISHSTOP_LLM_PROVIDER", "mlx");
+        }
         if !gpu_accelerated {
             engine
                 .env(
@@ -1888,6 +1891,7 @@ async fn analyze_phi4(
     let runtime = Arc::clone(&runtime);
     let cancellation = Arc::clone(&cancellation);
     tauri::async_runtime::spawn_blocking(move || {
+        let use_mlx = ollama_runtime::experimental_mlx_enabled();
         let result = (|| {
             if cancellation.is_cancelled(&analysis_id) {
                 return Err("Analysis cancelled.".to_string());
@@ -1901,11 +1905,20 @@ async fn analyze_phi4(
                     message: "Loading the local AI model…".to_string(),
                 },
             );
-            ollama_runtime::warm_default_model(&app, &runtime)?;
+            if use_mlx {
+                ollama_runtime::start_experimental_mlx(&app, &runtime)?;
+            } else {
+                ollama_runtime::warm_default_model(&app, &runtime)?;
+            }
             if cancellation.is_cancelled(&analysis_id) {
                 return Err("Analysis cancelled.".to_string());
             }
-            let prepared_model = ollama_runtime::prepare_model(&app, &runtime)?;
+            let (model, gpu_accelerated) = if use_mlx {
+                (ollama_runtime::EXPERIMENTAL_MLX_MODEL, true)
+            } else {
+                let prepared = ollama_runtime::prepare_model(&app, &runtime)?;
+                (prepared.name, prepared.gpu_accelerated)
+            };
             let _ = app.emit(
                 "analysis-progress",
                 AnalysisProgress {
@@ -1918,14 +1931,18 @@ async fn analyze_phi4(
             analyze_ai_with_engine(
                 "phi4",
                 report,
-                prepared_model.name,
-                prepared_model.gpu_accelerated,
+                model,
+                gpu_accelerated,
                 analysis_id,
                 cancellation,
                 app.clone(),
             )
         })();
-        let _ = ollama_runtime::unload_default_model();
+        if use_mlx {
+            let _ = ollama_runtime::stop_experimental_mlx(&runtime);
+        } else {
+            let _ = ollama_runtime::unload_default_model();
+        }
         result
     })
     .await

@@ -30,6 +30,14 @@ OLLAMA_RESPONSE_IDLE_TIMEOUT = int(os.getenv("OLLAMA_RESPONSE_IDLE_TIMEOUT", "90
 OLLAMA_PIPELINE_TIMEOUT = int(os.getenv("OLLAMA_PIPELINE_TIMEOUT", "270"))
 OLLAMA_NUM_THREAD = int(os.getenv("OLLAMA_NUM_THREAD", "0"))
 OLLAMA_SINGLE_PASS = os.getenv("OLLAMA_SINGLE_PASS", "0").strip().lower() in {"1", "true", "yes"}
+MLX_CHAT_ENDPOINT = os.getenv(
+    "MLX_CHAT_ENDPOINT",
+    "http://127.0.0.1:11436/v1/chat/completions",
+)
+MLX_MODEL = os.getenv(
+    "MLX_MODEL",
+    "mlx-community/Qwen3-4B-Instruct-2507-4bit",
+)
 ANALYSIS_MODE = os.getenv("FISHSTOP_ANALYSIS_MODE", "balanced").strip().lower()
 if ANALYSIS_MODE not in {"fast", "balanced", "thorough"}:
     ANALYSIS_MODE = "balanced"
@@ -100,6 +108,8 @@ def _cached_ollama_available(timeout: float = 0.8) -> bool:
 
 
 def _use_ollama() -> bool:
+    if LLM_PROVIDER == "mlx":
+        return _mlx_available()
     return _cached_ollama_available()
 
 
@@ -108,9 +118,20 @@ def _llm_enabled() -> bool:
 
 
 def active_llm_backend() -> str:
+    if LLM_PROVIDER == "mlx" and _mlx_available():
+        return f"mlx ({MLX_MODEL})"
     if _use_ollama():
         return f"ollama ({OLLAMA_MODEL})"
     return "not configured"
+
+
+def _mlx_available(timeout: float = 0.8) -> bool:
+    try:
+        endpoint = MLX_CHAT_ENDPOINT.split("/v1/", 1)[0] + "/v1/models"
+        response = requests.get(endpoint, timeout=timeout)
+        return response.status_code == 200
+    except requests.RequestException:
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -3834,6 +3855,8 @@ def stream_phi4_email_analysis(
     timeout: int = OLLAMA_REQUEST_TIMEOUT,
     cancellation_requested=None,
 ):
+    if LLM_PROVIDER == "mlx":
+        model = MLX_MODEL
     pipeline_started_at = monotonic()
     pipeline_deadline = pipeline_started_at + max(
         float(timeout),
@@ -3847,12 +3870,13 @@ def stream_phi4_email_analysis(
     if cancellation_requested and cancellation_requested():
         yield {"status": "cancelled", "text": ""}
         return
-    use_ollama = _use_ollama()
-    if not use_ollama:
+    local_backend_available = _use_ollama()
+    if not local_backend_available:
+        backend_name = "MLX" if LLM_PROVIDER == "mlx" else "Ollama"
         yield {
             "status": "error",
             "message": (
-                "LLM analysis unavailable: start local Ollama and install the selected model."
+                f"LLM analysis unavailable: start local {backend_name} and install the selected model."
             ),
             "text": "",
         }
@@ -4284,6 +4308,136 @@ def generate_analysis_summary(soc: dict, semantic: dict, model: str = OLLAMA_MOD
     return result
 
 
+def _stream_mlx(
+    messages: list[dict],
+    timeout: int,
+    *,
+    request_stage: str,
+    telemetry: list[dict] | None,
+    num_predict: int | None,
+):
+    """Stream one request from the experimental local MLX-LM server."""
+    request_timeout = max(1.0, float(timeout))
+    started_at = monotonic()
+    deadline = started_at + request_timeout
+    payload = {
+        "model": MLX_MODEL,
+        "messages": messages,
+        "stream": True,
+        "stream_options": {"include_usage": True},
+        "temperature": 0.0,
+        "top_p": 0.9,
+        "max_tokens": max(1, int(num_predict or OLLAMA_NUM_PREDICT)),
+    }
+    chunks: list[str] = []
+    prompt_tokens = 0
+    completion_tokens = 0
+    try:
+        response_idle_timeout = min(
+            max(1.0, float(OLLAMA_RESPONSE_IDLE_TIMEOUT)),
+            request_timeout,
+        )
+        socket_timeout = (min(5.0, request_timeout), response_idle_timeout)
+        with requests.post(
+            MLX_CHAT_ENDPOINT,
+            json=payload,
+            stream=True,
+            timeout=socket_timeout,
+        ) as response:
+            response.raise_for_status()
+            for raw_line in response.iter_lines(decode_unicode=True):
+                if monotonic() >= deadline:
+                    response.close()
+                    yield {
+                        "status": "error",
+                        "message": f"MLX exceeded the {timeout} second total time budget.",
+                        "text": "".join(chunks),
+                    }
+                    return
+                if not raw_line:
+                    continue
+                line = str(raw_line).strip()
+                if line.startswith("data:"):
+                    line = line[5:].strip()
+                if not line or line == "[DONE]":
+                    continue
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                usage = event.get("usage") or {}
+                prompt_tokens = max(prompt_tokens, int(usage.get("prompt_tokens") or 0))
+                completion_tokens = max(
+                    completion_tokens,
+                    int(usage.get("completion_tokens") or 0),
+                )
+                choices = event.get("choices") or []
+                if not choices:
+                    continue
+                choice = choices[0] or {}
+                delta = choice.get("delta") or {}
+                message = choice.get("message") or {}
+                delta_content = delta.get("content") if isinstance(delta, dict) else delta
+                message_content = message.get("content") if isinstance(message, dict) else message
+                content = delta_content or message_content or choice.get("text") or ""
+                if content:
+                    chunks.append(str(content))
+                    yield {
+                        "status": "stream",
+                        "model": MLX_MODEL,
+                        "backend": "mlx",
+                        "delta": str(content),
+                    }
+    except requests.exceptions.ConnectTimeout:
+        yield {
+            "status": "error",
+            "message": "The experimental MLX server could not be reached within 5 seconds.",
+            "text": "".join(chunks),
+        }
+        return
+    except requests.exceptions.ReadTimeout:
+        yield {
+            "status": "error",
+            "message": "The experimental MLX server stopped responding.",
+            "text": "".join(chunks),
+        }
+        return
+    except requests.exceptions.HTTPError as exc:
+        code = exc.response.status_code if exc.response is not None else "?"
+        yield {
+            "status": "error",
+            "message": f"MLX HTTP {code}: request failed for model '{MLX_MODEL}'.",
+            "text": "".join(chunks),
+        }
+        return
+    except requests.exceptions.RequestException as exc:
+        yield {
+            "status": "error",
+            "message": f"MLX is unreachable at {MLX_CHAT_ENDPOINT}: {exc}",
+            "text": "".join(chunks),
+        }
+        return
+
+    call_metrics = {
+        "stage": request_stage,
+        "wall_duration_ms": round((monotonic() - started_at) * 1000),
+        "load_duration_ms": 0,
+        "prompt_eval_count": prompt_tokens,
+        "prompt_eval_duration_ms": 0,
+        "eval_count": completion_tokens,
+        "eval_duration_ms": 0,
+    }
+    if telemetry is not None:
+        telemetry.append(call_metrics)
+    yield {
+        "status": "ok",
+        "model": MLX_MODEL,
+        "backend": "mlx",
+        "text": "".join(chunks).strip(),
+        "metrics": call_metrics,
+    }
+
+
 def _stream_ollama(
     messages: list[dict],
     model: str,
@@ -4294,6 +4448,15 @@ def _stream_ollama(
     telemetry: list[dict] | None = None,
     num_predict: int | None = None,
 ):
+    if LLM_PROVIDER == "mlx":
+        yield from _stream_mlx(
+            messages,
+            timeout,
+            request_stage=request_stage,
+            telemetry=telemetry,
+            num_predict=num_predict,
+        )
+        return
     request_timeout = max(1.0, float(timeout))
     started_at = monotonic()
     deadline = started_at + request_timeout

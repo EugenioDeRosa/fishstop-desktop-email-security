@@ -2572,6 +2572,14 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       installManagedQwen.textContent = "Install AI model";
       removeManagedQwen.textContent = "Remove model";
       removeManagedQwen.disabled = false;
+      if (/mlx/i.test(runtime.accelerator)) {
+        managedModelStatus.textContent = runtime.runtime_ready
+          ? "MLX is included. Qwen is downloaded automatically on first use and loaded only during analysis."
+          : "The bundled MLX runtime is unavailable.";
+        installManagedQwen.hidden = true;
+        removeManagedQwen.hidden = true;
+        return;
+      }
       if (runtime.model_ready) {
         managedModelStatus.textContent = "The local AI model is installed and ready.";
         installManagedQwen.hidden = true;

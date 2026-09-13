@@ -29,6 +29,23 @@ L'analisi semantica usa per impostazione predefinita la modalità `balanced`: un
 
 Su Apple Silicon FishStop usa Metal. Su Windows usa automaticamente CUDA con le GPU NVIDIA compatibili e prova Vulkan con le GPU AMD o Intel, mantenendo il fallback CPU quando l'accelerazione non è disponibile o il modello non entra nella memoria della GPU. Sui computer CPU-only FishStop esegue Identity e Qwen in sequenza, assegna a Ollama i core disponibili e usa un profilo con contesto e output limitati. L'analisi AI conserva comunque i controlli statici se il modello locale non termina entro il proprio budget.
 
+### Backend MLX sperimentale (Apple Silicon)
+
+Su Apple Silicon la build installabile usa automaticamente MLX con lo stesso Qwen3-4B-Instruct-2507 in formato 4-bit. Il runtime è incluso nell'app; il modello viene scaricato nella cartella dati di FishStop al primo utilizzo. Per provarlo in sviluppo, prepara un ambiente separato così le dipendenze MLX non interferiscono con il motore FishStop:
+
+```bash
+python3 -m venv .venv-mlx
+.venv-mlx/bin/pip install -r src-python/requirements-mlx.txt
+```
+
+Questa preparazione serve una sola volta. Avvia quindi FishStop con un unico comando:
+
+```bash
+npm run tauri:mlx
+```
+
+Alla prima analisi viene scaricato `mlx-community/Qwen3-4B-Instruct-2507-4bit`. FishStop avvia MLX quando comincia l'analisi e lo arresta appena termina, anche in caso di errore o annullamento, liberando la memoria unificata. Il modello rimane nella cache su disco e non viene riscaricato. Senza `FISHSTOP_LLM_PROVIDER=mlx`, FishStop continua a usare il backend Ollama normale.
+
 ## Avvio in sviluppo
 
 Prerequisiti: Node.js LTS, Rust e Python 3.

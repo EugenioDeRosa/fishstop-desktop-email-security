@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{path::BaseDirectory, AppHandle, Emitter, Manager};
 
 pub const MANAGED_MODEL: &str = "qwen3:4b-instruct-2507-q4_K_M";
+pub const EXPERIMENTAL_MLX_MODEL: &str = "mlx-community/Qwen3-4B-Instruct-2507-4bit";
 pub const CPU_REQUEST_TIMEOUT_SECONDS: u64 = 600;
 pub const CPU_RESPONSE_IDLE_TIMEOUT_SECONDS: u64 = 300;
 pub const CPU_PIPELINE_TIMEOUT_SECONDS: u64 = 1_200;
@@ -21,6 +22,7 @@ pub const CPU_OUTPUT_TOKENS: u64 = 224;
 pub const CPU_AUDIT_TOKENS: u64 = 160;
 const MANAGED_HOST: &str = "127.0.0.1:11435";
 const MANAGED_ENDPOINT: &str = "http://127.0.0.1:11435";
+const EXPERIMENTAL_MLX_ENDPOINT: &str = "http://127.0.0.1:11436";
 const MODEL_KEEP_ALIVE: &str = "15m";
 const ACCELERATED_MODEL_WARMUP_TIMEOUT: Duration = Duration::from_secs(90);
 const CPU_MODEL_WARMUP_TIMEOUT: Duration = Duration::from_secs(300);
@@ -29,6 +31,7 @@ const TARGET_TRIPLE: &str = env!("TAURI_ENV_TARGET_TRIPLE");
 #[derive(Default)]
 pub struct OllamaRuntime {
     child: Option<Child>,
+    mlx_child: Option<Child>,
 }
 
 pub struct PreparedModel {
@@ -42,7 +45,22 @@ impl Drop for OllamaRuntime {
             let _ = child.kill();
             let _ = child.wait();
         }
+        if let Some(mut child) = self.mlx_child.take() {
+            terminate_mlx_process(&mut child);
+        }
     }
+}
+
+fn terminate_mlx_process(child: &mut Child) {
+    #[cfg(unix)]
+    unsafe {
+        // PyInstaller's one-file bootloader starts the actual server as a child.
+        // MLX has its own process group so killing the group releases both.
+        libc::kill(-(child.id() as i32), libc::SIGKILL);
+    }
+    #[cfg(not(unix))]
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 #[derive(Serialize)]
@@ -163,6 +181,166 @@ fn managed_model_installed(app: &AppHandle, model: &str) -> bool {
 
 pub fn recommended_model() -> &'static str {
     MANAGED_MODEL
+}
+
+pub fn experimental_mlx_enabled() -> bool {
+    cfg!(all(target_os = "macos", target_arch = "aarch64"))
+        && (!cfg!(debug_assertions)
+            || std::env::var("FISHSTOP_LLM_PROVIDER")
+                .map(|value| value.eq_ignore_ascii_case("mlx"))
+                .unwrap_or(false))
+}
+
+pub fn experimental_mlx_ready() -> bool {
+    experimental_mlx_enabled()
+        && Client::builder()
+            .connect_timeout(Duration::from_millis(500))
+            .timeout(Duration::from_secs(1))
+            .build()
+            .and_then(|client| {
+                client
+                    .get(format!("{EXPERIMENTAL_MLX_ENDPOINT}/v1/models"))
+                    .send()
+                    .and_then(|response| response.error_for_status())
+            })
+            .is_ok()
+}
+
+fn experimental_mlx_runtime_available(_app: &AppHandle) -> bool {
+    #[cfg(debug_assertions)]
+    {
+        let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
+        return project_root
+            .join(".venv-mlx")
+            .join("bin")
+            .join("python")
+            .is_file()
+            && project_root
+                .join("scripts")
+                .join("run_mlx_server.py")
+                .is_file();
+    }
+    #[cfg(not(debug_assertions))]
+    _app.path()
+        .resolve(
+            format!("resources/mlx/{TARGET_TRIPLE}/fishstop-mlx"),
+            BaseDirectory::Resource,
+        )
+        .ok()
+        .is_some_and(|path| path.is_file())
+}
+
+pub fn start_experimental_mlx(
+    app: &AppHandle,
+    runtime: &Arc<Mutex<OllamaRuntime>>,
+) -> Result<(), String> {
+    if !experimental_mlx_enabled() {
+        return Err("The experimental MLX backend requires Apple Silicon.".to_string());
+    }
+    if experimental_mlx_ready() {
+        return Ok(());
+    }
+
+    let cache = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("Could not locate FishSTOP data: {error}"))?
+        .join("mlx-cache");
+    fs::create_dir_all(&cache)
+        .map_err(|error| format!("Could not prepare MLX model storage: {error}"))?;
+
+    #[cfg(debug_assertions)]
+    let mut command = {
+        let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
+        let python = project_root.join(".venv-mlx").join("bin").join("python");
+        let launcher = project_root.join("scripts").join("run_mlx_server.py");
+        if !python.is_file() || !launcher.is_file() {
+            return Err(
+                "MLX is not installed. Prepare `.venv-mlx` as described in the README."
+                    .to_string(),
+            );
+        }
+        let mut command = Command::new(python);
+        command.arg(launcher);
+        command
+    };
+    #[cfg(not(debug_assertions))]
+    let mut command = {
+        let binary = app
+            .path()
+            .resolve(
+                format!("resources/mlx/{TARGET_TRIPLE}/fishstop-mlx"),
+                BaseDirectory::Resource,
+            )
+            .map_err(|error| format!("Could not locate the bundled MLX runtime: {error}"))?;
+        if !binary.is_file() {
+            return Err("The bundled MLX runtime is missing.".to_string());
+        }
+        Command::new(binary)
+    };
+
+    {
+        let mut runtime = runtime
+            .lock()
+            .map_err(|_| "The MLX runtime is unavailable.".to_string())?;
+        if let Some(child) = runtime.mlx_child.as_mut() {
+            if child.try_wait().ok().flatten().is_some() {
+                runtime.mlx_child = None;
+            }
+        }
+        if runtime.mlx_child.is_none() {
+            command
+                .env("HF_HOME", cache)
+                .env("HF_HUB_DISABLE_TELEMETRY", "1")
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            #[cfg(unix)]
+            {
+                use std::os::unix::process::CommandExt;
+                command.process_group(0);
+            }
+            configure_background_command(&mut command);
+            runtime.mlx_child = Some(
+                command
+                    .spawn()
+                    .map_err(|error| format!("Could not start MLX: {error}"))?,
+            );
+        }
+    }
+
+    for _ in 0..1800 {
+        if experimental_mlx_ready() {
+            return Ok(());
+        }
+        let stopped = runtime
+            .lock()
+            .ok()
+            .and_then(|mut runtime| {
+                runtime
+                    .mlx_child
+                    .as_mut()
+                    .and_then(|child| child.try_wait().ok().flatten())
+            })
+            .is_some();
+        if stopped {
+            let _ = stop_experimental_mlx(runtime);
+            return Err("MLX stopped before the model was ready.".to_string());
+        }
+        thread::sleep(Duration::from_millis(500));
+    }
+    let _ = stop_experimental_mlx(runtime);
+    Err("MLX did not load the model within 15 minutes.".to_string())
+}
+
+pub fn stop_experimental_mlx(runtime: &Arc<Mutex<OllamaRuntime>>) -> Result<(), String> {
+    let mut runtime = runtime
+        .lock()
+        .map_err(|_| "The MLX runtime is unavailable.".to_string())?;
+    if let Some(mut child) = runtime.mlx_child.take() {
+        terminate_mlx_process(&mut child);
+    }
+    Ok(())
 }
 
 fn command_value(program: &str, arguments: &[&str]) -> Option<String> {
@@ -531,6 +709,30 @@ pub fn unload_default_model() -> Result<(), String> {
 pub fn status(app: &AppHandle, _runtime: &Arc<Mutex<OllamaRuntime>>) -> OllamaRuntimeStatus {
     let (platform, architecture, cpu, memory_bytes, accelerator, selection_reason) =
         machine_profile();
+    if experimental_mlx_enabled() {
+        let ready = experimental_mlx_ready();
+        let available = experimental_mlx_runtime_available(app);
+        return OllamaRuntimeStatus {
+            runtime_ready: available,
+            model_ready: available,
+            managed: true,
+            model: EXPERIMENTAL_MLX_MODEL.to_string(),
+            platform,
+            architecture,
+            cpu,
+            memory_bytes,
+            accelerator: "Apple MLX".to_string(),
+            selection_reason: if ready {
+                "The native MLX backend is active.".to_string()
+            } else if available {
+                "MLX will load on demand and release memory after analysis.".to_string()
+            } else {
+                "The native MLX runtime is unavailable.".to_string()
+            },
+            loaded_model: ready.then(|| EXPERIMENTAL_MLX_MODEL.to_string()),
+            loaded_on_gpu: ready,
+        };
+    }
     let model = recommended_model().to_string();
     for (endpoint, managed) in [(MANAGED_ENDPOINT, true), ("http://127.0.0.1:11434", false)] {
         if ready(endpoint) {

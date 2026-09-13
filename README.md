@@ -27,7 +27,7 @@ La selezione manuale è disabilitata: FishStop usa `qwen3:4b-instruct-2507-q4_K_
 
 L'analisi semantica usa per impostazione predefinita la modalità `balanced`: una passata primaria e, solo quando rimangono ambiguità rilevanti, un unico audit locale aggiuntivo. Per confronti di qualità si può impostare `FISHSTOP_ANALYSIS_MODE=fast|balanced|thorough`; `fast` disabilita l'audit e `thorough` conserva i controlli specializzati separati.
 
-Sui computer CPU-only FishStop esegue Identity e Qwen in sequenza, assegna a Ollama i core fisici disponibili e usa un profilo con contesto e output limitati. Il modello resta caricato per 15 minuti e l'analisi AI ha un budget complessivo di 270 secondi; se non termina, i controlli statici rimangono disponibili e l'errore indica la fase effettiva del timeout.
+Su Apple Silicon FishStop usa Metal. Su Windows usa automaticamente CUDA con le GPU NVIDIA compatibili e prova Vulkan con le GPU AMD o Intel, mantenendo il fallback CPU quando l'accelerazione non è disponibile o il modello non entra nella memoria della GPU. Sui computer CPU-only FishStop esegue Identity e Qwen in sequenza, assegna a Ollama i core disponibili e usa un profilo con contesto e output limitati. L'analisi AI conserva comunque i controlli statici se il modello locale non termina entro il proprio budget.
 
 ## Avvio in sviluppo
 

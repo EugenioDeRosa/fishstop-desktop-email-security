@@ -262,6 +262,31 @@ fn physical_memory_bytes() -> Option<u64> {
     value
 }
 
+#[cfg(target_os = "windows")]
+fn windows_gpu_name() -> Option<String> {
+    command_value(
+        "powershell.exe",
+        &[
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "$names = Get-CimInstance Win32_VideoController | Where-Object { $_.Name -and $_.Name -notmatch 'Microsoft Basic|Remote Display|Virtual' } | ForEach-Object Name; $names -join ', '",
+        ],
+    )
+}
+
+#[cfg(not(target_os = "windows"))]
+fn windows_gpu_name() -> Option<String> {
+    None
+}
+
+#[cfg(target_os = "windows")]
+fn windows_should_enable_vulkan() -> bool {
+    windows_gpu_name()
+        .map(|name| !name.to_ascii_lowercase().contains("nvidia"))
+        .unwrap_or(false)
+}
+
 fn machine_profile() -> (String, String, String, Option<u64>, String, String) {
     let platform = match std::env::consts::OS {
         "windows" => "Windows",
@@ -271,13 +296,18 @@ fn machine_profile() -> (String, String, String, Option<u64>, String, String) {
     }
     .to_string();
     let architecture = std::env::consts::ARCH.to_string();
+    let detected_windows_gpu = windows_gpu_name();
     let accelerator = if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
         "Apple Metal".to_string()
+    } else if let Some(gpu) = detected_windows_gpu.as_ref() {
+        format!("GPU available: {gpu}")
     } else {
         "CPU".to_string()
     };
     let selection_reason = if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
         "The shared 4B quantized model uses the Apple Silicon accelerated runtime."
+    } else if detected_windows_gpu.is_some() {
+        "FishStop will use CUDA or Vulkan when Ollama can load the complete 4B model on the detected GPU."
     } else {
         "The same 4B quantized model is used on every supported platform."
     }
@@ -385,6 +415,10 @@ fn ensure_server(
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null());
+            #[cfg(target_os = "windows")]
+            if windows_should_enable_vulkan() {
+                command.env("OLLAMA_VULKAN", "1");
+            }
             configure_background_command(&mut command);
             let child = command
                 .spawn()

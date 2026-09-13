@@ -12,11 +12,11 @@ ROOT = Path(__file__).resolve().parents[1]
 VERSION = os.getenv("OLLAMA_VERSION", "v0.32.15")
 BASE_URL = f"https://github.com/ollama/ollama/releases/download/{VERSION}/"
 
-# The standard Windows archive contains multiple CUDA distributions and is
-# several gigabytes after extraction. Bundling all of them makes NSIS/WiX hit
-# their installer-size limits. FishSTOP keeps Ollama's CPU runtime (which works
-# everywhere) and any compact non-CUDA runtime shipped alongside it.
-WINDOWS_OPTIONAL_RUNTIME_PREFIXES = ("cuda_", "mlx_")
+# The standard Windows archive contains Ollama's CPU and NVIDIA CUDA runtimes.
+# Keep CUDA so the installed application can accelerate Qwen automatically on
+# compatible NVIDIA hardware.  The MLX add-on is not used by the GGUF model and
+# remains safe to omit from the desktop bundle.
+WINDOWS_OPTIONAL_RUNTIME_PREFIXES = ("mlx_",)
 
 
 def asset_for(target: str) -> str:
@@ -80,9 +80,9 @@ def main() -> None:
         executable.chmod(0o755)
 
     size_mib = directory_size(destination) / (1024 * 1024)
-    if "windows" in target and size_mib > 900:
+    if "windows" in target and size_mib > 4_096:
         raise SystemExit(
-            f"Pruned Windows Ollama runtime is still too large to bundle ({size_mib:.1f} MiB)."
+            f"Windows Ollama runtime is unexpectedly large ({size_mib:.1f} MiB)."
         )
     removed_note = f"; removed optional runtimes: {', '.join(removed)}" if removed else ""
     print(f"Bundled Ollama {VERSION} for {target} ({size_mib:.1f} MiB{removed_note})")

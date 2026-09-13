@@ -1373,11 +1373,36 @@ async fn list_recent_mailbox_messages(
 }
 
 #[tauri::command]
+async fn inspect_mailbox_message(
+    user_sub: String,
+    provider: String,
+    message_id: String,
+    cache: tauri::State<'_, Arc<Mutex<ReputationCredentialCache>>>,
+) -> Result<serde_json::Value, String> {
+    if message_id.trim().is_empty() || message_id.len() > 2048 {
+        return Err("Invalid mailbox message identifier.".to_string());
+    }
+    let cache = Arc::clone(&cache);
+    tauri::async_runtime::spawn_blocking(move || {
+        let token = mailbox_access_token(&user_sub, &provider, &cache)?;
+        let contents = match provider.as_str() {
+            "google" => download_google_message(&token, &message_id),
+            "microsoft" => download_microsoft_message(&token, &message_id),
+            _ => Err("Unsupported mailbox provider.".to_string()),
+        }?;
+        inspect_eml_contents_with_engine("inbox-message.eml".to_string(), contents)
+    })
+    .await
+    .map_err(|error| format!("Mailbox conversation inspection interrupted: {error}"))?
+}
+
+#[tauri::command]
 async fn analyze_mailbox_message(
     user_sub: String,
     provider: String,
     message_id: String,
     analysis_id: String,
+    conversation_selection: Option<serde_json::Value>,
     cache: tauri::State<'_, Arc<Mutex<ReputationCredentialCache>>>,
     cancellation: tauri::State<'_, Arc<AnalysisCancellation>>,
 ) -> Result<serde_json::Value, String> {
@@ -1403,6 +1428,7 @@ async fn analyze_mailbox_message(
             cache,
             analysis_id,
             cancellation,
+            conversation_selection,
         )
     })
     .await
@@ -1635,6 +1661,7 @@ fn run_eml_engine(
     credentials: ReputationCredentials,
     analysis_id: String,
     cancellation: Arc<AnalysisCancellation>,
+    conversation_selection: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
     let output = engine_command().and_then(|mut command| {
         command
@@ -1642,6 +1669,9 @@ fn run_eml_engine(
             .env("VIRUSTOTAL_API_KEY", credentials.virustotal)
             .env("ABUSEIPDB_API_KEY", credentials.abuseipdb)
             .env("OTX_API_KEY", credentials.otx);
+        if let Some(selection) = conversation_selection {
+            command.env("FISHSTOP_CONVERSATION_SELECTION", selection.to_string());
+        }
         run_command_with_timeout_cancellable(
             command,
             STATIC_ENGINE_TIMEOUT,
@@ -1676,12 +1706,89 @@ fn run_eml_engine(
         .ok_or_else(|| "Analysis report is missing.".to_string())
 }
 
+fn run_conversation_inspection(temporary_eml: PathBuf) -> Result<serde_json::Value, String> {
+    let output = engine_command().and_then(|mut command| {
+        command.arg("inspect").arg(&temporary_eml);
+        run_command_with_timeout_cancellable(
+            command,
+            Duration::from_secs(20),
+            "the conversation inspector",
+            None,
+            None,
+        )
+    });
+    let _ = fs::remove_file(&temporary_eml);
+    let output = output?;
+    let response: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .map_err(|error| format!("The conversation inspector returned invalid data: {error}"))?;
+    if !output.status.success()
+        || response.get("ok").and_then(|value| value.as_bool()) != Some(true)
+    {
+        return Err(response
+            .get("error")
+            .and_then(|value| value.as_str())
+            .unwrap_or("Conversation inspection failed.")
+            .to_string());
+    }
+    response
+        .get("result")
+        .cloned()
+        .ok_or_else(|| "Conversation manifest is missing.".to_string())
+}
+
+fn inspect_eml_with_engine(path: String) -> Result<serde_json::Value, String> {
+    let source = PathBuf::from(path);
+    if !source.is_file()
+        || source.extension().and_then(|value| value.to_str())
+            .map(|value| value.eq_ignore_ascii_case("eml")) != Some(true)
+    {
+        return Err("FishStop supports .eml files only.".to_string());
+    }
+    if source.metadata().map_err(|error| format!("Could not read the selected EML file: {error}"))?.len()
+        > MAX_EML_BYTES as u64
+    {
+        return Err("The EML file exceeds the supported 40 MB limit.".to_string());
+    }
+    let temporary_eml = std::env::temp_dir().join(format!("fishstop-inspect-{}.eml", random_url_safe(16)));
+    fs::copy(source, &temporary_eml)
+        .map_err(|error| format!("Could not prepare the file for inspection: {error}"))?;
+    run_conversation_inspection(temporary_eml)
+}
+
+fn inspect_eml_contents_with_engine(file_name: String, contents: Vec<u8>) -> Result<serde_json::Value, String> {
+    if !file_name.to_lowercase().ends_with(".eml") {
+        return Err("FishStop supports .eml files only.".to_string());
+    }
+    if contents.len() > MAX_EML_BYTES {
+        return Err("The EML file exceeds the supported 40 MB limit.".to_string());
+    }
+    let temporary_eml = std::env::temp_dir().join(format!("fishstop-inspect-{}.eml", random_url_safe(16)));
+    fs::write(&temporary_eml, contents)
+        .map_err(|error| format!("Could not prepare the file for inspection: {error}"))?;
+    run_conversation_inspection(temporary_eml)
+}
+
+#[tauri::command]
+async fn inspect_eml(path: String) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || inspect_eml_with_engine(path))
+        .await
+        .map_err(|error| format!("Conversation inspection interrupted: {error}"))?
+}
+
+#[tauri::command]
+async fn inspect_eml_contents(file_name: String, contents: Vec<u8>) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || inspect_eml_contents_with_engine(file_name, contents))
+        .await
+        .map_err(|error| format!("Conversation inspection interrupted: {error}"))?
+}
+
 fn analyze_eml_with_engine(
     path: String,
     user_sub: String,
     cache: Arc<Mutex<ReputationCredentialCache>>,
     analysis_id: String,
     cancellation: Arc<AnalysisCancellation>,
+    conversation_selection: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
     let source = PathBuf::from(path);
     if !source.is_file()
@@ -1709,6 +1816,7 @@ fn analyze_eml_with_engine(
         credentials,
         analysis_id,
         cancellation,
+        conversation_selection,
     )
 }
 
@@ -1719,6 +1827,7 @@ fn analyze_eml_contents_with_engine(
     cache: Arc<Mutex<ReputationCredentialCache>>,
     analysis_id: String,
     cancellation: Arc<AnalysisCancellation>,
+    conversation_selection: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
     if !file_name.to_lowercase().ends_with(".eml") {
         return Err("FishStop supports .eml files only.".to_string());
@@ -1735,6 +1844,7 @@ fn analyze_eml_contents_with_engine(
         credentials,
         analysis_id,
         cancellation,
+        conversation_selection,
     )
 }
 
@@ -1743,6 +1853,7 @@ async fn analyze_eml(
     path: String,
     user_sub: String,
     analysis_id: String,
+    conversation_selection: Option<serde_json::Value>,
     cache: tauri::State<'_, Arc<Mutex<ReputationCredentialCache>>>,
     cancellation: tauri::State<'_, Arc<AnalysisCancellation>>,
 ) -> Result<serde_json::Value, String> {
@@ -1758,6 +1869,7 @@ async fn analyze_eml(
             cache,
             analysis_id,
             cancellation,
+            conversation_selection,
         )
     })
     .await
@@ -1770,6 +1882,7 @@ async fn analyze_eml_contents(
     contents: Vec<u8>,
     user_sub: String,
     analysis_id: String,
+    conversation_selection: Option<serde_json::Value>,
     cache: tauri::State<'_, Arc<Mutex<ReputationCredentialCache>>>,
     cancellation: tauri::State<'_, Arc<AnalysisCancellation>>,
 ) -> Result<serde_json::Value, String> {
@@ -1786,6 +1899,7 @@ async fn analyze_eml_contents(
             cache,
             analysis_id,
             cancellation,
+            conversation_selection,
         )
     })
     .await
@@ -2118,12 +2232,15 @@ fn main() {
             connect_mailbox,
             disconnect_mailbox,
             list_recent_mailbox_messages,
+            inspect_mailbox_message,
             analyze_mailbox_message,
             reputation_key_status,
             save_reputation_keys,
             load_analysis_history,
             save_analysis_history,
             clear_analysis_history,
+            inspect_eml,
+            inspect_eml_contents,
             analyze_eml,
             analyze_eml_contents,
             cancel_analysis,

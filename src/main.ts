@@ -106,6 +106,13 @@ type AnalysisReport = {
   phi4_analysis?: { status?: string; model?: string; duration_ms?: number; performance?: { analysis_mode?: string; llm_calls?: number; wall_duration_ms?: number; load_duration_ms?: number; prompt_tokens?: number; generated_tokens?: number; calls?: Array<{ stage?: string; wall_duration_ms?: number; load_duration_ms?: number; prompt_eval_count?: number; prompt_eval_duration_ms?: number; eval_count?: number; eval_duration_ms?: number }> }; analysis?: { final_verdict?: string; content_summary?: string; semantic_reason?: string; explanation?: string; confidence?: number; requested_action?: string; action_channel?: string; intent_evidence?: string; intent_signals?: string[]; signal_evidence?: string; content_risk?: string; identity_risk?: string; technical_risk?: string; ambiguity?: string; scam_type?: string; threat_type?: string; coercion?: boolean; claimed_brand?: string; payment_destination_change?: boolean; semantic_extraction?: { asks_for_credentials?: boolean; asks_for_payment?: boolean; asks_for_sensitive_information?: boolean; asks_to_change_account_settings?: boolean; asks_to_verify_account?: boolean; asks_to_open_attachment?: boolean; requested_external_action?: boolean; security_alert?: boolean; impersonation_or_deception?: boolean; identity_deception?: boolean; scam_type?: string; threat_type?: string; coercion?: boolean }; corroboration?: { supports_decision?: boolean; details?: string[]; caveats?: string[] } }; message?: string };
   ai_content_summary?: { status?: string; summary?: string; model?: string; backend?: string; message?: string };
   ai_summary?: { status?: string; summary?: string; model?: string; backend?: string; message?: string };
+  authentication_scope?: string;
+  selected_target_authentication_scope?: "outer_delivery" | "embedded_unavailable" | "mixed_outer_and_embedded";
+  selected_message_headers?: Array<{ id?: string; from?: string; to?: string; subject?: string; date?: string; authentication_status?: string }>;
+  outer_delivery_evidence?: Record<string, unknown>;
+  container_analysis_scope?: string;
+  conversation_excluded_link_count?: number;
+  conversation_analysis?: ConversationManifest & { selection?: ConversationSelection & { excluded_ids?: string[] } };
 };
 type ReputationResult = { status?: string; message?: string; detection_ratio?: string; malicious?: number; suspicious?: number; total_engines?: number; threat_label?: string; file_type?: string; file_name?: string; last_analysis?: string | number; permalink?: string; abuseConfidenceScore?: number; totalReports?: number; country?: string; country_code?: string; city?: string; region?: string; isp?: string; org?: string; asn?: string; timezone?: string; lat?: number; lon?: number; is_proxy?: boolean; is_hosting?: boolean; resolved_ip?: string; resolved_domain?: string; used_parent_fallback?: string; url?: string; title?: string; crowdsourced_context_summary?: string };
 type AnalysisRecord = { id: string; analyzedAt: string; report: AnalysisReport; analysisDurationMs?: number };
@@ -148,6 +155,10 @@ type OllamaRuntimeStatus = {
 type OllamaModelProgress = { status: string; total?: number; completed?: number };
 type ManagedModelOperation = { phase: "installing" | "removing"; status: string; total?: number; completed?: number };
 type MailboxInboxSnapshot = { email: string; messages: MailboxMessage[] };
+type ConversationRole = "target" | "context" | "excluded";
+type ConversationSegment = { id: string; position: number; kind: "delivered" | "forwarded" | "quoted"; from?: string; to?: string; date?: string; subject?: string; display_name?: string; address?: string; domain?: string; preview?: string; authentication_scope?: string; authentication_status?: string; detection_confidence?: string; action_score?: number; recommended_role: ConversationRole; locked_technical_analysis?: boolean };
+type ConversationManifest = { status: "single" | "conversation"; requires_selection: boolean; body_source?: string; message_count: number; segments: ConversationSegment[]; technical_scope_message: string };
+type ConversationSelection = { target_ids: string[]; context_ids: string[]; prior_context_ids?: string[]; later_context_ids?: string[] };
 let managedModelOperation: ManagedModelOperation | null = null;
 let ollamaRuntimeSnapshot: OllamaRuntimeStatus | null = null;
 const mailboxInboxCache = new Map<string, MailboxInboxSnapshot>();
@@ -619,6 +630,10 @@ function inboxIconMarkup(): string {
   return `<svg class="inbox-nav-icon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false" style="display:block;overflow:visible"><rect x="3.25" y="5.25" width="17.5" height="13.5" rx="2.4"></rect><path d="m4.35 7.05 6.05 4.65a2.6 2.6 0 0 0 3.2 0l6.05-4.65"></path></svg>`;
 }
 
+function homeIconMarkup(): string {
+  return `<svg class="home-nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M3.5 10.25 12 3.6l8.5 6.65"></path><path d="M5.5 9.4v10h13v-10"></path><path d="M9.5 19.4v-6h5v6"></path></svg>`;
+}
+
 function analysisLoadingMarkup(fileName: string, completedChecks: number[] = [], progressMessage = "Each signal is processed on this device.", heuristicProgress = 0): string {
   const checks = ["Static checks and reputation", "Local AI model preparation", "Primary content and intent analysis", "Risk verification and identity policy"];
   const completed = new Set(completedChecks);
@@ -627,6 +642,26 @@ function analysisLoadingMarkup(fileName: string, completedChecks: number[] = [],
   const milestoneProgress = completedCount ? progressMilestones[completedCount - 1] : 0;
   const percentage = Math.max(milestoneProgress, Math.min(100, heuristicProgress));
   return `<section class="analysis-loading" aria-live="polite" role="progressbar" aria-label="Analysis progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percentage}" style="--analysis-progress:${percentage}%"><div class="loading-orbit"><i></i><b aria-hidden="true">${searchIconMarkup()}</b></div><div><p class="page-kicker">LOCAL ANALYSIS IN PROGRESS</p><h2>Checking ${escapeHtml(fileName)}</h2><p class="loading-copy">${escapeHtml(progressMessage)}</p></div><ol>${checks.map((label, index) => `<li data-loading-check="${index}" class="${completed.has(index) ? "done" : index === completedCount ? "active" : ""}"><span>✓</span>${label}</li>`).join("")}</ol></section>`;
+}
+
+function conversationInspectionMarkup(fileName: string): string {
+  return `<section class="conversation-inspection-loading" aria-live="polite"><span class="inbox-spinner" aria-hidden="true"></span><div><p class="page-kicker">CONVERSATION DISCOVERY</p><h2>Reading ${escapeHtml(fileName)}</h2><p>Identifying forwarded messages and quoted replies before security analysis.</p></div></section>`;
+}
+
+function conversationSegmentMarkup(segment: ConversationSegment): string {
+  const kind = segment.kind === "delivered" ? "Delivered email" : segment.kind === "forwarded" ? "Forwarded message" : "Quoted message";
+  const authAvailable = segment.authentication_status === "available";
+  const sender = segment.from || "Sender not recovered";
+  const meta = [segment.date, segment.subject].filter(Boolean).join(" · ");
+  const selected = segment.recommended_role === "target";
+  return `<article class="conversation-turn ${segment.kind === "delivered" ? "conversation-turn-outer" : ""}" data-conversation-segment="${escapeHtml(segment.id)}" data-selected="${selected}"><span class="conversation-node" aria-hidden="true"></span><div class="conversation-turn-copy"><div class="conversation-turn-heading"><div><span class="conversation-kind">${kind}</span><strong>${escapeHtml(sender)}</strong></div></div>${meta ? `<small>${escapeHtml(meta)}</small>` : ""}<p>${escapeHtml(segment.preview || "No preview available.")}</p>${segment.locked_technical_analysis ? `<em>Routing and authentication stay with this envelope; MIME and attachments stay with the complete file.</em>` : ""}</div><div class="conversation-turn-choice">${selected ? '<b>Suggested target</b>' : ""}<button class="conversation-target-action" type="button" data-conversation-target="${escapeHtml(segment.id)}" aria-label="Analyse message from ${escapeHtml(sender)}" aria-pressed="${selected}">Analyse</button><span class="conversation-auth ${authAvailable ? "available" : "unavailable"}">${authAvailable ? "Authentication available" : "Authentication unavailable"}</span></div></article>`;
+}
+
+function conversationSelectorMarkup(fileName: string, manifest: ConversationManifest): string {
+  const visible = manifest.segments.slice(0, 4).map(conversationSegmentMarkup).join("");
+  const older = manifest.segments.slice(4).map(conversationSegmentMarkup).join("");
+  const selectedCount = manifest.segments.filter((segment) => segment.recommended_role === "target").length;
+  return `<section class="conversation-selector"><header><div><p class="page-kicker">CONVERSATION DETECTED</p><h2>Choose what to analyse</h2><p>FishStop found ${manifest.message_count} messages in ${escapeHtml(fileName)}. Select the messages that should receive a verdict.</p></div><span>${manifest.message_count} turns</span></header><aside><strong>Technical boundary</strong><p>${escapeHtml(manifest.technical_scope_message)}</p></aside><div class="conversation-list-actions"><div><strong>Messages to analyse</strong><span data-list-selected-count>${selectedCount} of ${manifest.message_count} selected</span></div><button id="toggle-all-conversation" type="button" aria-pressed="false">Select all</button></div><div class="conversation-timeline">${visible}${older ? `<details><summary>Show ${manifest.segments.length - 4} older messages</summary><div>${older}</div></details>` : ""}</div><div class="conversation-context-options" role="group" aria-label="Optional conversation context"><button type="button" data-context-direction="earlier" aria-pressed="false"><i aria-hidden="true">✓</i><span><strong>Include earlier messages</strong><small>Add messages sent before the selected target as prior context.</small></span></button><button type="button" data-context-direction="later" aria-pressed="false"><i aria-hidden="true">✓</i><span><strong>Include later replies</strong><small>Add replies sent after the selected target as follow-up context.</small></span></button></div><p class="conversation-selection-error" id="conversation-selection-error" role="alert"></p><footer><button class="conversation-selected-action" id="start-conversation-analysis" type="button"><span>Analyse selected</span><small data-selected-count>${selectedCount} selected</small><b aria-hidden="true">→</b></button></footer></section>`;
 }
 
 function setAnalysisProgressVisual(session: ActiveAnalysis, percentage: number): void {
@@ -683,6 +718,15 @@ function pause(milliseconds: number): Promise<void> {
 
 // Mirrors the Streamlit `_auth_from_eml_header` fallback order exactly.
 function authFromEmlHeader(report: AnalysisReport, protocol: "SPF" | "DKIM" | "DMARC"): AuthResult & Required<Pick<AuthResult, "status" | "identity" | "raw" | "source">> & { all_results: AuthResult[] } {
+  if (report.selected_target_authentication_scope === "embedded_unavailable") {
+    return {
+      status: "unavailable",
+      identity: "",
+      raw: "This embedded message does not contain independently verifiable authentication headers.",
+      source: "Selected embedded message",
+      all_results: [],
+    };
+  }
   const effective = report.effective_auth_results?.[protocol];
   if (effective) {
     const source = effective.source || "Authentication headers";
@@ -783,6 +827,10 @@ function verdictFlags(report: AnalysisReport): SocFlag[] {
     authFromEmlHeader(report, "DMARC").status.toLowerCase(),
   );
   return (report.flags || []).filter((flag) => {
+    if (
+      report.selected_target_authentication_scope === "embedded_unavailable"
+      && ["spf", "dkim", "dmarc", "authentication-results", "received", "return-path", "reply-to", "display name"].includes(flag.field.trim().toLowerCase())
+    ) return false;
     if (dmarcPassed && flag.field.toLowerCase() === "return-path") return false;
     // Older saved reports may contain the former `.com`/DOS-extension false
     // positive for mailto actions. It must not keep affecting their verdict.
@@ -1089,13 +1137,13 @@ function authCheckTone(status: string): CheckTone {
   // `none` means that the EML contains no usable result for the protocol. It
   // must remain visually distinct from both a verified pass and a hard fail.
   if (value === "none") return "warn";
-  if (["neutral", "unknown", "present"].includes(value)) return "neutral";
+  if (["neutral", "unknown", "present", "unavailable"].includes(value)) return "neutral";
   return "warn";
 }
 
 function authCheckLabel(status: string): string {
   const value = status.trim().toLowerCase();
-  if (["none", "unknown", "present"].includes(value)) return "Unavailable";
+  if (["none", "unknown", "present", "unavailable"].includes(value)) return "Unavailable";
   const tone = authCheckTone(status);
   return tone === "pass" ? "Passed" : tone === "fail" ? "Failed" : tone === "warn" ? "Review required" : "Unavailable";
 }
@@ -1243,6 +1291,7 @@ function hopCheckTone(results: ReputationResult[]): CheckTone {
 
 function reportMarkup(report: AnalysisReport): string {
   const structuredReport = structuredReportData(report);
+  const targetAuthUnavailable = report.selected_target_authentication_scope === "embedded_unavailable";
   const flags = verdictFlags(report);
   const high = flags.filter((flag) => flag.level === "HIGH").length;
   const medium = flags.filter((flag) => flag.level === "MEDIUM").length;
@@ -1262,7 +1311,9 @@ function reportMarkup(report: AnalysisReport): string {
   }).join("");
   const authDetails = authEvidence.map(([protocol, result]) => {
     const tone = authCheckTone(result.status);
-    const rawEvidence = result.raw || "No evidence in the EML header.";
+    const rawEvidence = result.raw || (targetAuthUnavailable
+      ? "This embedded message has no independently verifiable authentication evidence."
+      : "No evidence in the EML header.");
     const senderBoundarySelected = Boolean(result.sender_boundary_selected);
     const pathConflict = Boolean(result.path_conflict) || result.status.toLowerCase() === "mixed";
     const pathFacts = senderBoundarySelected
@@ -1275,9 +1326,24 @@ function reportMarkup(report: AnalysisReport): string {
     return `<section class="auth-evidence static-surface-${tone}"><header class="auth-evidence-heading"><h4>${protocol}</h4><span class="auth-status auth-status-${tone}">${authCheckLabel(result.status)}</span></header><div class="auth-evidence-facts"><span><b>Status</b>${escapeHtml(result.status.toUpperCase())}</span><span><b>Source</b>${escapeHtml(result.source)}</span>${result.identity ? `<span><b>Identity</b><code>${escapeHtml(result.identity)}</code></span>` : ""}${pathFacts}${selection ? `<span><b>Selection</b>${escapeHtml(selection)}</span>` : ""}</div><div class="auth-raw-evidence"><b>Header evidence</b><code tabindex="0" aria-label="${protocol} raw authentication evidence">${escapeHtml(rawEvidence)}</code></div></section>`;
   }).join("");
   const routingSummary = [
-    ["Received hops", String((report.received_hops || []).length)],
-    ["Injection IP", report.injection_sender_ip || "Unavailable"],
+    ["Received hops", targetAuthUnavailable ? "Unavailable" : String((report.received_hops || []).length)],
+    ["Injection IP", targetAuthUnavailable ? "Unavailable" : report.injection_sender_ip || "Unavailable"],
   ].map(([label, value]) => `<div class="routing-stat"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`).join("");
+  const conversation = report.conversation_analysis;
+  const selectedTargets = new Set(conversation?.selection?.target_ids || []);
+  const selectedContexts = new Set(conversation?.selection?.context_ids || []);
+  const conversationRows = (conversation?.segments || []).filter((segment) => selectedTargets.has(segment.id) || selectedContexts.has(segment.id)).map((segment) => staticCheckItem(
+    selectedTargets.has(segment.id) ? "warn" : "neutral",
+    `${selectedTargets.has(segment.id) ? "Analysed" : "Context"} · ${segment.from || "Unknown sender"}`,
+    segment.preview || "No preview available.",
+    segment.authentication_status === "available" ? "Outer authentication available" : "Embedded identity · authentication unavailable",
+  )).join("");
+  const conversationScopeDetails = conversation?.selection
+    ? `<section class="html-form-inspection conversation-report-scope static-surface-neutral"><div><p class="page-kicker">ANALYSIS SCOPE</p><h3>Selected conversation</h3><p>${escapeHtml(conversation.technical_scope_message)}</p></div><ul>${conversationRows}</ul>${report.conversation_excluded_link_count ? `<small>${report.conversation_excluded_link_count} link(s) from excluded turns were not used in this verdict.</small>` : ""}</section>`
+    : "";
+  const conversationAuthBoundary = conversation?.selection
+    ? `<aside class="conversation-auth-boundary"><strong>Authentication scope</strong><p>${escapeHtml(targetAuthUnavailable ? "The selected message is embedded in a forwarded conversation. It has no independently verifiable SPF, DKIM, DMARC, routing-hop or injection-IP evidence. Outer delivery results are excluded from this target's verdict." : report.selected_target_authentication_scope === "mixed_outer_and_embedded" ? "Authentication and routing results apply only to the selected outer delivered message. Selected embedded messages remain unauthenticated." : conversation.technical_scope_message)}</p></aside>`
+    : "";
   const formAnalysis = report.html_form_analysis;
   const formTone: CheckTone = formAnalysis?.status === "suspicious" ? "fail" : formAnalysis?.status === "review" ? "warn" : formAnalysis?.status === "clean" ? "pass" : "neutral";
   const formRows = (formAnalysis?.forms || []).map((form, index) => {
@@ -1311,11 +1377,17 @@ function reportMarkup(report: AnalysisReport): string {
       : returnPathDmarcFailed
         ? `The envelope sender differs from the visible sender domain and DMARC did not pass (${returnPathDmarcStatus.toUpperCase()}).`
         : "The envelope sender differs from the visible sender domain. DMARC is unavailable, so this is weak evidence to correlate with other signals.";
-  const senderInconsistencies = [
-    senderConsistencyItem(report.reply_to_mismatch ? "fail" : "pass", "Reply-To address", report.reply_to_mismatch ? "The reply destination differs from the sender identity." : "No mismatch detected between the sender and reply destination.", report.reply_to_mismatch ? "Mismatch detected" : "Aligned", report.reply_to_mismatch ? replyToAddress : ""),
-    senderConsistencyItem(returnPathTone, "Return-Path domain", returnPathDetail, report.return_path_domain_mismatch ? returnPathDmarcPassed ? "Mismatch · DMARC passed" : returnPathDmarcFailed ? "Technical mismatch" : "Weak mismatch" : "Aligned", report.return_path_domain_mismatch ? returnPathAddress : ""),
-    senderConsistencyItem(displayNameSpoofed ? "fail" : "pass", "Display name", displayNameSpoofed ? displayNameSpoofing : "No display-name impersonation detected.", displayNameSpoofed ? "Impersonation detected" : "Aligned"),
-  ].join("");
+  const senderInconsistencies = targetAuthUnavailable
+    ? [
+      senderConsistencyItem("neutral", "Reply-To address", "No independent Reply-To header is available for this embedded message.", "Unavailable"),
+      senderConsistencyItem("neutral", "Return-Path domain", "No independent envelope sender is available for this embedded message.", "Unavailable"),
+      senderConsistencyItem("neutral", "Display name", "The recovered display name is quoted content and cannot be authenticated.", "Unverified"),
+    ].join("")
+    : [
+      senderConsistencyItem(report.reply_to_mismatch ? "fail" : "pass", "Reply-To address", report.reply_to_mismatch ? "The reply destination differs from the sender identity." : "No mismatch detected between the sender and reply destination.", report.reply_to_mismatch ? "Mismatch detected" : "Aligned", report.reply_to_mismatch ? replyToAddress : ""),
+      senderConsistencyItem(returnPathTone, "Return-Path domain", returnPathDetail, report.return_path_domain_mismatch ? returnPathDmarcPassed ? "Mismatch · DMARC passed" : returnPathDmarcFailed ? "Technical mismatch" : "Weak mismatch" : "Aligned", report.return_path_domain_mismatch ? returnPathAddress : ""),
+      senderConsistencyItem(displayNameSpoofed ? "fail" : "pass", "Display name", displayNameSpoofed ? displayNameSpoofing : "No display-name impersonation detected.", displayNameSpoofed ? "Impersonation detected" : "Aligned"),
+    ].join("");
   const riskyLookalikeAlerts = (report.lookalike_alerts || []).filter(isRiskyLookalikeAlert);
   const informationalIdnAlerts = (report.lookalike_alerts || []).filter((alert) => !isRiskyLookalikeAlert(alert));
   const lookalikeHosts = new Set(riskyLookalikeAlerts.map((alert) => (alert.host || "").toLowerCase()));
@@ -1453,13 +1525,18 @@ function reportMarkup(report: AnalysisReport): string {
     const panelContent = id === "content"
       ? `<div class="report-grid"><section class="content-detail-card"><h3>Content</h3>${fields([["Source", report.body_source], ["Selection", report.body_context]])}<div class="extracted-body-block"><h4>Extracted body</h4><pre>${escapeHtml((report.body_ai || report.body_clean || "No extractable text.").slice(0, 12000))}</pre></div></section></div>`
       : content;
-    const composedContent = id === "content" ? `${mimeInspection}${copyDeceptionDetails}${panelContent}${htmlFormDetails}` : panelContent;
+    const composedContent = id === "content" ? `${conversationScopeDetails}${mimeInspection}${copyDeceptionDetails}${panelContent}${htmlFormDetails}` : panelContent;
     return `<section class="report-panel ${active ? "active" : ""}" data-report-panel="${id}">${composedContent}</section>`;
   };
   const forwardedIdentity = report.forwarded_identity?.from
     ? `<section><h3>Forwarded message identity</h3>${fields([["Embedded From", report.forwarded_identity.from], ["Embedded To", report.forwarded_identity.to], ["Embedded Subject", report.forwarded_identity.subject], ["Authentication", "Unavailable for the embedded message"]])}<p class="quiet">SPF, DKIM and DMARC shown in this report authenticate the forwarding message, not this embedded sender.</p></section>`
     : "";
-  return `<section class="analysis-report verdict-${verdict.tone}"><div class="report-summary"><p class="page-kicker">ANALYSIS RESULT</p><h2>${risk}</h2><p class="verdict-detail">${escapeHtml(verdict.detail)}</p>${rationale}<p><strong>${escapeHtml(report.subject || "No subject")}</strong> · ${escapeHtml(report.from_ || "Sender unavailable")}</p><div class="report-stats"><span>${high} high</span><span>${medium} medium</span>${aiThreatBadges}<span>${(report.links || []).filter((link) => (link.scheme || "").toLowerCase() !== "mailto").length} web links</span><span>${(report.attachments || []).length} attachments</span></div></div><nav class="report-tabs" aria-label="Report sections"><span class="report-tab-indicator" aria-hidden="true"></span>${tabs}</nav>${panel("summary", `<div class="report-grid"><section><h3>Message</h3>${fields([["From", report.from_], ["To", report.to], ["Subject", report.subject], ["Date", report.date]])}</section><section><h3>Trust checks</h3><ul class="auth-grid">${auth}</ul><p class="quiet">${lookalikeSummary}</p></section></div><div class="report-flags"><h3>All signals</h3><ul>${details}</ul></div>`, true)}${panel("sender", `<div class="report-grid"><section><h3>Forwarding sender</h3>${fields([["From", report.from_], ["Delivered-To", report.delivered_to], ["Return-Path", report.return_path], ["Reply-To", report.reply_to], ["Errors-To", report.errors_to], ["Importance", report.importance]])}</section>${forwardedIdentity}<section class="sender-consistency"><h3>Identity consistency</h3><ul class="auth-grid">${senderInconsistencies}</ul></section></div>`)}${panel("auth", `<section class="authentication-card"><div class="authentication-heading"><div><p class="page-kicker">MESSAGE AUTHENTICATION</p><h3>Authentication</h3><p>Routing context and header checks in one view.</p></div><div class="routing-summary" aria-label="Routing summary">${routingSummary}</div></div><div class="auth-evidence-grid">${authDetails}</div></section>`)}${panel("links", `<div class="report-grid"><section class="evidence-card"><h3>Web links</h3><ul>${links}</ul></section><section class="evidence-card"><h3>Email actions</h3><ul>${emailActions}</ul></section><section class="evidence-card"><h3>Lookalike / Typosquatting</h3><ul>${lookalikes}</ul></section></div>`)}${panel("files", `<section class="evidence-card"><h3>Attachments</h3><ul>${attachments}</ul></section>`)}${panel("content", `<div class="report-grid"><section><h3>Context</h3>${fields([["Source", report.body_source], ["Selection", report.body_context]])}</section><section><h3>Extracted body</h3><pre>${escapeHtml((report.body_ai || report.body_clean || "No extractable text.").slice(0, 12000))}</pre></section></div>`)}${panel("technical", `<section class="technical-report raw-eml-report"><div><h3>Raw EML</h3><p>Read-only source view. Attachment payloads are omitted to keep MIME evidence readable.</p></div><pre tabindex="0" aria-label="Raw EML source with attachment payloads omitted">${escapeHtml(report.raw_eml_preview || report.raw_eml_preview_error || "Raw EML preview unavailable for this saved report. Reanalyse the email to generate it.")}</pre></section><section class="technical-report"><div><h3>Structured report</h3><p>Export technical evidence as JSON, without the raw EML preview or original binary content.</p></div><button id="download-report" type="button">Download JSON</button><pre>${escapeHtml(JSON.stringify(structuredReport, null, 2))}</pre></section>`)}</section>`;
+  const senderPanelTitle = targetAuthUnavailable ? "Selected message identity" : "Forwarding sender";
+  const authenticationTitle = targetAuthUnavailable ? "Authentication unavailable" : "Authentication";
+  const authenticationDescription = targetAuthUnavailable
+    ? "This embedded message has no independent transport or authentication headers."
+    : "Routing context and header checks in one view.";
+  return `<section class="analysis-report verdict-${verdict.tone}"><div class="report-summary"><p class="page-kicker">ANALYSIS RESULT</p><h2>${risk}</h2><p class="verdict-detail">${escapeHtml(verdict.detail)}</p>${rationale}<p><strong>${escapeHtml(report.subject || "No subject")}</strong> · ${escapeHtml(report.from_ || "Sender unavailable")}</p><div class="report-stats"><span>${high} high</span><span>${medium} medium</span>${aiThreatBadges}<span>${(report.links || []).filter((link) => (link.scheme || "").toLowerCase() !== "mailto").length} web links</span><span>${(report.attachments || []).length} attachments</span></div></div><nav class="report-tabs" aria-label="Report sections"><span class="report-tab-indicator" aria-hidden="true"></span>${tabs}</nav>${panel("summary", `<div class="report-grid"><section><h3>Message</h3>${fields([["From", report.from_], ["To", report.to], ["Subject", report.subject], ["Date", report.date]])}</section><section><h3>Trust checks</h3><ul class="auth-grid">${auth}</ul><p class="quiet">${lookalikeSummary}</p></section></div><div class="report-flags"><h3>All signals</h3><ul>${details}</ul></div>`, true)}${panel("sender", `<div class="report-grid"><section><h3>${senderPanelTitle}</h3>${fields([["From", report.from_], ["Delivered-To", report.delivered_to], ["Return-Path", report.return_path], ["Reply-To", report.reply_to], ["Errors-To", report.errors_to], ["Importance", report.importance]])}</section>${forwardedIdentity}<section class="sender-consistency"><h3>Identity consistency</h3><ul class="auth-grid">${senderInconsistencies}</ul></section></div>`)}${panel("auth", `${conversationAuthBoundary}<section class="authentication-card"><div class="authentication-heading"><div><p class="page-kicker">MESSAGE AUTHENTICATION</p><h3>${authenticationTitle}</h3><p>${authenticationDescription}</p></div><div class="routing-summary" aria-label="Routing summary">${routingSummary}</div></div><div class="auth-evidence-grid">${authDetails}</div></section>`)}${panel("links", `<div class="report-grid"><section class="evidence-card"><h3>Web links</h3><ul>${links}</ul></section><section class="evidence-card"><h3>Email actions</h3><ul>${emailActions}</ul></section><section class="evidence-card"><h3>Lookalike / Typosquatting</h3><ul>${lookalikes}</ul></section></div>`)}${panel("files", `<section class="evidence-card"><h3>Attachments</h3><ul>${attachments}</ul></section>`)}${panel("content", `<div class="report-grid"><section><h3>Context</h3>${fields([["Source", report.body_source], ["Selection", report.body_context]])}</section><section><h3>Extracted body</h3><pre>${escapeHtml((report.body_ai || report.body_clean || "No extractable text.").slice(0, 12000))}</pre></section></div>`)}${panel("technical", `<section class="technical-report raw-eml-report"><div><h3>Raw EML</h3><p>Read-only source view. Attachment payloads are omitted to keep MIME evidence readable.</p></div><pre tabindex="0" aria-label="Raw EML source with attachment payloads omitted">${escapeHtml(report.raw_eml_preview || report.raw_eml_preview_error || "Raw EML preview unavailable for this saved report. Reanalyse the email to generate it.")}</pre></section><section class="technical-report"><div><h3>Structured report</h3><p>Export technical evidence as JSON, without the raw EML preview or original binary content.</p></div><button id="download-report" type="button">Download JSON</button><pre>${escapeHtml(JSON.stringify(structuredReport, null, 2))}</pre></section>`)}</section>`;
 }
 
 function reputationRows(items: Array<{ title: string; detail: string; result?: ReputationResult; copyValue?: string }>): string {
@@ -2202,7 +2279,7 @@ function mailboxMessageMarkup(message: MailboxMessage): string {
   const subject = escapeHtml(message.subject || "No subject");
   const sender = escapeHtml(message.sender || "Sender unavailable");
   const snippet = escapeHtml(message.snippet || "No preview available.");
-  return `<article class="inbox-message ${message.is_read ? "" : "unread"}"><div class="inbox-message-copy"><div><strong title="${subject}">${subject}</strong>${message.has_attachments ? '<span class="inbox-attachment" title="Contains attachments">◇</span>' : ""}</div><small title="${sender}">${sender}</small><p>${snippet}</p></div><div class="inbox-message-action"><time datetime="${escapeHtml(message.received_at)}">${escapeHtml(formatAnalysisDate(message.received_at))}</time><button class="primary-action analyse-inbox-message" data-message-id="${escapeHtml(message.id)}" data-message-subject="${subject}" type="button">Analyse</button></div></article>`;
+  return `<article class="inbox-message ${message.is_read ? "" : "unread"}"><div class="inbox-message-copy"><div>${message.is_read ? "" : '<span class="inbox-unread-indicator" aria-label="Unread message" title="Unread message"></span>'}<strong title="${subject}">${subject}</strong>${message.has_attachments ? '<span class="inbox-attachment" title="Contains attachments">◇</span>' : ""}</div><small title="${sender}">${sender}</small><p>${snippet}</p></div><div class="inbox-message-action"><time datetime="${escapeHtml(message.received_at)}">${escapeHtml(formatAnalysisDate(message.received_at))}</time><button class="primary-action analyse-inbox-message" data-message-id="${escapeHtml(message.id)}" data-message-subject="${subject}" type="button">Analyse</button></div></article>`;
 }
 
 function mailboxAuthorizationExpired(error: unknown): boolean {
@@ -2354,7 +2431,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
     });
   }
   const labels: Record<Section, string> = { dashboard: "Dashboard", analyse: "Analyse", inbox: "Analyse from inbox", history: "History", statistics: "Statistics", settings: "Settings" };
-  const icons: Record<Section, string> = { dashboard: "⌂", analyse: searchIconMarkup(), inbox: inboxIconMarkup(), history: "◴", statistics: "◔", settings: "⚙" };
+  const icons: Record<Section, string> = { dashboard: homeIconMarkup(), analyse: searchIconMarkup(), inbox: inboxIconMarkup(), history: "◴", statistics: "◔", settings: "⚙" };
   const initial = escapeHtml((user.name || user.email).trim().charAt(0).toUpperCase());
   const safeName = escapeHtml(user.name || (user.provider === "microsoft" ? "Microsoft account" : "Google account"));
   const safeEmail = escapeHtml(user.email);
@@ -2767,17 +2844,146 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       if (activeAnalysis === session) document.querySelector<HTMLButtonElement>("#eml-drop")?.removeAttribute("disabled");
     }
   };
+  const prepareConversationSelection = async (
+    fileName: string,
+    inspectRequest: () => Promise<ConversationManifest>,
+    analysisRequest: (analysisId: string, selection?: ConversationSelection) => Promise<AnalysisReport>,
+  ) => {
+    if (!uploadStatus) return;
+    if (intake) intake.hidden = true;
+    if (inboxIntake) inboxIntake.hidden = true;
+    if (changeEmail) changeEmail.hidden = false;
+    if (resetAnalysis) resetAnalysis.hidden = true;
+    if (cancelAnalysis) cancelAnalysis.hidden = true;
+    const stateLabel = document.querySelector<HTMLElement>("#analysis-state-label");
+    const title = document.querySelector<HTMLHeadingElement>("#analysis-title");
+    const result = document.querySelector<HTMLDivElement>("#analysis-result");
+    if (stateLabel) stateLabel.textContent = "READING MESSAGE STRUCTURE";
+    if (title) title.textContent = fileName;
+    uploadStatus.textContent = "Looking for forwarded messages and quoted replies…";
+    if (result) result.innerHTML = conversationInspectionMarkup(fileName);
+    dropZone?.setAttribute("disabled", "true");
+    try {
+      const manifest = await inspectRequest();
+      if (!manifest.requires_selection || manifest.message_count <= 1) {
+        await displayAnalysis(fileName, (analysisId) => analysisRequest(analysisId));
+        return;
+      }
+      if (stateLabel) stateLabel.textContent = "CONVERSATION SELECTION";
+      uploadStatus.textContent = "Choose which messages should receive a verdict and which should provide context.";
+      if (!result) return;
+      result.innerHTML = conversationSelectorMarkup(fileName, manifest);
+      const updateSelectionAppearance = () => {
+        const targetButtons = Array.from(result.querySelectorAll<HTMLButtonElement>("[data-conversation-target]"));
+        targetButtons.forEach((button) => {
+          button.closest<HTMLElement>(".conversation-turn")?.setAttribute("data-selected", String(button.getAttribute("aria-pressed") === "true"));
+        });
+        const selectedCount = targetButtons.filter((button) => button.getAttribute("aria-pressed") === "true").length;
+        const count = result.querySelector<HTMLElement>("[data-selected-count]");
+        if (count) count.textContent = `${selectedCount} selected`;
+        const listCount = result.querySelector<HTMLElement>("[data-list-selected-count]");
+        if (listCount) listCount.textContent = `${selectedCount} of ${targetButtons.length} selected`;
+        const action = result.querySelector<HTMLButtonElement>("#start-conversation-analysis");
+        if (action) action.disabled = selectedCount === 0;
+        const toggleAll = result.querySelector<HTMLButtonElement>("#toggle-all-conversation");
+        if (toggleAll) {
+          const allSelected = targetButtons.length > 0 && selectedCount === targetButtons.length;
+          toggleAll.textContent = allSelected ? "Deselect all" : "Select all";
+          toggleAll.setAttribute("aria-pressed", String(allSelected));
+        }
+        const selectedIds = new Set(
+          targetButtons.filter((button) => button.getAttribute("aria-pressed") === "true").map((button) => button.dataset.conversationTarget || ""),
+        );
+        const selectedPositions = manifest.segments
+          .filter((segment) => selectedIds.has(segment.id))
+          .map((segment) => segment.position);
+        const firstSelected = selectedPositions.length ? Math.min(...selectedPositions) : -1;
+        const lastSelected = selectedPositions.length ? Math.max(...selectedPositions) : -1;
+        const availability = {
+          earlier: selectedPositions.length > 0 && manifest.segments.some((segment) => !selectedIds.has(segment.id) && segment.position > lastSelected),
+          later: selectedPositions.length > 0 && manifest.segments.some((segment) => !selectedIds.has(segment.id) && segment.position < firstSelected),
+        };
+        result.querySelectorAll<HTMLButtonElement>("[data-context-direction]").forEach((toggle) => {
+          const direction = toggle.dataset.contextDirection as keyof typeof availability;
+          const disabled = !availability[direction];
+          toggle.disabled = disabled;
+          if (disabled) toggle.setAttribute("aria-pressed", "false");
+        });
+      };
+      const selection = (): ConversationSelection => {
+        const target_ids = Array.from(result.querySelectorAll<HTMLButtonElement>('[data-conversation-target][aria-pressed="true"]'))
+          .map((button) => button.dataset.conversationTarget || "")
+          .filter(Boolean);
+        const targetSet = new Set(target_ids);
+        const targetPositions = manifest.segments.filter((segment) => targetSet.has(segment.id)).map((segment) => segment.position);
+        const firstTarget = targetPositions.length ? Math.min(...targetPositions) : -1;
+        const lastTarget = targetPositions.length ? Math.max(...targetPositions) : -1;
+        const includeEarlier = result.querySelector<HTMLButtonElement>('[data-context-direction="earlier"]')?.getAttribute("aria-pressed") === "true";
+        const includeLater = result.querySelector<HTMLButtonElement>('[data-context-direction="later"]')?.getAttribute("aria-pressed") === "true";
+        const prior_context_ids = includeEarlier
+          ? manifest.segments.filter((segment) => !targetSet.has(segment.id) && segment.position > lastTarget).map((segment) => segment.id)
+          : [];
+        const later_context_ids = includeLater
+          ? manifest.segments.filter((segment) => !targetSet.has(segment.id) && segment.position < firstTarget).map((segment) => segment.id)
+          : [];
+        return { target_ids, context_ids: [...prior_context_ids, ...later_context_ids], prior_context_ids, later_context_ids };
+      };
+      const start = () => {
+        const selected = selection();
+        const error = result.querySelector<HTMLElement>("#conversation-selection-error");
+        if (!selected.target_ids.length) {
+          if (error) error.textContent = "Select at least one message to analyse.";
+          return;
+        }
+        void displayAnalysis(fileName, (analysisId) => analysisRequest(analysisId, selected));
+      };
+      result.querySelectorAll<HTMLButtonElement>("[data-conversation-target]").forEach((button) => button.addEventListener("click", () => {
+        button.setAttribute("aria-pressed", String(button.getAttribute("aria-pressed") !== "true"));
+        updateSelectionAppearance();
+      }));
+      result.querySelectorAll<HTMLElement>(".conversation-turn").forEach((turn) => turn.addEventListener("click", (event) => {
+        if (event.target instanceof Element && event.target.closest("button, a, input, select, textarea")) return;
+        turn.querySelector<HTMLButtonElement>("[data-conversation-target]")?.click();
+      }));
+      result.querySelectorAll<HTMLButtonElement>("[data-context-direction]").forEach((toggle) => toggle.addEventListener("click", () => {
+        toggle.setAttribute("aria-pressed", String(toggle.getAttribute("aria-pressed") !== "true"));
+      }));
+      result.querySelector<HTMLButtonElement>("#start-conversation-analysis")?.addEventListener("click", start);
+      result.querySelector<HTMLButtonElement>("#toggle-all-conversation")?.addEventListener("click", () => {
+        const targetButtons = Array.from(result.querySelectorAll<HTMLButtonElement>("[data-conversation-target]"));
+        const shouldSelect = targetButtons.some((button) => button.getAttribute("aria-pressed") !== "true");
+        targetButtons.forEach((button) => button.setAttribute("aria-pressed", String(shouldSelect)));
+        updateSelectionAppearance();
+      });
+      updateSelectionAppearance();
+    } catch (error) {
+      uploadStatus.textContent = `Could not inspect the conversation: ${String(error)}`;
+      if (result) result.innerHTML = "";
+      if (intake) intake.hidden = false;
+      if (inboxIntake) inboxIntake.hidden = false;
+    } finally {
+      dropZone?.removeAttribute("disabled");
+    }
+  };
   const displayFile = (path?: string) => {
     if (!path || !uploadStatus) return;
     const fileName = path.split(/[\\/]/).pop() || "email.eml";
     if (!fileName.toLowerCase().endsWith(".eml")) { uploadStatus.textContent = "Select a file with the .eml extension."; return; }
-    void displayAnalysis(fileName, (analysisId) => invoke<AnalysisReport>("analyze_eml", { path, userSub: user.sub, analysisId }));
+    void prepareConversationSelection(
+      fileName,
+      () => invoke<ConversationManifest>("inspect_eml", { path }),
+      (analysisId, conversationSelection) => invoke<AnalysisReport>("analyze_eml", { path, userSub: user.sub, analysisId, conversationSelection }),
+    );
   };
   const displayBrowserFile = async (file?: File) => {
     if (!file || !uploadStatus) return;
     if (!file.name.toLowerCase().endsWith(".eml")) { uploadStatus.textContent = "Select a file with the .eml extension."; return; }
     const contents = Array.from(new Uint8Array(await file.arrayBuffer()));
-    void displayAnalysis(file.name, (analysisId) => invoke<AnalysisReport>("analyze_eml_contents", { fileName: file.name, contents, userSub: user.sub, analysisId }));
+    void prepareConversationSelection(
+      file.name,
+      () => invoke<ConversationManifest>("inspect_eml_contents", { fileName: file.name, contents }),
+      (analysisId, conversationSelection) => invoke<AnalysisReport>("analyze_eml_contents", { fileName: file.name, contents, userSub: user.sub, analysisId, conversationSelection }),
+    );
   };
   const chooseEml = async () => {
     try {
@@ -2848,7 +3054,11 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       if (!messageId) return;
       document.querySelectorAll<HTMLButtonElement>(".analyse-inbox-message").forEach((action) => { action.disabled = true; });
       const subject = button.dataset.messageSubject || "Inbox message";
-      void displayAnalysis(subject, (analysisId) => invoke<AnalysisReport>("analyze_mailbox_message", { userSub: user.sub, provider, messageId, analysisId }));
+      void prepareConversationSelection(
+        subject,
+        () => invoke<ConversationManifest>("inspect_mailbox_message", { userSub: user.sub, provider, messageId }),
+        (analysisId, conversationSelection) => invoke<AnalysisReport>("analyze_mailbox_message", { userSub: user.sub, provider, messageId, analysisId, conversationSelection }),
+      );
     }
   });
   if (inboxIntake) void refreshMailboxPanel(user);

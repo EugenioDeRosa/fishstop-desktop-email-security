@@ -487,6 +487,8 @@ def _useful_vt_status(status: str) -> str:
 
 
 def _auth_status(soc: dict, name: str) -> str:
+    if soc.get("selected_target_authentication_scope") == "embedded_unavailable":
+        return "unknown"
     result = (
         (soc.get("effective_auth_results") or {}).get(name)
         or (soc.get("auth_results") or {}).get(name)
@@ -714,6 +716,33 @@ def _technical_context_lines(soc: dict, body_for_llm: str = "", link_reputation:
             "Forwarded identity boundary: outer authentication applies only to "
             f"the forwarding sender; embedded_from={forwarded_identity.get('from')} "
             "embedded_authentication=unavailable"
+        )
+    conversation = soc.get("conversation_analysis") or {}
+    selection = conversation.get("selection") or {}
+    target_ids = set(selection.get("target_ids") or [])
+    selected_targets = [
+        segment for segment in conversation.get("segments") or []
+        if segment.get("id") in target_ids
+    ]
+    target_authentication_scope = soc.get("selected_target_authentication_scope")
+    if selected_targets and target_authentication_scope == "embedded_unavailable":
+        identities = ", ".join(
+            str(segment.get("from") or "unknown embedded sender")
+            for segment in selected_targets[:5]
+        )
+        lines.append(
+            "Conversation selection boundary: verdict target(s) are embedded message(s) "
+            f"from {identities}; their authentication is unavailable. SPF, DKIM, DMARC, "
+            "routing hops and injection IP belong only to the delivered outer message "
+            f"from {soc.get('from_') or 'unknown outer sender'}. MIME structure and attachments "
+            "belong to the complete delivered file and are not proof that a specific embedded "
+            "sender created or sent them"
+        )
+    elif selected_targets and target_authentication_scope == "mixed_outer_and_embedded":
+        lines.append(
+            "Conversation selection boundary: authentication and routing evidence apply only "
+            "to the selected delivered outer message; selected embedded messages have no "
+            "independently verifiable SPF, DKIM, DMARC, routing-hop or injection-IP evidence"
         )
 
     html_ctas = [

@@ -102,6 +102,17 @@ jobs:
         env:
           FISHSTOP_TARGET_TRIPLE: ${{ matrix.target }}
         run: python scripts/download_ollama_runtime.py
+      - name: Publish the on-demand NVIDIA runtime
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.prepare-release.outputs.release_tag }}
+        shell: bash
+        run: |
+          gh release upload "${RELEASE_TAG}" \
+            build/fishstop-ollama-cuda.zip \
+            build/fishstop-ollama-cuda.zip.sha256 \
+            --clobber
       - name: Prepare Google OAuth desktop credential
         env:
           FISHSTOP_GOOGLE_CLIENT_SECRET: ${{ secrets.FISHSTOP_GOOGLE_CLIENT_SECRET }}

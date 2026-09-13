@@ -29,6 +29,8 @@ L'analisi semantica usa per impostazione predefinita la modalità `balanced`: un
 
 Su Apple Silicon FishStop usa Metal. Su Windows usa automaticamente CUDA con le GPU NVIDIA compatibili e prova Vulkan con le GPU AMD o Intel, mantenendo il fallback CPU quando l'accelerazione non è disponibile o il modello non entra nella memoria della GPU. Sui computer CPU-only FishStop esegue Identity e Qwen in sequenza, assegna a Ollama i core disponibili e usa un profilo con contesto e output limitati. L'analisi AI conserva comunque i controlli statici se il modello locale non termina entro il proprio budget.
 
+Su Windows l'installer contiene il runtime CPU/Vulkan compatto. Se FishStop rileva una GPU NVIDIA, scarica una sola volta il pacchetto CUDA firmato dal rilascio, ne verifica l'integrità SHA-256 e lo conserva nella cartella dati dell'app. I computer senza NVIDIA non scaricano le librerie CUDA.
+
 ### Backend MLX sperimentale (Apple Silicon)
 
 Su Apple Silicon la build installabile usa automaticamente MLX con lo stesso Qwen3-4B-Instruct-2507 in formato 4-bit. Il runtime è incluso nell'app; il modello viene scaricato nella cartella dati di FishStop al primo utilizzo. Per provarlo in sviluppo, prepara un ambiente separato così le dipendenze MLX non interferiscono con il motore FishStop:

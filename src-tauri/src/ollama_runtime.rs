@@ -12,6 +12,11 @@ use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use tauri::{path::BaseDirectory, AppHandle, Emitter, Manager};
 
+#[cfg(target_os = "windows")]
+use sha2::{Digest, Sha256};
+#[cfg(target_os = "windows")]
+use std::io::{Read, Write};
+
 pub const MANAGED_MODEL: &str = "qwen3:4b-instruct-2507-q4_K_M";
 pub const EXPERIMENTAL_MLX_MODEL: &str = "mlx-community/Qwen3-4B-Instruct-2507-4bit";
 pub const CPU_REQUEST_TIMEOUT_SECONDS: u64 = 600;
@@ -23,7 +28,13 @@ pub const CPU_AUDIT_TOKENS: u64 = 160;
 const MANAGED_HOST: &str = "127.0.0.1:11435";
 const MANAGED_ENDPOINT: &str = "http://127.0.0.1:11435";
 const EXPERIMENTAL_MLX_ENDPOINT: &str = "http://127.0.0.1:11436";
+#[cfg(target_os = "windows")]
+const WINDOWS_CUDA_URL: &str = "https://github.com/EugenioDeRosa/fishstop-desktop-email-security/releases/latest/download/fishstop-ollama-cuda.zip";
+#[cfg(target_os = "windows")]
+const WINDOWS_CUDA_CHECKSUM_URL: &str = "https://github.com/EugenioDeRosa/fishstop-desktop-email-security/releases/latest/download/fishstop-ollama-cuda.zip.sha256";
 const MODEL_KEEP_ALIVE: &str = "15m";
+#[cfg(target_os = "windows")]
+const OLLAMA_RUNTIME_VERSION: &str = "v0.32.15";
 const ACCELERATED_MODEL_WARMUP_TIMEOUT: Duration = Duration::from_secs(90);
 const CPU_MODEL_WARMUP_TIMEOUT: Duration = Duration::from_secs(300);
 const TARGET_TRIPLE: &str = env!("TAURI_ENV_TARGET_TRIPLE");
@@ -465,6 +476,131 @@ fn windows_should_enable_vulkan() -> bool {
         .unwrap_or(false)
 }
 
+#[cfg(target_os = "windows")]
+fn windows_has_nvidia_gpu() -> bool {
+    windows_gpu_name()
+        .is_some_and(|name| name.to_ascii_lowercase().contains("nvidia"))
+}
+
+#[cfg(target_os = "windows")]
+fn ensure_windows_cuda_runtime(binary: &Path) -> Result<(), String> {
+    if !windows_has_nvidia_gpu() {
+        return Ok(());
+    }
+    let root = binary
+        .parent()
+        .ok_or_else(|| "The bundled Ollama directory is invalid.".to_string())?;
+    let runtime_directory = root.join("lib").join("ollama");
+    if fs::read_dir(&runtime_directory)
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .any(|entry| entry.file_name().to_string_lossy().starts_with("cuda_"))
+    {
+        return Ok(());
+    }
+
+    let download = root.join("fishstop-ollama-cuda.download");
+    let network = Client::builder()
+        .connect_timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(30 * 60))
+        .build()
+        .map_err(|error| format!("Could not prepare the NVIDIA runtime download: {error}"))?;
+    let checksum_text = network
+        .get(WINDOWS_CUDA_CHECKSUM_URL)
+        .send()
+        .and_then(|response| response.error_for_status())
+        .and_then(|response| response.text())
+        .map_err(|error| format!("Could not download the NVIDIA runtime checksum: {error}"))?;
+    let expected = checksum_text
+        .split_whitespace()
+        .next()
+        .filter(|value| value.len() == 64 && value.chars().all(|character| character.is_ascii_hexdigit()))
+        .ok_or_else(|| "The NVIDIA runtime checksum is invalid.".to_string())?;
+    let mut response = network
+        .get(WINDOWS_CUDA_URL)
+        .send()
+        .and_then(|response| response.error_for_status())
+        .map_err(|error| format!("Could not download the NVIDIA runtime: {error}"))?;
+    let mut file = fs::File::create(&download)
+        .map_err(|error| format!("Could not store the NVIDIA runtime: {error}"))?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0_u8; 1024 * 1024];
+    loop {
+        let count = response
+            .read(&mut buffer)
+            .map_err(|error| format!("The NVIDIA runtime download was interrupted: {error}"))?;
+        if count == 0 {
+            break;
+        }
+        file.write_all(&buffer[..count])
+            .map_err(|error| format!("Could not store the NVIDIA runtime: {error}"))?;
+        digest.update(&buffer[..count]);
+    }
+    drop(file);
+    if format!("{:x}", digest.finalize()) != expected.to_ascii_lowercase() {
+        let _ = fs::remove_file(&download);
+        return Err("The NVIDIA runtime failed its integrity check.".to_string());
+    }
+
+    let mut expand = Command::new("powershell.exe");
+    expand.args([
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "Expand-Archive -LiteralPath $args[0] -DestinationPath $args[1] -Force",
+    ]);
+    expand.arg(&download).arg(root);
+    configure_background_command(&mut expand);
+    let status = expand
+        .status()
+        .map_err(|error| format!("Could not install the NVIDIA runtime: {error}"))?;
+    let _ = fs::remove_file(&download);
+    if !status.success() {
+        return Err("Windows could not install the NVIDIA runtime.".to_string());
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn copy_runtime_directory(source: &Path, destination: &Path) -> Result<(), String> {
+    fs::create_dir_all(destination)
+        .map_err(|error| format!("Could not prepare the local AI runtime: {error}"))?;
+    for entry in fs::read_dir(source)
+        .map_err(|error| format!("Could not read the bundled AI runtime: {error}"))?
+    {
+        let entry = entry.map_err(|error| format!("Could not read the bundled AI runtime: {error}"))?;
+        let target = destination.join(entry.file_name());
+        if entry.path().is_dir() {
+            copy_runtime_directory(&entry.path(), &target)?;
+        } else {
+            fs::copy(entry.path(), target)
+                .map_err(|error| format!("Could not install the local AI runtime: {error}"))?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn prepare_windows_runtime(app: &AppHandle, bundled: &Path) -> Result<PathBuf, String> {
+    let destination = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("Could not locate FishSTOP data: {error}"))?
+        .join("ollama-runtime")
+        .join(OLLAMA_RUNTIME_VERSION);
+    let executable = destination.join("ollama.exe");
+    if !executable.is_file() {
+        let source = bundled
+            .parent()
+            .ok_or_else(|| "The bundled AI runtime directory is invalid.".to_string())?;
+        copy_runtime_directory(source, &destination)?;
+    }
+    ensure_windows_cuda_runtime(&executable)?;
+    Ok(executable)
+}
+
 fn machine_profile() -> (String, String, String, Option<u64>, String, String) {
     let platform = match std::env::consts::OS {
         "windows" => "Windows",
@@ -575,6 +711,8 @@ fn ensure_server(
         return Ok((MANAGED_ENDPOINT.to_string(), true));
     }
     if let Some(binary) = bundled_binary(app) {
+        #[cfg(target_os = "windows")]
+        let binary = prepare_windows_runtime(app, &binary)?;
         let mut runtime = runtime
             .lock()
             .map_err(|_| "Local AI runtime is unavailable.".to_string())?;

@@ -1961,7 +1961,7 @@ fn analyze_ai_with_engine(
                     "OLLAMA_AUDIT_NUM_PREDICT",
                     ollama_runtime::CPU_AUDIT_TOKENS.to_string(),
                 );
-            if let Some(cpu_threads) = ollama_runtime::recommended_cpu_threads() {
+            if let Some(cpu_threads) = ollama_runtime::recommended_cpu_threads(&app) {
                 engine.env("OLLAMA_NUM_THREAD", cpu_threads.to_string());
             }
         }
@@ -2095,6 +2095,19 @@ async fn warm_ollama_model(
     tauri::async_runtime::spawn_blocking(move || ollama_runtime::warm_default_model(&app, &runtime))
         .await
         .map_err(|error| format!("AI model warm-up interrupted: {error}"))?
+}
+
+#[tauri::command]
+async fn optimize_cpu_performance(
+    app: tauri::AppHandle,
+    runtime: tauri::State<'_, Arc<Mutex<OllamaRuntime>>>,
+) -> Result<ollama_runtime::CpuOptimizationSummary, String> {
+    let runtime = Arc::clone(&runtime);
+    tauri::async_runtime::spawn_blocking(move || {
+        ollama_runtime::optimize_cpu_performance(&app, &runtime)
+    })
+    .await
+    .map_err(|error| format!("CPU optimization was interrupted: {error}"))?
 }
 
 #[tauri::command]
@@ -2247,6 +2260,7 @@ fn main() {
             finish_analysis,
             analyze_phi4,
             warm_ollama_model,
+            optimize_cpu_performance,
             ollama_runtime_status,
             install_default_ollama_model,
             remove_default_ollama_model,

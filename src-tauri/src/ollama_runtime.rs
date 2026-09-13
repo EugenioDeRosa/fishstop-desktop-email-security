@@ -5,7 +5,7 @@ use std::{
     process::{Child, Command, Stdio},
     sync::{Arc, Mutex},
     thread,
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use reqwest::blocking::Client;
@@ -37,12 +37,15 @@ const MODEL_KEEP_ALIVE: &str = "15m";
 const OLLAMA_RUNTIME_VERSION: &str = "v0.32.15";
 const ACCELERATED_MODEL_WARMUP_TIMEOUT: Duration = Duration::from_secs(90);
 const CPU_MODEL_WARMUP_TIMEOUT: Duration = Duration::from_secs(300);
+const CPU_BENCHMARK_TIMEOUT: Duration = Duration::from_secs(180);
+const CPU_PROFILE_VERSION: u32 = 1;
 const TARGET_TRIPLE: &str = env!("TAURI_ENV_TARGET_TRIPLE");
 
 #[derive(Default)]
 pub struct OllamaRuntime {
     child: Option<Child>,
     mlx_child: Option<Child>,
+    cpu_optimization_running: bool,
 }
 
 pub struct PreparedModel {
@@ -88,6 +91,8 @@ pub struct OllamaRuntimeStatus {
     pub selection_reason: String,
     pub loaded_model: Option<String>,
     pub loaded_on_gpu: bool,
+    pub cpu_only: bool,
+    pub cpu_optimization: Option<CpuOptimizationSummary>,
 }
 
 #[derive(Deserialize)]
@@ -131,6 +136,62 @@ pub struct ModelProgress {
     pub status: String,
     pub total: Option<u64>,
     pub completed: Option<u64>,
+}
+
+#[derive(Serialize, Clone)]
+pub struct CpuOptimizationProgress {
+    pub status: String,
+    pub candidate: usize,
+    pub total: usize,
+    pub threads: usize,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct CpuOptimizationSummary {
+    pub threads: usize,
+    pub tokens_per_second: f64,
+    pub benchmarked_at: u64,
+}
+
+#[derive(Serialize, Deserialize)]
+struct CpuOptimizationProfile {
+    version: u32,
+    cpu: String,
+    model: String,
+    logical_cores: usize,
+    physical_cores: usize,
+    #[serde(flatten)]
+    result: CpuOptimizationSummary,
+}
+
+#[derive(Deserialize)]
+struct BenchmarkResponse {
+    eval_count: Option<u64>,
+    eval_duration: Option<u64>,
+}
+
+struct CpuOptimizationGuard(Arc<Mutex<OllamaRuntime>>);
+
+impl CpuOptimizationGuard {
+    fn acquire(runtime: &Arc<Mutex<OllamaRuntime>>) -> Result<Self, String> {
+        let mut state = runtime
+            .lock()
+            .map_err(|_| "The local AI runtime is unavailable.".to_string())?;
+        if state.cpu_optimization_running {
+            return Err("CPU optimization is already running.".to_string());
+        }
+        state.cpu_optimization_running = true;
+        drop(state);
+        Ok(Self(Arc::clone(runtime)))
+    }
+}
+
+impl Drop for CpuOptimizationGuard {
+    fn drop(&mut self) {
+        if let Ok(mut runtime) = self.0.lock() {
+            runtime.cpu_optimization_running = false;
+        }
+    }
 }
 
 fn client() -> Result<Client, String> {
@@ -492,7 +553,13 @@ fn command_value(program: &str, arguments: &[&str]) -> Option<String> {
     (!value.is_empty()).then_some(value)
 }
 
-pub fn recommended_cpu_threads() -> Option<usize> {
+fn logical_cpu_count() -> Option<usize> {
+    std::thread::available_parallelism()
+        .ok()
+        .map(|value| value.get().clamp(1, 64))
+}
+
+fn physical_cpu_count() -> Option<usize> {
     #[cfg(target_os = "windows")]
     let detected = command_value(
         "powershell.exe",
@@ -504,12 +571,181 @@ pub fn recommended_cpu_threads() -> Option<usize> {
         ],
     )
     .and_then(|value| value.parse::<usize>().ok());
-    #[cfg(not(target_os = "windows"))]
-    let detected = std::thread::available_parallelism()
-        .ok()
-        .map(|value| value.get());
+    #[cfg(target_os = "macos")]
+    let detected = command_value("sysctl", &["-n", "hw.physicalcpu"])
+        .and_then(|value| value.parse::<usize>().ok());
+    #[cfg(target_os = "linux")]
+    let detected = command_value("nproc", &["--all"]).and_then(|value| value.parse::<usize>().ok());
 
     detected.map(|cores| cores.clamp(1, 64))
+}
+
+fn default_cpu_threads() -> Option<usize> {
+    let physical = physical_cpu_count().or_else(logical_cpu_count)?;
+    Some(if physical <= 6 && physical > 1 {
+        physical - 1
+    } else {
+        physical
+    })
+}
+
+fn cpu_profile_path(app: &AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_data_dir()
+        .map(|directory| directory.join("cpu-optimization.json"))
+        .map_err(|error| format!("Could not locate FishSTOP data: {error}"))
+}
+
+fn load_cpu_optimization(app: &AppHandle) -> Option<CpuOptimizationSummary> {
+    let bytes = fs::read(cpu_profile_path(app).ok()?).ok()?;
+    let profile: CpuOptimizationProfile = serde_json::from_slice(&bytes).ok()?;
+    let logical = logical_cpu_count()?;
+    let physical = physical_cpu_count().unwrap_or(logical);
+    (profile.version == CPU_PROFILE_VERSION
+        && profile.cpu == cpu_name()
+        && profile.model == MANAGED_MODEL
+        && profile.logical_cores == logical
+        && profile.physical_cores == physical
+        && profile.result.threads > 0
+        && profile.result.threads <= logical)
+        .then_some(profile.result)
+}
+
+pub fn recommended_cpu_threads(app: &AppHandle) -> Option<usize> {
+    load_cpu_optimization(app)
+        .map(|profile| profile.threads)
+        .or_else(default_cpu_threads)
+}
+
+fn cpu_benchmark_candidates_for(logical: usize, physical: usize) -> Vec<usize> {
+    let logical = logical.clamp(1, 64);
+    let physical = physical.clamp(1, logical);
+    let mut candidates = vec![physical];
+    if physical > 1 {
+        candidates.push(physical - 1);
+    }
+    if physical >= 8 {
+        candidates.push(physical.div_ceil(2));
+    }
+    if logical > physical {
+        candidates.push((physical + (logical - physical).div_ceil(2)).min(logical));
+    }
+    candidates.sort_unstable();
+    candidates.dedup();
+    candidates
+}
+
+fn cpu_benchmark_candidates() -> Vec<usize> {
+    let logical = logical_cpu_count().unwrap_or(1);
+    cpu_benchmark_candidates_for(logical, physical_cpu_count().unwrap_or(logical))
+}
+
+fn cpu_only_machine() -> bool {
+    !cfg!(all(target_os = "macos", target_arch = "aarch64")) && windows_gpu_name().is_none()
+}
+
+pub fn optimize_cpu_performance(
+    app: &AppHandle,
+    runtime: &Arc<Mutex<OllamaRuntime>>,
+) -> Result<CpuOptimizationSummary, String> {
+    if !cpu_only_machine() {
+        return Err(
+            "CPU optimization is available only when local AI runs entirely on the CPU."
+                .to_string(),
+        );
+    }
+    let _optimization_guard = CpuOptimizationGuard::acquire(runtime)?;
+    let (endpoint, _) = ensure_server(app, runtime)?;
+    if !models_at(&endpoint)?
+        .iter()
+        .any(|model| model == MANAGED_MODEL)
+    {
+        return Err("Install the local AI model before optimizing CPU performance.".to_string());
+    }
+
+    let candidates = cpu_benchmark_candidates();
+    let total = candidates.len();
+    let benchmark_client = Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(CPU_BENCHMARK_TIMEOUT)
+        .build()
+        .map_err(|error| format!("Could not prepare the CPU benchmark: {error}"))?;
+    let mut best: Option<(usize, f64)> = None;
+
+    for (index, threads) in candidates.into_iter().enumerate() {
+        app.emit(
+            "cpu-optimization-progress",
+            CpuOptimizationProgress {
+                status: format!("Testing {threads} CPU threads with a short local text…"),
+                candidate: index + 1,
+                total,
+                threads,
+            },
+        )
+        .map_err(|error| format!("Could not update CPU benchmark progress: {error}"))?;
+        let response: BenchmarkResponse = benchmark_client
+            .post(format!("{endpoint}/api/generate"))
+            .json(&serde_json::json!({
+                "model": MANAGED_MODEL,
+                "prompt": "In about 100 words, explain why checking the sender and destination of a link helps identify a suspicious email.",
+                "stream": false,
+                "keep_alive": MODEL_KEEP_ALIVE,
+                "options": {
+                    "num_ctx": 512,
+                    "num_predict": 48,
+                    "num_thread": threads,
+                    "num_gpu": 0,
+                    "temperature": 0,
+                    "seed": 42
+                }
+            }))
+            .send()
+            .and_then(|response| response.error_for_status())
+            .map_err(|error| format!("CPU benchmark failed while testing {threads} threads: {error}"))?
+            .json()
+            .map_err(|error| format!("The CPU benchmark returned invalid measurements: {error}"))?;
+        let count = response.eval_count.unwrap_or_default();
+        let duration = response.eval_duration.unwrap_or_default();
+        if count == 0 || duration == 0 {
+            return Err(
+                "The local AI runtime did not return CPU benchmark measurements.".to_string(),
+            );
+        }
+        let tokens_per_second = count as f64 * 1_000_000_000.0 / duration as f64;
+        if best.is_none_or(|(_, speed)| tokens_per_second > speed) {
+            best = Some((threads, tokens_per_second));
+        }
+    }
+
+    let (threads, tokens_per_second) =
+        best.ok_or_else(|| "The CPU benchmark did not produce a usable result.".to_string())?;
+    let result = CpuOptimizationSummary {
+        threads,
+        tokens_per_second: (tokens_per_second * 10.0).round() / 10.0,
+        benchmarked_at: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+    };
+    let logical = logical_cpu_count().unwrap_or(threads);
+    let profile = CpuOptimizationProfile {
+        version: CPU_PROFILE_VERSION,
+        cpu: cpu_name(),
+        model: MANAGED_MODEL.to_string(),
+        logical_cores: logical,
+        physical_cores: physical_cpu_count().unwrap_or(logical),
+        result: result.clone(),
+    };
+    let destination = cpu_profile_path(app)?;
+    if let Some(parent) = destination.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("Could not prepare CPU optimization storage: {error}"))?;
+    }
+    let encoded = serde_json::to_vec_pretty(&profile)
+        .map_err(|error| format!("Could not encode the CPU optimization result: {error}"))?;
+    fs::write(destination, encoded)
+        .map_err(|error| format!("Could not save the CPU optimization result: {error}"))?;
+    Ok(result)
 }
 
 fn configure_background_command(command: &mut Command) {
@@ -900,6 +1136,16 @@ pub fn prepare_model(
     app: &AppHandle,
     runtime: &Arc<Mutex<OllamaRuntime>>,
 ) -> Result<PreparedModel, String> {
+    if runtime
+        .lock()
+        .map_err(|_| "The local AI runtime is unavailable.".to_string())?
+        .cpu_optimization_running
+    {
+        return Err(
+            "CPU optimization is still running. Wait for the benchmark to finish before starting an analysis."
+                .to_string(),
+        );
+    }
     let (endpoint, _) = ensure_server(app, runtime)?;
     let (_, loaded_on_gpu) = loaded_model(&endpoint);
     Ok(PreparedModel {
@@ -927,7 +1173,7 @@ pub fn warm_default_model(
         "num_ctx": if cpu_profile { CPU_CONTEXT_TOKENS } else { 4096 },
     });
     if cpu_profile {
-        if let Some(cpu_threads) = recommended_cpu_threads() {
+        if let Some(cpu_threads) = recommended_cpu_threads(app) {
             options["num_thread"] = serde_json::json!(cpu_threads);
         }
     }
@@ -998,6 +1244,8 @@ pub fn status(app: &AppHandle, _runtime: &Arc<Mutex<OllamaRuntime>>) -> OllamaRu
             },
             loaded_model: ready.then(|| EXPERIMENTAL_MLX_MODEL.to_string()),
             loaded_on_gpu: ready,
+            cpu_only: false,
+            cpu_optimization: None,
         };
     }
     let model = recommended_model().to_string();
@@ -1024,6 +1272,8 @@ pub fn status(app: &AppHandle, _runtime: &Arc<Mutex<OllamaRuntime>>) -> OllamaRu
                 selection_reason: selection_reason.clone(),
                 loaded_model,
                 loaded_on_gpu,
+                cpu_only: cpu_only_machine() && !loaded_on_gpu,
+                cpu_optimization: load_cpu_optimization(app),
             };
         }
     }
@@ -1041,6 +1291,8 @@ pub fn status(app: &AppHandle, _runtime: &Arc<Mutex<OllamaRuntime>>) -> OllamaRu
         selection_reason,
         loaded_model: None,
         loaded_on_gpu: false,
+        cpu_only: cpu_only_machine(),
+        cpu_optimization: load_cpu_optimization(app),
     }
 }
 pub fn install_default_model(
@@ -1092,4 +1344,24 @@ pub fn remove_default_model(
         .and_then(|response| response.error_for_status())
         .map_err(|error| format!("Could not remove the AI model: {error}"))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::cpu_benchmark_candidates_for;
+
+    #[test]
+    fn small_cpu_candidates_leave_one_core_available() {
+        assert_eq!(cpu_benchmark_candidates_for(8, 4), vec![3, 4, 6]);
+    }
+
+    #[test]
+    fn hybrid_cpu_candidates_include_a_smaller_performance_core_profile() {
+        assert_eq!(cpu_benchmark_candidates_for(20, 14), vec![7, 13, 14, 17]);
+    }
+
+    #[test]
+    fn candidate_generation_never_exceeds_available_threads() {
+        assert_eq!(cpu_benchmark_candidates_for(2, 8), vec![1, 2]);
+    }
 }

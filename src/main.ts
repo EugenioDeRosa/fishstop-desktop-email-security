@@ -151,15 +151,19 @@ type OllamaRuntimeStatus = {
   runtime_ready: boolean; model_ready: boolean; managed: boolean; model: string;
   platform: string; architecture: string; cpu: string; memory_bytes?: number;
   accelerator: string; selection_reason: string; loaded_model?: string; loaded_on_gpu: boolean;
+  cpu_only: boolean; cpu_optimization?: CpuOptimizationSummary;
 };
 type OllamaModelProgress = { status: string; total?: number; completed?: number };
 type ManagedModelOperation = { phase: "installing" | "removing"; status: string; total?: number; completed?: number };
+type CpuOptimizationSummary = { threads: number; tokens_per_second: number; benchmarked_at: number };
+type CpuOptimizationProgress = { status: string; candidate: number; total: number; threads: number };
 type MailboxInboxSnapshot = { email: string; messages: MailboxMessage[] };
 type ConversationRole = "target" | "context" | "excluded";
 type ConversationSegment = { id: string; position: number; kind: "delivered" | "forwarded" | "quoted"; from?: string; to?: string; date?: string; subject?: string; display_name?: string; address?: string; domain?: string; preview?: string; authentication_scope?: string; authentication_status?: string; detection_confidence?: string; action_score?: number; recommended_role: ConversationRole; locked_technical_analysis?: boolean };
 type ConversationManifest = { status: "single" | "conversation"; requires_selection: boolean; body_source?: string; message_count: number; segments: ConversationSegment[]; technical_scope_message: string };
 type ConversationSelection = { target_ids: string[]; context_ids: string[]; prior_context_ids?: string[]; later_context_ids?: string[] };
 let managedModelOperation: ManagedModelOperation | null = null;
+let cpuOptimizationOperation: CpuOptimizationProgress | null = null;
 let ollamaRuntimeSnapshot: OllamaRuntimeStatus | null = null;
 const mailboxInboxCache = new Map<string, MailboxInboxSnapshot>();
 const mailboxInboxRequests = new Map<string, Promise<MailboxMessage[]>>();
@@ -2589,7 +2593,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
   });
   const ollamaLab = document.querySelector<HTMLElement>(".ollama-lab");
   const machineProfile = document.querySelector<HTMLElement>("#machine-profile");
-  if (ollamaLab) ollamaLab.insertAdjacentHTML("beforeend", `<section class="managed-model" aria-live="polite"><p class="page-kicker">FISHSTOP AI</p><h3>Local AI model</h3><p id="managed-model-status">Checking the bundled AI runtime…</p><div class="managed-model-progress" id="managed-model-progress" hidden><div><span id="managed-model-progress-label">Preparing download…</span><strong id="managed-model-progress-value">0%</strong></div><div class="managed-model-progress-track" id="managed-model-progress-track" role="progressbar" aria-label="AI model download progress" aria-valuemin="0" aria-valuemax="100"><i id="managed-model-progress-fill"></i></div></div><div class="ollama-actions managed-model-actions"><button class="primary-action" id="install-managed-qwen" type="button" disabled>Checking…</button><button class="soft-action" id="remove-managed-qwen" type="button" hidden>Remove model</button></div></section>`);
+  if (ollamaLab) ollamaLab.insertAdjacentHTML("beforeend", `<section class="managed-model" aria-live="polite"><p class="page-kicker">FISHSTOP AI</p><h3>Local AI model</h3><p id="managed-model-status">Checking the bundled AI runtime…</p><div class="managed-model-progress" id="managed-model-progress" hidden><div><span id="managed-model-progress-label">Preparing download…</span><strong id="managed-model-progress-value">0%</strong></div><div class="managed-model-progress-track" id="managed-model-progress-track" role="progressbar" aria-label="AI model download progress" aria-valuemin="0" aria-valuemax="100"><i id="managed-model-progress-fill"></i></div></div><div class="ollama-actions managed-model-actions"><button class="primary-action" id="install-managed-qwen" type="button" disabled>Checking…</button><button class="soft-action" id="remove-managed-qwen" type="button" hidden>Remove model</button></div><section class="cpu-optimization" id="cpu-optimization" hidden><div class="cpu-optimization-heading"><span class="cpu-optimization-mark" aria-hidden="true"><i></i><i></i><i></i></span><div><p class="page-kicker">CPU PERFORMANCE</p><h4>Optimize this computer</h4></div></div><p>FishStop will benchmark the local model with a short sample text and save the fastest CPU setting for future analyses. The text and results never leave this device.</p><div class="cpu-optimization-progress" id="cpu-optimization-progress" hidden><span id="cpu-optimization-progress-label">Preparing the local benchmark…</span><div role="progressbar" aria-label="CPU optimization progress" aria-valuemin="0" aria-valuemax="100" id="cpu-optimization-progress-track"><i id="cpu-optimization-progress-fill"></i></div></div><p class="cpu-optimization-result" id="cpu-optimization-result"></p><button class="soft-action" id="optimize-cpu-performance" type="button">Optimize CPU performance</button></section></section>`);
   const managedModelStatus = document.querySelector<HTMLElement>("#managed-model-status");
   const installManagedQwen = document.querySelector<HTMLButtonElement>("#install-managed-qwen");
   const removeManagedQwen = document.querySelector<HTMLButtonElement>("#remove-managed-qwen");
@@ -2598,6 +2602,27 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
   const managedProgressValue = document.querySelector<HTMLElement>("#managed-model-progress-value");
   const managedProgressTrack = document.querySelector<HTMLElement>("#managed-model-progress-track");
   const managedProgressFill = document.querySelector<HTMLElement>("#managed-model-progress-fill");
+  const cpuOptimization = document.querySelector<HTMLElement>("#cpu-optimization");
+  const optimizeCpuPerformance = document.querySelector<HTMLButtonElement>("#optimize-cpu-performance");
+  const cpuOptimizationResult = document.querySelector<HTMLElement>("#cpu-optimization-result");
+  const cpuOptimizationProgress = document.querySelector<HTMLElement>("#cpu-optimization-progress");
+  const cpuOptimizationProgressLabel = document.querySelector<HTMLElement>("#cpu-optimization-progress-label");
+  const cpuOptimizationProgressTrack = document.querySelector<HTMLElement>("#cpu-optimization-progress-track");
+  const cpuOptimizationProgressFill = document.querySelector<HTMLElement>("#cpu-optimization-progress-fill");
+  const renderCpuOptimizationOperation = () => {
+    if (!cpuOptimizationOperation || !optimizeCpuPerformance || !cpuOptimizationProgress || !cpuOptimizationProgressLabel || !cpuOptimizationProgressTrack || !cpuOptimizationProgressFill) return;
+    const percent = cpuOptimizationOperation.total > 0
+      ? Math.round(Math.max(0, cpuOptimizationOperation.candidate - 1) / cpuOptimizationOperation.total * 100)
+      : 0;
+    optimizeCpuPerformance.disabled = true;
+    optimizeCpuPerformance.textContent = "Optimizing CPU…";
+    cpuOptimizationProgress.hidden = false;
+    cpuOptimizationProgressLabel.textContent = cpuOptimizationOperation.status;
+    cpuOptimizationProgressTrack.setAttribute("aria-valuenow", String(percent));
+    cpuOptimizationProgressFill.style.width = `${percent}%`;
+    if (cpuOptimizationResult) cpuOptimizationResult.textContent = "Keep FishStop open while the short benchmark runs.";
+    if (removeManagedQwen) removeManagedQwen.disabled = true;
+  };
   const renderManagedOperation = (): boolean => {
     if (!managedModelOperation || !managedModelStatus || !installManagedQwen || !removeManagedQwen) return false;
     const installing = managedModelOperation.phase === "installing";
@@ -2677,6 +2702,22 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
         installManagedQwen.disabled = !runtime.runtime_ready;
         removeManagedQwen.hidden = true;
       }
+      if (cpuOptimization && optimizeCpuPerformance && cpuOptimizationResult && cpuOptimizationProgress) {
+        cpuOptimization.hidden = !(runtime.model_ready && runtime.cpu_only);
+        if (!cpuOptimization.hidden) {
+          if (cpuOptimizationOperation) {
+            renderCpuOptimizationOperation();
+          } else {
+            optimizeCpuPerformance.disabled = false;
+            optimizeCpuPerformance.textContent = runtime.cpu_optimization ? "Run benchmark again" : "Optimize CPU performance";
+            cpuOptimizationProgress.hidden = true;
+            removeManagedQwen.disabled = false;
+            cpuOptimizationResult.textContent = runtime.cpu_optimization
+              ? `Optimized for ${runtime.cpu_optimization.threads} CPU threads · ${runtime.cpu_optimization.tokens_per_second.toFixed(1)} tokens/s in the benchmark.`
+              : "No CPU benchmark has been saved yet.";
+          }
+        }
+      }
     } catch (error) {
       if (machineProfile) machineProfile.innerHTML = `<p>Machine information unavailable: ${escapeHtml(String(error))}</p>`;
       if (managedModelStatus) managedModelStatus.textContent = `AI runtime unavailable: ${String(error)}`;
@@ -2707,7 +2748,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
     else void refreshProtectionStatus(user, true);
   });
   removeManagedQwen?.addEventListener("click", async () => {
-    if (!managedModelStatus || managedModelOperation) return;
+    if (!managedModelStatus || managedModelOperation || cpuOptimizationOperation) return;
     managedModelOperation = { phase: "removing", status: "Removing the AI model from this device…" };
     renderManagedOperation();
     let removalError: unknown = null;
@@ -2716,6 +2757,29 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
     finally { managedModelOperation = null; await refreshManagedModel(); }
     if (removalError) managedModelStatus.textContent = `Could not remove the AI model: ${String(removalError)}`;
     else void refreshProtectionStatus(user, true);
+  });
+  optimizeCpuPerformance?.addEventListener("click", async () => {
+    if (managedModelOperation || cpuOptimizationOperation || !cpuOptimizationResult) return;
+    cpuOptimizationOperation = { status: "Preparing the short local benchmark…", candidate: 0, total: 1, threads: 0 };
+    renderCpuOptimizationOperation();
+    let unlisten: (() => void) | null = null;
+    let benchmarkError: unknown = null;
+    let result: CpuOptimizationSummary | null = null;
+    try {
+      unlisten = await listen<CpuOptimizationProgress>("cpu-optimization-progress", (event) => {
+        cpuOptimizationOperation = event.payload;
+        renderCpuOptimizationOperation();
+      });
+      result = await invoke<CpuOptimizationSummary>("optimize_cpu_performance");
+    } catch (error) {
+      benchmarkError = error;
+    } finally {
+      unlisten?.();
+      cpuOptimizationOperation = null;
+      await refreshManagedModel();
+    }
+    if (benchmarkError) cpuOptimizationResult.textContent = `CPU optimization failed: ${String(benchmarkError)}`;
+    else if (result) cpuOptimizationResult.textContent = `Optimization complete: ${result.threads} CPU threads selected at ${result.tokens_per_second.toFixed(1)} tokens/s.`;
   });
   void refreshManagedModel();
   unlistenNativeEmlDrop?.(); unlistenNativeEmlDrop = null;

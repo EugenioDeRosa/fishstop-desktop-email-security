@@ -2573,11 +2573,21 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       removeManagedQwen.textContent = "Remove model";
       removeManagedQwen.disabled = false;
       if (/mlx/i.test(runtime.accelerator)) {
-        managedModelStatus.textContent = runtime.runtime_ready
-          ? "MLX is included. Qwen is downloaded automatically on first use and loaded only during analysis."
-          : "The bundled MLX runtime is unavailable.";
-        installManagedQwen.hidden = true;
-        removeManagedQwen.hidden = true;
+        if (!runtime.runtime_ready) {
+          managedModelStatus.textContent = "The bundled MLX runtime is unavailable.";
+          installManagedQwen.hidden = false;
+          installManagedQwen.disabled = true;
+          removeManagedQwen.hidden = true;
+        } else if (runtime.model_ready) {
+          managedModelStatus.textContent = "The Qwen MLX model is installed and will load only during analysis.";
+          installManagedQwen.hidden = true;
+          removeManagedQwen.hidden = false;
+        } else {
+          managedModelStatus.textContent = "Install the Qwen MLX model before running semantic analysis.";
+          installManagedQwen.hidden = false;
+          installManagedQwen.disabled = false;
+          removeManagedQwen.hidden = true;
+        }
         return;
       }
       if (runtime.model_ready) {

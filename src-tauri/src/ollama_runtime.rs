@@ -241,6 +241,126 @@ fn experimental_mlx_runtime_available(_app: &AppHandle) -> bool {
         .is_some_and(|path| path.is_file())
 }
 
+fn experimental_mlx_model_path(app: &AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_data_dir()
+        .map(|directory| directory.join("mlx-models").join("qwen3-4b-instruct-2507-4bit"))
+        .map_err(|error| format!("Could not locate FishSTOP data: {error}"))
+}
+
+fn experimental_mlx_model_installed(app: &AppHandle) -> bool {
+    experimental_mlx_model_path(app)
+        .ok()
+        .is_some_and(|directory| {
+            directory.join("config.json").is_file()
+                && fs::read_dir(directory)
+                    .ok()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Result::ok)
+                    .any(|entry| {
+                        let name = entry.file_name();
+                        let name = name.to_string_lossy();
+                        name.starts_with("model") && name.ends_with(".safetensors")
+                    })
+        })
+}
+
+fn experimental_mlx_command(_app: &AppHandle) -> Result<Command, String> {
+    #[cfg(debug_assertions)]
+    {
+        let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
+        let python = project_root.join(".venv-mlx").join("bin").join("python");
+        let entrypoint = project_root.join("src-python").join("mlx_server.py");
+        if !python.is_file() || !entrypoint.is_file() {
+            return Err(
+                "MLX is not installed. Prepare `.venv-mlx` as described in the README."
+                    .to_string(),
+            );
+        }
+        let mut command = Command::new(python);
+        command.arg(entrypoint);
+        Ok(command)
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        let binary = _app
+            .path()
+            .resolve(
+                format!("resources/mlx/{TARGET_TRIPLE}/fishstop-mlx"),
+                BaseDirectory::Resource,
+            )
+            .map_err(|error| format!("Could not locate the bundled MLX runtime: {error}"))?;
+        if !binary.is_file() {
+            return Err("The bundled MLX runtime is missing.".to_string());
+        }
+        Ok(Command::new(binary))
+    }
+}
+
+fn install_experimental_mlx_model(app: &AppHandle) -> Result<(), String> {
+    let destination = experimental_mlx_model_path(app)?;
+    if experimental_mlx_model_installed(app) {
+        return Ok(());
+    }
+    let partial = destination.with_extension("partial");
+    if partial.exists() {
+        fs::remove_dir_all(&partial)
+            .map_err(|error| format!("Could not clear an incomplete MLX download: {error}"))?;
+    }
+    if let Some(parent) = partial.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("Could not prepare MLX model storage: {error}"))?;
+    }
+    let _ = app.emit(
+        "ollama-model-progress",
+        ModelProgress {
+            status: "Downloading the Qwen MLX model…".to_string(),
+            total: None,
+            completed: None,
+        },
+    );
+    let cache = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("Could not locate FishSTOP data: {error}"))?
+        .join("mlx-cache");
+    let status = experimental_mlx_command(app)?
+        .arg("--download")
+        .arg(&partial)
+        .env("HF_HOME", cache)
+        .env("HF_HUB_DISABLE_TELEMETRY", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|error| format!("Could not start the MLX model download: {error}"))?;
+    if !status.success() {
+        let _ = fs::remove_dir_all(&partial);
+        return Err("The Qwen MLX model download failed.".to_string());
+    }
+    if destination.exists() {
+        fs::remove_dir_all(&destination)
+            .map_err(|error| format!("Could not replace the MLX model: {error}"))?;
+    }
+    fs::rename(&partial, &destination)
+        .map_err(|error| format!("Could not finish the MLX model installation: {error}"))?;
+    Ok(())
+}
+
+fn remove_experimental_mlx_model(
+    app: &AppHandle,
+    runtime: &Arc<Mutex<OllamaRuntime>>,
+) -> Result<(), String> {
+    stop_experimental_mlx(runtime)?;
+    let destination = experimental_mlx_model_path(app)?;
+    if destination.exists() {
+        fs::remove_dir_all(destination)
+            .map_err(|error| format!("Could not remove the MLX model: {error}"))?;
+    }
+    Ok(())
+}
+
 pub fn start_experimental_mlx(
     app: &AppHandle,
     runtime: &Arc<Mutex<OllamaRuntime>>,
@@ -252,6 +372,10 @@ pub fn start_experimental_mlx(
         return Ok(());
     }
 
+    if !experimental_mlx_model_installed(app) {
+        return Err("Install the Qwen MLX model from Settings before starting an analysis.".to_string());
+    }
+
     let cache = app
         .path()
         .app_data_dir()
@@ -260,35 +384,8 @@ pub fn start_experimental_mlx(
     fs::create_dir_all(&cache)
         .map_err(|error| format!("Could not prepare MLX model storage: {error}"))?;
 
-    #[cfg(debug_assertions)]
-    let mut command = {
-        let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
-        let python = project_root.join(".venv-mlx").join("bin").join("python");
-        let launcher = project_root.join("scripts").join("run_mlx_server.py");
-        if !python.is_file() || !launcher.is_file() {
-            return Err(
-                "MLX is not installed. Prepare `.venv-mlx` as described in the README."
-                    .to_string(),
-            );
-        }
-        let mut command = Command::new(python);
-        command.arg(launcher);
-        command
-    };
-    #[cfg(not(debug_assertions))]
-    let mut command = {
-        let binary = app
-            .path()
-            .resolve(
-                format!("resources/mlx/{TARGET_TRIPLE}/fishstop-mlx"),
-                BaseDirectory::Resource,
-            )
-            .map_err(|error| format!("Could not locate the bundled MLX runtime: {error}"))?;
-        if !binary.is_file() {
-            return Err("The bundled MLX runtime is missing.".to_string());
-        }
-        Command::new(binary)
-    };
+    let model = experimental_mlx_model_path(app)?;
+    let mut command = experimental_mlx_command(app)?;
 
     {
         let mut runtime = runtime
@@ -303,6 +400,7 @@ pub fn start_experimental_mlx(
             command
                 .env("HF_HOME", cache)
                 .env("HF_HUB_DISABLE_TELEMETRY", "1")
+                .env("MLX_MODEL", model)
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null());
@@ -850,9 +948,10 @@ pub fn status(app: &AppHandle, _runtime: &Arc<Mutex<OllamaRuntime>>) -> OllamaRu
     if experimental_mlx_enabled() {
         let ready = experimental_mlx_ready();
         let available = experimental_mlx_runtime_available(app);
+        let model_installed = experimental_mlx_model_installed(app);
         return OllamaRuntimeStatus {
             runtime_ready: available,
-            model_ready: available,
+            model_ready: available && model_installed,
             managed: true,
             model: EXPERIMENTAL_MLX_MODEL.to_string(),
             platform,
@@ -862,8 +961,10 @@ pub fn status(app: &AppHandle, _runtime: &Arc<Mutex<OllamaRuntime>>) -> OllamaRu
             accelerator: "Apple MLX".to_string(),
             selection_reason: if ready {
                 "The native MLX backend is active.".to_string()
-            } else if available {
+            } else if available && model_installed {
                 "MLX will load on demand and release memory after analysis.".to_string()
+            } else if available {
+                "Install the Qwen MLX model from Settings before analysis.".to_string()
             } else {
                 "The native MLX runtime is unavailable.".to_string()
             },
@@ -918,6 +1019,9 @@ pub fn install_default_model(
     app: &AppHandle,
     runtime: &Arc<Mutex<OllamaRuntime>>,
 ) -> Result<(), String> {
+    if experimental_mlx_enabled() {
+        return install_experimental_mlx_model(app);
+    }
     let (endpoint, _) = ensure_server(app, runtime)?;
     let response = client()?
         .post(format!("{endpoint}/api/pull"))
@@ -949,6 +1053,9 @@ pub fn remove_default_model(
     app: &AppHandle,
     runtime: &Arc<Mutex<OllamaRuntime>>,
 ) -> Result<(), String> {
+    if experimental_mlx_enabled() {
+        return remove_experimental_mlx_model(app, runtime);
+    }
     let (endpoint, _) = ensure_server(app, runtime)?;
     client()?
         .delete(format!("{endpoint}/api/delete"))

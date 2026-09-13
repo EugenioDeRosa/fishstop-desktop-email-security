@@ -33,7 +33,7 @@ Su Windows l'installer contiene il runtime CPU/Vulkan compatto. Se FishStop rile
 
 ### Backend MLX sperimentale (Apple Silicon)
 
-Su Apple Silicon la build installabile usa automaticamente MLX con lo stesso Qwen3-4B-Instruct-2507 in formato 4-bit. Il runtime è incluso nell'app; il modello viene scaricato nella cartella dati di FishStop al primo utilizzo. Per provarlo in sviluppo, prepara un ambiente separato così le dipendenze MLX non interferiscono con il motore FishStop:
+Su Apple Silicon la build installabile usa automaticamente MLX con lo stesso Qwen3-4B-Instruct-2507 in formato 4-bit. Il runtime è incluso nell'app; il modello si installa e si rimuove da **Settings → Qwen locale** e l'analisi non avvia download automatici. Per provarlo in sviluppo, prepara un ambiente separato così le dipendenze MLX non interferiscono con il motore FishStop:
 
 ```bash
 python3 -m venv .venv-mlx
@@ -46,7 +46,7 @@ Questa preparazione serve una sola volta. Avvia quindi FishStop con un unico com
 npm run tauri:mlx
 ```
 
-Alla prima analisi viene scaricato `mlx-community/Qwen3-4B-Instruct-2507-4bit`. FishStop avvia MLX quando comincia l'analisi e lo arresta appena termina, anche in caso di errore o annullamento, liberando la memoria unificata. Il modello rimane nella cache su disco e non viene riscaricato. Senza `FISHSTOP_LLM_PROVIDER=mlx`, FishStop continua a usare il backend Ollama normale.
+Dopo aver installato `mlx-community/Qwen3-4B-Instruct-2507-4bit` dalle impostazioni, FishStop avvia MLX quando comincia l'analisi e lo arresta appena termina, anche in caso di errore o annullamento, liberando la memoria unificata. Senza `FISHSTOP_LLM_PROVIDER=mlx`, FishStop continua a usare il backend Ollama normale.
 
 ## Avvio in sviluppo
 

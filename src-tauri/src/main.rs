@@ -1825,7 +1825,9 @@ fn analyze_ai_with_engine(
             )
             .env("OLLAMA_KEEP_ALIVE", "-1m");
         if ollama_model == ollama_runtime::EXPERIMENTAL_MLX_MODEL {
-            engine.env("FISHSTOP_LLM_PROVIDER", "mlx");
+            engine
+                .env("FISHSTOP_LLM_PROVIDER", "mlx")
+                .env("MLX_MODEL", "default_model");
         }
         if !gpu_accelerated {
             engine

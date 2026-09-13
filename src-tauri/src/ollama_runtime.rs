@@ -845,7 +845,7 @@ fn windows_has_nvidia_gpu() -> bool {
 }
 
 #[cfg(target_os = "windows")]
-fn ensure_windows_cuda_runtime(binary: &Path) -> Result<(), String> {
+fn ensure_windows_cuda_runtime(app: &AppHandle, binary: &Path) -> Result<(), String> {
     if !windows_has_nvidia_gpu() {
         return Ok(());
     }
@@ -885,10 +885,22 @@ fn ensure_windows_cuda_runtime(binary: &Path) -> Result<(), String> {
         .send()
         .and_then(|response| response.error_for_status())
         .map_err(|error| format!("Could not download the NVIDIA runtime: {error}"))?;
+    let total = response.content_length();
+    app.emit(
+        "ollama-model-progress",
+        ModelProgress {
+            status: "Installing NVIDIA acceleration…".to_string(),
+            total,
+            completed: Some(0),
+        },
+    )
+    .map_err(|error| format!("Could not update NVIDIA installation progress: {error}"))?;
     let mut file = fs::File::create(&download)
         .map_err(|error| format!("Could not store the NVIDIA runtime: {error}"))?;
     let mut digest = Sha256::new();
     let mut buffer = [0_u8; 1024 * 1024];
+    let mut completed = 0_u64;
+    let mut last_reported = 0_u64;
     loop {
         let count = response
             .read(&mut buffer)
@@ -899,12 +911,37 @@ fn ensure_windows_cuda_runtime(binary: &Path) -> Result<(), String> {
         file.write_all(&buffer[..count])
             .map_err(|error| format!("Could not store the NVIDIA runtime: {error}"))?;
         digest.update(&buffer[..count]);
+        completed += count as u64;
+        if completed.saturating_sub(last_reported) >= 8 * 1024 * 1024
+            || total.is_some_and(|total| completed >= total)
+        {
+            app.emit(
+                "ollama-model-progress",
+                ModelProgress {
+                    status: "Installing NVIDIA acceleration…".to_string(),
+                    total,
+                    completed: Some(completed),
+                },
+            )
+            .map_err(|error| format!("Could not update NVIDIA installation progress: {error}"))?;
+            last_reported = completed;
+        }
     }
     drop(file);
     if format!("{:x}", digest.finalize()) != expected.to_ascii_lowercase() {
         let _ = fs::remove_file(&download);
         return Err("The NVIDIA runtime failed its integrity check.".to_string());
     }
+
+    app.emit(
+        "ollama-model-progress",
+        ModelProgress {
+            status: "Finishing NVIDIA acceleration installation…".to_string(),
+            total: None,
+            completed: None,
+        },
+    )
+    .map_err(|error| format!("Could not update NVIDIA installation progress: {error}"))?;
 
     let mut expand = Command::new("powershell.exe");
     expand.args([
@@ -959,7 +996,7 @@ fn prepare_windows_runtime(app: &AppHandle, bundled: &Path) -> Result<PathBuf, S
             .ok_or_else(|| "The bundled AI runtime directory is invalid.".to_string())?;
         copy_runtime_directory(source, &destination)?;
     }
-    ensure_windows_cuda_runtime(&executable)?;
+    ensure_windows_cuda_runtime(app, &executable)?;
     Ok(executable)
 }
 

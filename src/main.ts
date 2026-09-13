@@ -2685,7 +2685,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       if (renderManagedOperation()) return;
       const memory = runtime.memory_bytes ? `${(runtime.memory_bytes / 1024 ** 3).toFixed(1)} GB` : "Unavailable";
       const usesMlx = /mlx/i.test(runtime.accelerator);
-      const gpuAccelerated = runtime.loaded_on_gpu || /gpu|metal|cuda|rocm/i.test(runtime.accelerator);
+      const gpuAccelerated = runtime.loaded_on_gpu || usesMlx;
       if (machineSystem) machineSystem.textContent = `${runtime.platform} · ${runtime.architecture}`;
       if (machineProcessor) machineProcessor.textContent = runtime.cpu;
       if (machineMemory) machineMemory.textContent = memory;
@@ -2869,9 +2869,8 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       if (heuristicTimer !== undefined) window.clearInterval(heuristicTimer);
       const platform = (runtime?.platform || "").toLowerCase();
       const architecture = (runtime?.architecture || "").toLowerCase();
-      const accelerator = (runtime?.accelerator || "").toLowerCase();
       const isAppleSilicon = /darwin|mac/.test(platform) && /arm|aarch64/.test(architecture);
-      const accelerated = Boolean(runtime?.loaded_on_gpu) || isAppleSilicon || /gpu|cuda|metal|apple/.test(accelerator);
+      const accelerated = Boolean(runtime?.loaded_on_gpu) || isAppleSilicon;
       const expectedDurationMs = accelerated ? 30_000 : 120_000;
       const heuristicStartedAt = performance.now();
       const paintHeuristicProgress = () => {

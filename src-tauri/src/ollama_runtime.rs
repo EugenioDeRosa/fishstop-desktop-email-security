@@ -641,7 +641,10 @@ fn cpu_benchmark_candidates() -> Vec<usize> {
 }
 
 fn cpu_only_machine() -> bool {
-    !cfg!(all(target_os = "macos", target_arch = "aarch64")) && windows_gpu_name().is_none()
+    !cfg!(all(target_os = "macos", target_arch = "aarch64"))
+        && !windows_gpu_name()
+            .as_deref()
+            .is_some_and(windows_gpu_is_acceleration_candidate)
 }
 
 pub fn optimize_cpu_performance(
@@ -826,6 +829,14 @@ fn windows_gpu_name() -> Option<String> {
     )
 }
 
+fn windows_gpu_is_acceleration_candidate(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    name.contains("nvidia")
+        || name.contains("amd")
+        || name.contains("radeon")
+        || (name.contains("intel") && name.contains("arc"))
+}
+
 #[cfg(not(target_os = "windows"))]
 fn windows_gpu_name() -> Option<String> {
     None
@@ -834,6 +845,7 @@ fn windows_gpu_name() -> Option<String> {
 #[cfg(target_os = "windows")]
 fn windows_should_enable_vulkan() -> bool {
     windows_gpu_name()
+        .filter(|name| windows_gpu_is_acceleration_candidate(name))
         .map(|name| !name.to_ascii_lowercase().contains("nvidia"))
         .unwrap_or(false)
 }
@@ -1009,7 +1021,8 @@ fn machine_profile() -> (String, String, String, Option<u64>, String, String) {
     }
     .to_string();
     let architecture = std::env::consts::ARCH.to_string();
-    let detected_windows_gpu = windows_gpu_name();
+    let detected_windows_gpu = windows_gpu_name()
+        .filter(|name| windows_gpu_is_acceleration_candidate(name));
     let accelerator = if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
         "Apple Metal".to_string()
     } else if let Some(gpu) = detected_windows_gpu.as_ref() {
@@ -1385,7 +1398,7 @@ pub fn remove_default_model(
 
 #[cfg(test)]
 mod tests {
-    use super::cpu_benchmark_candidates_for;
+    use super::{cpu_benchmark_candidates_for, windows_gpu_is_acceleration_candidate};
 
     #[test]
     fn small_cpu_candidates_leave_one_core_available() {
@@ -1400,5 +1413,28 @@ mod tests {
     #[test]
     fn candidate_generation_never_exceeds_available_threads() {
         assert_eq!(cpu_benchmark_candidates_for(2, 8), vec![1, 2]);
+    }
+
+    #[test]
+    fn integrated_intel_uhd_is_not_reported_as_an_ai_accelerator() {
+        assert!(!windows_gpu_is_acceleration_candidate(
+            "Intel(R) UHD Graphics"
+        ));
+        assert!(!windows_gpu_is_acceleration_candidate(
+            "Intel(R) Iris(R) Xe Graphics"
+        ));
+    }
+
+    #[test]
+    fn supported_gpu_families_remain_acceleration_candidates() {
+        assert!(windows_gpu_is_acceleration_candidate(
+            "NVIDIA GeForce RTX 4060"
+        ));
+        assert!(windows_gpu_is_acceleration_candidate(
+            "AMD Radeon RX 7800 XT"
+        ));
+        assert!(windows_gpu_is_acceleration_candidate(
+            "Intel(R) Arc(TM) A770 Graphics"
+        ));
     }
 }

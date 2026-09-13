@@ -2591,9 +2591,16 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       void refreshProtectionStatus(user, true);
     }).catch((error) => { if (status) status.textContent = `Could not save credentials: ${String(error)}`; });
   });
-  const ollamaLab = document.querySelector<HTMLElement>(".ollama-lab");
   const machineProfile = document.querySelector<HTMLElement>("#machine-profile");
-  if (ollamaLab) ollamaLab.insertAdjacentHTML("beforeend", `<section class="managed-model" aria-live="polite"><p class="page-kicker">FISHSTOP AI</p><h3>Local AI model</h3><p id="managed-model-status">Checking the bundled AI runtime…</p><div class="managed-model-progress" id="managed-model-progress" hidden><div><span id="managed-model-progress-label">Preparing download…</span><strong id="managed-model-progress-value">0%</strong></div><div class="managed-model-progress-track" id="managed-model-progress-track" role="progressbar" aria-label="AI model download progress" aria-valuemin="0" aria-valuemax="100"><i id="managed-model-progress-fill"></i></div></div><div class="ollama-actions managed-model-actions"><button class="primary-action" id="install-managed-qwen" type="button" disabled>Checking…</button><button class="soft-action" id="remove-managed-qwen" type="button" hidden>Remove model</button></div><section class="cpu-optimization" id="cpu-optimization" hidden><div class="cpu-optimization-heading"><span class="cpu-optimization-mark" aria-hidden="true"><i></i><i></i><i></i></span><div><p class="page-kicker">CPU PERFORMANCE</p><h4>Optimize this computer</h4></div></div><p>FishStop will benchmark the local model with a short sample text and save the fastest CPU setting for future analyses. The text and results never leave this device.</p><div class="cpu-optimization-progress" id="cpu-optimization-progress" hidden><span id="cpu-optimization-progress-label">Preparing the local benchmark…</span><div role="progressbar" aria-label="CPU optimization progress" aria-valuemin="0" aria-valuemax="100" id="cpu-optimization-progress-track"><i id="cpu-optimization-progress-fill"></i></div></div><p class="cpu-optimization-result" id="cpu-optimization-result"></p><button class="soft-action" id="optimize-cpu-performance" type="button">Optimize CPU performance</button></section></section>`);
+  if (machineProfile) machineProfile.innerHTML = `<dl><div><dt>System</dt><dd id="machine-system">Reading…</dd></div><div><dt>Processor</dt><dd id="machine-processor">Reading…</dd></div><div><dt>Memory</dt><dd id="machine-memory">Reading…</dd></div><div><dt>Execution</dt><dd id="machine-execution">Reading…</dd></div><div class="machine-model-row" id="machine-model-row"><dt>Selected model</dt><dd><div class="machine-model-heading"><strong id="machine-model-name">Checking…</strong><span class="model-status-badge" id="model-status-badge" hidden></span></div><small id="managed-model-status">Checking the bundled AI runtime…</small><div class="managed-model-progress" id="managed-model-progress" hidden><div><span id="managed-model-progress-label">Preparing download…</span><strong id="managed-model-progress-value">0%</strong></div><div class="managed-model-progress-track" id="managed-model-progress-track" role="progressbar" aria-label="AI model download progress" aria-valuemin="0" aria-valuemax="100"><i id="managed-model-progress-fill"></i></div></div><div class="machine-model-actions"><button class="primary-action" id="install-managed-qwen" type="button" disabled>Checking…</button><button class="model-remove-action" id="remove-managed-qwen" type="button" hidden>Remove model</button></div></dd></div></dl><div class="execution-guidance" id="execution-guidance"><p id="execution-guidance-message">Reading the local acceleration profile…</p><section class="cpu-optimization" id="cpu-optimization" hidden><div class="cpu-optimization-heading"><span class="cpu-optimization-mark" aria-hidden="true"><i></i><i></i><i></i></span><div><p class="page-kicker">CPU PERFORMANCE</p><h4>Optimize this computer</h4></div></div><p>FishStop will benchmark the local model with a short sample text and save the fastest CPU setting for future analyses. The text and results never leave this device.</p><div class="cpu-optimization-progress" id="cpu-optimization-progress" hidden><span id="cpu-optimization-progress-label">Preparing the local benchmark…</span><div role="progressbar" aria-label="CPU optimization progress" aria-valuemin="0" aria-valuemax="100" id="cpu-optimization-progress-track"><i id="cpu-optimization-progress-fill"></i></div></div><p class="cpu-optimization-result" id="cpu-optimization-result"></p><button class="soft-action" id="optimize-cpu-performance" type="button">Optimize CPU performance</button></section></div>`;
+  const machineSystem = document.querySelector<HTMLElement>("#machine-system");
+  const machineProcessor = document.querySelector<HTMLElement>("#machine-processor");
+  const machineMemory = document.querySelector<HTMLElement>("#machine-memory");
+  const machineExecution = document.querySelector<HTMLElement>("#machine-execution");
+  const machineModelRow = document.querySelector<HTMLElement>("#machine-model-row");
+  const machineModelName = document.querySelector<HTMLElement>("#machine-model-name");
+  const modelStatusBadge = document.querySelector<HTMLElement>("#model-status-badge");
+  const executionGuidanceMessage = document.querySelector<HTMLElement>("#execution-guidance-message");
   const managedModelStatus = document.querySelector<HTMLElement>("#managed-model-status");
   const installManagedQwen = document.querySelector<HTMLButtonElement>("#install-managed-qwen");
   const removeManagedQwen = document.querySelector<HTMLButtonElement>("#remove-managed-qwen");
@@ -2633,6 +2640,13 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
     removeManagedQwen.disabled = true;
     removeManagedQwen.textContent = "Removing…";
     managedModelStatus.textContent = managedModelOperation.status;
+    machineModelRow?.classList.remove("is-missing", "is-ready");
+    machineModelRow?.classList.add("is-busy");
+    if (modelStatusBadge) {
+      modelStatusBadge.hidden = false;
+      modelStatusBadge.className = "model-status-badge busy";
+      modelStatusBadge.textContent = installing ? "Installing" : "Removing";
+    }
     if (managedProgress) managedProgress.hidden = !installing;
     if (installing && managedProgress && managedProgressLabel && managedProgressValue && managedProgressTrack && managedProgressFill) {
       const { completed, total } = managedModelOperation;
@@ -2661,66 +2675,83 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
     try {
       const runtime = await invoke<OllamaRuntimeStatus>("ollama_runtime_status");
       ollamaRuntimeSnapshot = runtime;
-      if (machineProfile) {
-        const memory = runtime.memory_bytes ? `${(runtime.memory_bytes / 1024 ** 3).toFixed(1)} GB` : "Unavailable";
-        const gpuAccelerated = runtime.loaded_on_gpu || /gpu|metal|cuda|rocm/i.test(runtime.accelerator);
-        const accelerationNote = gpuAccelerated
-          ? `GPU acceleration is enabled through ${runtime.accelerator}.`
-          : "CPU software optimizations are enabled for local AI analysis.";
-        machineProfile.innerHTML = `<dl><div><dt>System</dt><dd>${escapeHtml(runtime.platform)} · ${escapeHtml(runtime.architecture)}</dd></div><div><dt>Processor</dt><dd>${escapeHtml(runtime.cpu)}</dd></div><div><dt>Memory</dt><dd>${memory}</dd></div><div><dt>Execution</dt><dd>${escapeHtml(runtime.accelerator)}${runtime.loaded_on_gpu ? " · accelerated" : ""}</dd></div><div><dt>Selected model</dt><dd><strong>${escapeHtml(runtime.model)}</strong></dd></div></dl><p>${escapeHtml(accelerationNote)}</p>`;
-      }
       if (!managedModelStatus || !installManagedQwen || !removeManagedQwen) return;
       if (renderManagedOperation()) return;
+      const memory = runtime.memory_bytes ? `${(runtime.memory_bytes / 1024 ** 3).toFixed(1)} GB` : "Unavailable";
+      const usesMlx = /mlx/i.test(runtime.accelerator);
+      const gpuAccelerated = runtime.loaded_on_gpu || /gpu|metal|cuda|rocm/i.test(runtime.accelerator);
+      if (machineSystem) machineSystem.textContent = `${runtime.platform} · ${runtime.architecture}`;
+      if (machineProcessor) machineProcessor.textContent = runtime.cpu;
+      if (machineMemory) machineMemory.textContent = memory;
+      if (machineExecution) machineExecution.textContent = runtime.accelerator + (runtime.loaded_on_gpu ? " · accelerated" : "");
+      if (machineModelName) machineModelName.textContent = runtime.model;
+      if (executionGuidanceMessage) {
+        executionGuidanceMessage.hidden = false;
+        executionGuidanceMessage.textContent = usesMlx
+          ? "FishStop uses Apple MLX with Metal acceleration and unified memory for private local AI analysis."
+          : gpuAccelerated
+            ? `FishStop uses ${runtime.accelerator} hardware acceleration for private local AI analysis.`
+            : "FishStop runs local AI analysis entirely on this computer's CPU.";
+      }
+      machineModelRow?.classList.remove("is-busy", "is-missing", "is-ready");
       installManagedQwen.textContent = "Install AI model";
       removeManagedQwen.textContent = "Remove model";
       removeManagedQwen.disabled = false;
-      if (/mlx/i.test(runtime.accelerator)) {
-        if (!runtime.runtime_ready) {
-          managedModelStatus.textContent = "The bundled MLX runtime is unavailable.";
-          installManagedQwen.hidden = false;
-          installManagedQwen.disabled = true;
-          removeManagedQwen.hidden = true;
-        } else if (runtime.model_ready) {
-          managedModelStatus.textContent = "The Qwen MLX model is installed and will load only during analysis.";
-          installManagedQwen.hidden = true;
-          removeManagedQwen.hidden = false;
-        } else {
-          managedModelStatus.textContent = "Install Qwen optimized for MLX before running semantic analysis. The MLX engine is already included in FishStop.";
-          installManagedQwen.hidden = false;
-          installManagedQwen.disabled = false;
-          removeManagedQwen.hidden = true;
-        }
-        return;
-      }
       if (runtime.model_ready) {
-        managedModelStatus.textContent = "The local AI model is installed and ready.";
+        machineModelRow?.classList.add("is-ready");
+        if (modelStatusBadge) {
+          modelStatusBadge.hidden = false;
+          modelStatusBadge.className = `model-status-badge ${runtime.cpu_only && runtime.cpu_optimization ? "optimized" : "ready"}`;
+          modelStatusBadge.textContent = runtime.cpu_only && runtime.cpu_optimization ? "CPU optimized" : "Installed";
+        }
+        managedModelStatus.textContent = usesMlx
+          ? "The Qwen MLX model is installed and loads only during analysis."
+          : "The local Qwen model is installed and ready for analysis.";
         installManagedQwen.hidden = true;
         removeManagedQwen.hidden = false;
       } else {
-        managedModelStatus.textContent = runtime.runtime_ready ? "Install the local AI model to enable semantic analysis." : "Bundled AI runtime is unavailable.";
+        machineModelRow?.classList.add("is-missing");
+        if (modelStatusBadge) {
+          modelStatusBadge.hidden = false;
+          modelStatusBadge.className = "model-status-badge missing";
+          modelStatusBadge.textContent = "Not installed";
+        }
+        managedModelStatus.textContent = runtime.runtime_ready
+          ? usesMlx
+            ? "Install the Qwen model optimized for MLX to enable semantic analysis."
+            : "Install the local Qwen model to enable semantic analysis."
+          : usesMlx ? "The bundled MLX runtime is unavailable." : "The bundled AI runtime is unavailable.";
         installManagedQwen.hidden = false;
         installManagedQwen.disabled = !runtime.runtime_ready;
         removeManagedQwen.hidden = true;
       }
       if (cpuOptimization && optimizeCpuPerformance && cpuOptimizationResult && cpuOptimizationProgress) {
-        cpuOptimization.hidden = !(runtime.model_ready && runtime.cpu_only);
-        if (!cpuOptimization.hidden) {
-          if (cpuOptimizationOperation) {
-            renderCpuOptimizationOperation();
-          } else {
-            optimizeCpuPerformance.disabled = false;
-            optimizeCpuPerformance.textContent = runtime.cpu_optimization ? "Run benchmark again" : "Optimize CPU performance";
-            cpuOptimizationProgress.hidden = true;
-            removeManagedQwen.disabled = false;
-            cpuOptimizationResult.textContent = runtime.cpu_optimization
-              ? `Optimized for ${runtime.cpu_optimization.threads} CPU threads · ${runtime.cpu_optimization.tokens_per_second.toFixed(1)} tokens/s in the benchmark.`
-              : "No CPU benchmark has been saved yet.";
-          }
+        const needsCpuOptimization = runtime.model_ready && runtime.cpu_only && !runtime.cpu_optimization;
+        cpuOptimization.hidden = !needsCpuOptimization && !cpuOptimizationOperation;
+        if (runtime.model_ready && runtime.cpu_only && runtime.cpu_optimization && executionGuidanceMessage) {
+          executionGuidanceMessage.textContent = `CPU analysis is optimized for ${runtime.cpu_optimization.threads} threads · ${runtime.cpu_optimization.tokens_per_second.toFixed(1)} tokens/s in the benchmark.`;
+        }
+        if (cpuOptimizationOperation) {
+          if (executionGuidanceMessage) executionGuidanceMessage.hidden = true;
+          renderCpuOptimizationOperation();
+        } else if (needsCpuOptimization) {
+          if (executionGuidanceMessage) executionGuidanceMessage.hidden = true;
+          optimizeCpuPerformance.disabled = false;
+          optimizeCpuPerformance.textContent = "Optimize CPU performance";
+          cpuOptimizationProgress.hidden = true;
+          cpuOptimizationResult.textContent = "No CPU benchmark has been saved yet.";
         }
       }
     } catch (error) {
-      if (machineProfile) machineProfile.innerHTML = `<p>Machine information unavailable: ${escapeHtml(String(error))}</p>`;
+      if (executionGuidanceMessage) executionGuidanceMessage.textContent = `Machine information unavailable: ${String(error)}`;
       if (managedModelStatus) managedModelStatus.textContent = `AI runtime unavailable: ${String(error)}`;
+      machineModelRow?.classList.remove("is-busy", "is-ready");
+      machineModelRow?.classList.add("is-missing");
+      if (modelStatusBadge) {
+        modelStatusBadge.hidden = false;
+        modelStatusBadge.className = "model-status-badge missing";
+        modelStatusBadge.textContent = "Unavailable";
+      }
       if (installManagedQwen) { installManagedQwen.hidden = false; installManagedQwen.disabled = true; installManagedQwen.textContent = "Install unavailable"; }
       if (removeManagedQwen) removeManagedQwen.hidden = true;
     }

@@ -1307,7 +1307,7 @@ function authCheckTone(status: string): CheckTone {
   // `none` means that the EML contains no usable result for the protocol. It
   // must remain visually distinct from both a verified pass and a hard fail.
   if (value === "none") return "warn";
-  if (["neutral", "unknown", "present", "unavailable"].includes(value)) return "neutral";
+  if (["neutral", "unknown", "present", "unavailable", "not_observed"].includes(value)) return "neutral";
   return "warn";
 }
 
@@ -1795,8 +1795,8 @@ function addReputationPanel(report: AnalysisReport): void {
   shell.insertAdjacentHTML("beforeend", `<section class="report-panel" data-report-panel="reputation"><div class="reputation-intro"><p class="page-kicker">SECURITY INTELLIGENCE</p><h3>Security intelligence</h3><p>Results from the security intelligence services enabled in Settings.</p></div><div class="reputation-grid"><section class="evidence-card"><h3>Links · VirusTotal</h3><ul>${urls}</ul></section><section class="evidence-card"><h3>Attachments · VirusTotal</h3><ul>${files}</ul></section><section class="evidence-card"><h3>Message route</h3><ul>${hops}</ul></section><section class="evidence-card"><h3>Sender domains</h3><ul>${domains}</ul></section><section class="evidence-card reputation-otx"><div class="evidence-card-heading"><h3>OTX threat intelligence</h3><small>${escapeHtml(otxMeta)}</small></div><ul>${otxContent}</ul></section></div></section>`);
 }
 
-type GlobeHop = { lat: number; lon: number; ip: string; fromHost: string; byHost: string; city: string; country: string; isp: string; score?: number; reports?: number; abuseSummary: string; role: "sender" | "injection" | "relay" | "recipient"; order: number; checkpoints: AuthenticationCheckpoint[]; strongOtxIpMatch: boolean };
-type GlobeLocation = { lat: number; lon: number; city: string; country: string; hops: GlobeHop[]; score?: number; strongOtxIpMatch: boolean };
+type GlobeHop = { lat: number; lon: number; ip: string; fromHost: string; byHost: string; city: string; country: string; isp: string; score?: number; reports?: number; abuseSummary: string; role: "sender" | "injection" | "relay" | "recipient"; order: number; checkpoints: AuthenticationCheckpoint[]; hasReputation: boolean; strongOtxIpMatch: boolean };
+type GlobeLocation = { lat: number; lon: number; city: string; country: string; hops: GlobeHop[]; score?: number; hasReputation: boolean; strongOtxIpMatch: boolean };
 
 // Same D3 orthographic projection and Natural Earth topology used by the
 // Streamlit version. The atlas is bundled with the desktop app: no CDN call.
@@ -1821,8 +1821,10 @@ function renderEmailGlobe(report: AnalysisReport): void {
     if (!geo || geo.status !== "ok" || !Number.isFinite(geo.lat) || !Number.isFinite(geo.lon)) continue;
     const hopCheckpoints = (report.authentication_checkpoints || []).filter((checkpoint) => checkpoint.association === "exact" && checkpoint.linked_hop_index === routeIndex);
     const reputation = report.hop_reputation?.[ip];
+    const strongOtxIpMatch = otxMatchesForIp(report, ip).some(isStrongOtxMatch);
+    const hasReputation = abuseIpDbAvailable(reputation) || strongOtxIpMatch;
     const role: GlobeHop["role"] = routeIndex === 0 ? "sender" : routeIndex === 1 ? "injection" : routeIndex === received.length - 1 ? "recipient" : "relay";
-    const globeHop: GlobeHop = { lat: Number(geo.lat), lon: Number(geo.lon), ip, fromHost: hop.from_host || "—", byHost: hop.by_host || "—", city: geo.city || "", country: geo.country || "", isp: geo.isp || "", score: abuseIpDbAvailable(reputation) ? reputation?.abuseConfidenceScore : undefined, reports: abuseIpDbAvailable(reputation) ? reputation?.totalReports : undefined, abuseSummary: abuseIpDbSummary(reputation), role, order: routeIndex + 1, checkpoints: hopCheckpoints, strongOtxIpMatch: otxMatchesForIp(report, ip).some(isStrongOtxMatch) };
+    const globeHop: GlobeHop = { lat: Number(geo.lat), lon: Number(geo.lon), ip, fromHost: hop.from_host || "—", byHost: hop.by_host || "—", city: geo.city || "", country: geo.country || "", isp: geo.isp || "", score: abuseIpDbAvailable(reputation) ? reputation?.abuseConfidenceScore : undefined, reports: abuseIpDbAvailable(reputation) ? reputation?.totalReports : undefined, abuseSummary: abuseIpDbSummary(reputation), role, order: routeIndex + 1, checkpoints: hopCheckpoints, hasReputation, strongOtxIpMatch };
     hops.push(globeHop);
   }
   if (!hops.length) {
@@ -1847,6 +1849,7 @@ function renderEmailGlobe(report: AnalysisReport): void {
     score: group.some((hop) => hop.score !== undefined)
       ? Math.max(...group.map((hop) => hop.score ?? 0))
       : undefined,
+    hasReputation: group.some((hop) => hop.hasReputation),
     strongOtxIpMatch: group.some((hop) => hop.strongOtxIpMatch),
   })).sort((left, right) => left.hops[0].order - right.hops[0].order);
   canvas.dataset.globeInitialized = "true";
@@ -1870,12 +1873,14 @@ function renderEmailGlobe(report: AnalysisReport): void {
     return [-longitude, -latitude];
   };
   let width = 0, height = 0, radius = 0;
-  let [lambda, phi] = routeCenter();
-  let rotating = false, dragging = false, pointerX = 0, pointerY = 0, dragX = 0, dragY = 0, dragLambda = lambda, dragPhi = phi, hoveredIndex = -1;
-  let renderedTooltipIndex = -1;
+  let lambda = -locations[0].lon, phi = -locations[0].lat;
+  let routeStartedAt: number | null = null;
+  let activeRouteLocation = 0;
+  let rotating = locations.length > 1, dragging = false, pointerX = 0, pointerY = 0, dragX = 0, dragY = 0, dragLambda = lambda, dragPhi = phi, hoveredIndex = -1;
+  let routeDwelling = rotating, routeDwellProgress = 0, dragMoved = false, pinnedIndex = -1, renderedTooltipIndex = -1;
   const projection = geoOrthographic().clipAngle(90);
   const path = geoPath(projection, context);
-  const riskColor = (score?: number, strongOtxIpMatch = false) => strongOtxIpMatch ? "#e24b4a" : score === undefined ? "#888780" : score >= 50 ? "#e24b4a" : score >= 25 ? "#ef9f27" : "#1d9e75";
+  const riskColor = (hasReputation: boolean, score?: number, strongOtxIpMatch = false) => !hasReputation ? "#888780" : strongOtxIpMatch ? "#e24b4a" : score !== undefined && score >= 50 ? "#e24b4a" : score !== undefined && score >= 25 ? "#ef9f27" : "#1d9e75";
   const authenticationColor = (status?: string) => {
     const tone = authCheckTone(status || "unknown");
     return tone === "pass" ? "#42c99b" : tone === "fail" ? "#ff6b60" : tone === "warn" ? "#f6b94a" : "#718983";
@@ -1891,6 +1896,10 @@ function renderEmailGlobe(report: AnalysisReport): void {
     const priority: Record<CheckTone, number> = { fail: 3, warn: 2, neutral: 1, pass: 0 };
     return matches.sort((left, right) => priority[authCheckTone(right.status)] - priority[authCheckTone(left.status)])[0];
   };
+  const checkpointStatus = (checkpoint?: AuthenticationCheckpoint) => checkpoint?.status || "not_observed";
+  const checkpointLabel = (checkpoint?: AuthenticationCheckpoint) => checkpoint
+    ? String(checkpoint.status || "unknown").toUpperCase()
+    : "NOT OBSERVED";
   const markerPoint = (location: GlobeLocation): [number, number] | null => {
     return projection([location.lon, location.lat]);
   };
@@ -1904,8 +1913,20 @@ function renderEmailGlobe(report: AnalysisReport): void {
   };
   const centerRoute = () => {
     [lambda, phi] = routeCenter();
+    routeStartedAt = null;
+    rotating = false;
+    toggle.textContent = "Start route";
     projection.rotate([lambda, phi]);
   };
+  const routeTour = locations.length > 2
+    ? [...locations, ...locations.slice(1, -1).reverse()]
+    : locations;
+  const routeDwellMs = (location: GlobeLocation) => location.hops.length > 2
+    ? 2400 + (location.hops.length - 2) * 1800
+    : 2400;
+  const routeTravelMs = 4500;
+  const routeLegDurations = routeTour.map((location) => routeDwellMs(location) + routeTravelMs);
+  const routeCycleMs = routeLegDurations.reduce((total, duration) => total + duration, 0);
   const resize = () => {
     const rect = wrapper.getBoundingClientRect();
     if (rect.width < 10 || rect.height < 10) return;
@@ -1914,10 +1935,32 @@ function renderEmailGlobe(report: AnalysisReport): void {
     canvas.width = width * pixelRatio; canvas.height = height * pixelRatio; context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
     projection.scale(radius).translate([width / 2, height / 2]).rotate([lambda, phi]);
   };
-  const draw = () => {
+  const draw = (timestamp: number) => {
     if (!canvas.isConnected) return;
     if (reportPanel.offsetParent === null) { requestAnimationFrame(draw); return; }
-    if (rotating && !dragging) { lambda += 0.18; projection.rotate([lambda, phi]); }
+    if (rotating && !dragging) {
+      if (routeStartedAt === null) routeStartedAt = timestamp;
+      const elapsed = (timestamp - routeStartedAt) % routeCycleMs;
+      let legIndex = 0;
+      let legStartedAt = 0;
+      while (legIndex < routeLegDurations.length - 1 && elapsed >= legStartedAt + routeLegDurations[legIndex]) {
+        legStartedAt += routeLegDurations[legIndex];
+        legIndex += 1;
+      }
+      const legElapsed = elapsed - legStartedAt;
+      const origin = routeTour[legIndex];
+      const destination = routeTour[(legIndex + 1) % routeTour.length];
+      const dwellDuration = routeDwellMs(origin);
+      const rawProgress = Math.max(0, Math.min(1, (legElapsed - dwellDuration) / routeTravelMs));
+      routeDwelling = legElapsed < dwellDuration;
+      routeDwellProgress = routeDwelling ? legElapsed / dwellDuration : 1;
+      const easedProgress = rawProgress * rawProgress * (3 - 2 * rawProgress);
+      const position = geoInterpolate([origin.lon, origin.lat], [destination.lon, destination.lat])(easedProgress);
+      lambda = -position[0];
+      phi = -position[1];
+      activeRouteLocation = locations.indexOf(rawProgress < .5 ? origin : destination);
+      projection.rotate([lambda, phi]);
+    }
     context.clearRect(0, 0, width, height);
     context.beginPath(); path({ type: "Sphere" }); context.fillStyle = "#1a2332"; context.fill();
     context.beginPath(); path({ type: "Sphere" }); context.strokeStyle = "rgba(255,255,255,.10)"; context.lineWidth = .8; context.stroke();
@@ -1928,16 +1971,17 @@ function renderEmailGlobe(report: AnalysisReport): void {
       const origin = locations[index], destination = locations[index + 1];
       const interpolate = geoInterpolate([origin.lon, origin.lat], [destination.lon, destination.lat]);
       const line = { type: "LineString" as const, coordinates: Array.from({ length: 61 }, (_, point) => interpolate(point / 60)) };
-      context.beginPath(); path(line); context.strokeStyle = riskColor(origin.score, origin.strongOtxIpMatch); context.globalAlpha = .72; context.lineWidth = 1.8; context.setLineDash([6, 10]); context.stroke(); context.setLineDash([]); context.globalAlpha = 1;
+      context.beginPath(); path(line); context.strokeStyle = riskColor(origin.hasReputation, origin.score, origin.strongOtxIpMatch); context.globalAlpha = .72; context.lineWidth = 1.8; context.setLineDash([6, 10]); context.stroke(); context.setLineDash([]); context.globalAlpha = 1;
     }
     hoveredIndex = -1;
     locations.forEach((location, index) => {
       const point = markerPoint(location);
       if (!point || !isVisible(location.lon, location.lat)) return;
       const hover = !dragging && Math.hypot(point[0] - pointerX, point[1] - pointerY) < 16;
+      const routeActive = rotating && index === activeRouteLocation;
       if (hover) hoveredIndex = index;
       const multipleHops = location.hops.length > 1;
-      const color = riskColor(location.score, location.strongOtxIpMatch), markerRadius = hover ? 12 : multipleHops ? 10 : 8;
+      const color = riskColor(location.hasReputation, location.score, location.strongOtxIpMatch), markerRadius = hover ? 12 : routeActive ? 11 : multipleHops ? 10 : 8;
       context.beginPath(); context.arc(point[0], point[1], markerRadius + 3, 0, Math.PI * 2); context.fillStyle = `${color}30`; context.fill();
       context.beginPath(); context.arc(point[0], point[1], markerRadius, 0, Math.PI * 2); context.fillStyle = color; context.fill(); context.strokeStyle = "rgba(255,255,255,.8)"; context.lineWidth = hover ? 2 : 1.5; context.stroke();
       const ringRadius = markerRadius + 5;
@@ -1945,7 +1989,7 @@ function renderEmailGlobe(report: AnalysisReport): void {
       context.beginPath(); context.arc(point[0], point[1], ringRadius, 0, Math.PI * 2); context.strokeStyle = hasFailure ? "rgba(255,107,96,.28)" : "rgba(113,137,131,.22)"; context.lineWidth = hasFailure ? 6 : 3; context.stroke();
       protocolOrder.forEach((protocol, protocolIndex) => {
         const checkpoint = checkpointForLocation(location, protocol);
-        const status = checkpoint?.status || "none";
+        const status = checkpointStatus(checkpoint);
         const segment = (Math.PI * 2) / protocolOrder.length;
         const start = -Math.PI / 2 + protocolIndex * segment + .09;
         const end = -Math.PI / 2 + (protocolIndex + 1) * segment - .09;
@@ -1956,51 +2000,86 @@ function renderEmailGlobe(report: AnalysisReport): void {
       context.fillStyle = "#fff"; context.font = `800 ${multipleHops ? hover ? 9 : 8 : hover ? 11 : 10}px "DM Mono", ui-monospace, monospace`; context.textAlign = "center"; context.textBaseline = "middle"; context.fillText(markerLabel, point[0], point[1]);
       if (hover && location.city) { context.font = "11px ui-sans-serif, system-ui"; context.fillStyle = "#e6edf3"; context.fillText([location.city, location.country].filter(Boolean).join(", "), point[0], point[1] - markerRadius - 9); }
     });
-    const hovered = locations[hoveredIndex];
+    const tooltipIndex = pinnedIndex >= 0
+      ? pinnedIndex
+      : hoveredIndex >= 0
+        ? hoveredIndex
+        : rotating && routeDwelling ? activeRouteLocation : -1;
+    const hovered = locations[tooltipIndex];
     if (hovered && !dragging) {
       tooltip.hidden = false;
-      if (renderedTooltipIndex !== hoveredIndex) {
+      tooltip.classList.toggle("is-pinned", pinnedIndex >= 0);
+      if (renderedTooltipIndex !== tooltipIndex) {
         const hopCards = hovered.hops.map((hop) => {
           const authResults = protocolOrder.map((protocol) => {
             const checkpoint = checkpointForProtocol(hop, protocol);
-            const status = checkpoint?.status || "none";
-            return `<i class="auth-${authCheckTone(status)}">${protocol} ${escapeHtml(status.toUpperCase())}</i>`;
+            const status = checkpointStatus(checkpoint);
+            return `<i class="auth-${authCheckTone(status)}">${protocol} ${escapeHtml(checkpointLabel(checkpoint))}</i>`;
           }).join("");
           const otxStatus = hop.strongOtxIpMatch ? " · OTX exact IP match" : "";
           return `<section class="globe-hop-detail"><b>Hop ${hop.order} · ${escapeHtml(roleLabel[hop.role])}</b><span>${escapeHtml(hop.ip)}</span><small>${escapeHtml(hop.fromHost)} → ${escapeHtml(hop.byHost)}</small><small>${escapeHtml(hop.isp || "ISP unavailable")} · ${escapeHtml(hop.abuseSummary)}${escapeHtml(otxStatus)}</small><div class="globe-auth-results">${authResults}</div></section>`;
         }).join("");
         const locationName = [hovered.city, hovered.country].filter(Boolean).join(", ") || "Approximate location available";
         tooltip.innerHTML = `<header><b>Hop ${hovered.hops[0].order} on the globe · ${hovered.hops.length} route ${hovered.hops.length === 1 ? "entry" : "entries"}</b><span>${escapeHtml(locationName)}</span></header>${hopCards}`;
-        tooltip.classList.toggle("is-scrollable", hovered.hops.length > 2);
+        tooltip.classList.add("is-scrollable");
         tooltip.scrollTop = 0;
-        renderedTooltipIndex = hoveredIndex;
+        renderedTooltipIndex = tooltipIndex;
       }
-      tooltip.style.left = `${Math.max(12, Math.min(width - 332, pointerX + 14))}px`; tooltip.style.top = `${Math.max(12, Math.min(height - Math.min(300, 95 + hovered.hops.length * 105), pointerY + 14))}px`;
+      const marker = markerPoint(hovered);
+      const anchorX = hoveredIndex >= 0 && pinnedIndex < 0 ? pointerX : marker?.[0] ?? width / 2;
+      const anchorY = hoveredIndex >= 0 && pinnedIndex < 0 ? pointerY : marker?.[1] ?? height / 2;
+      tooltip.style.left = `${Math.max(12, Math.min(width - 332, anchorX + 14))}px`; tooltip.style.top = `${Math.max(12, Math.min(height - Math.min(300, 95 + hovered.hops.length * 105), anchorY + 14))}px`;
+      if (pinnedIndex < 0 && hoveredIndex < 0 && routeDwelling && hovered.hops.length > 2) {
+        const scrollProgress = Math.max(0, Math.min(1, (routeDwellProgress - .18) / .64));
+        const easedScroll = scrollProgress * scrollProgress * (3 - 2 * scrollProgress);
+        tooltip.scrollTop = (tooltip.scrollHeight - tooltip.clientHeight) * easedScroll;
+      }
     } else {
       tooltip.hidden = true;
       renderedTooltipIndex = -1;
     }
     requestAnimationFrame(draw);
   };
-  resize(); new ResizeObserver(resize).observe(wrapper); draw();
-  canvas.addEventListener("pointerdown", (event) => { dragging = true; rotating = false; toggle.textContent = "Start rotation"; canvas.setPointerCapture(event.pointerId); dragX = pointerX = event.offsetX; dragY = pointerY = event.offsetY; dragLambda = lambda; dragPhi = phi; });
-  canvas.addEventListener("pointermove", (event) => { pointerX = event.offsetX; pointerY = event.offsetY; if (dragging) { lambda = dragLambda + (event.offsetX - dragX) * .3; phi = Math.max(-60, Math.min(60, dragPhi - (event.offsetY - dragY) * .3)); projection.rotate([lambda, phi]); } });
+  resize(); new ResizeObserver(resize).observe(wrapper); requestAnimationFrame(draw);
+  canvas.addEventListener("pointerdown", (event) => { dragging = true; dragMoved = false; rotating = false; routeDwelling = false; toggle.textContent = "Start route"; canvas.setPointerCapture(event.pointerId); dragX = pointerX = event.offsetX; dragY = pointerY = event.offsetY; dragLambda = lambda; dragPhi = phi; });
+  canvas.addEventListener("pointermove", (event) => { pointerX = event.offsetX; pointerY = event.offsetY; if (dragging) { dragMoved ||= Math.hypot(event.offsetX - dragX, event.offsetY - dragY) > 4; lambda = dragLambda + (event.offsetX - dragX) * .3; phi = Math.max(-60, Math.min(60, dragPhi - (event.offsetY - dragY) * .3)); projection.rotate([lambda, phi]); } });
   canvas.addEventListener("pointerup", () => { dragging = false; });
+  canvas.addEventListener("click", (event) => {
+    if (dragMoved) return;
+    pinnedIndex = locations.findIndex((location) => {
+      const point = markerPoint(location);
+      return Boolean(point && isVisible(location.lon, location.lat) && Math.hypot(point[0] - event.offsetX, point[1] - event.offsetY) < 18);
+    });
+    renderedTooltipIndex = -1;
+  });
   canvas.addEventListener("pointerleave", (event) => {
     const enteredTooltip = event.relatedTarget instanceof Node && tooltip.contains(event.relatedTarget);
-    if (!dragging && !enteredTooltip) {
+    if (!dragging && pinnedIndex < 0 && !enteredTooltip) {
       tooltip.hidden = true;
       renderedTooltipIndex = -1;
     }
   });
   tooltip.addEventListener("pointerleave", () => {
+    if (pinnedIndex >= 0) return;
     tooltip.hidden = true;
     renderedTooltipIndex = -1;
     pointerX = -100;
     pointerY = -100;
   });
-  toggle.textContent = "Start rotation";
-  toggle.addEventListener("click", () => { rotating = !rotating; toggle.textContent = rotating ? "Pause rotation" : "Start rotation"; });
+  toggle.textContent = rotating ? "Pause route" : "Start route";
+  toggle.addEventListener("click", () => {
+    rotating = !rotating;
+    if (rotating) {
+      routeStartedAt = null;
+      activeRouteLocation = 0;
+      routeDwelling = true;
+      pinnedIndex = -1;
+      lambda = -locations[0].lon;
+      phi = -locations[0].lat;
+      projection.rotate([lambda, phi]);
+    }
+    toggle.textContent = rotating ? "Pause route" : "Start route";
+  });
   fit.addEventListener("click", centerRoute);
 }
 
@@ -2036,7 +2115,7 @@ function integrateReputation(report: AnalysisReport): void {
     }).join("") || `<p class="hop-empty">No public IP is available for this hop.</p>`;
     return `<details class="hop-card hop-card-${tone}"><summary><span><strong>Hop ${index + 1} · ${escapeHtml(hop.from_host || "unknown source")}</strong><small>${escapeHtml(hop.by_host || "unknown destination")} · ${escapeHtml(hop.received_at || "date unavailable")}</small></span><span class="hop-disclosure" aria-hidden="true"></span></summary><div class="hop-details">${details}${hop.raw ? `<pre>${escapeHtml(hop.raw)}</pre>` : ""}</div></details>`;
   }).join("") || "<p>No hops available.</p>";
-  auth?.insertAdjacentHTML("beforeend", `<section class="evidence-card geographic-route"><div class="route-heading"><div><h3>Email route</h3><p>Numbers show chronological hop order. Hops at the same approximate location share one point and one detail card. Node fill shows the worst IP reputation there; the outer ring summarizes exactly mapped authentication.</p></div><div class="globe-actions"><button type="button" data-globe-toggle>Start rotation</button><button type="button" data-globe-fit>Centre route</button></div></div><div class="email-globe-wrap"><canvas data-email-globe aria-label="Chronological email route grouped by approximate location, with IP reputation and authentication results"></canvas><div class="globe-tooltip" data-globe-tooltip hidden></div><div class="globe-legend"><span><i class="risk-low"></i>Low IP score</span><span><i class="risk-medium"></i>IP review</span><span><i class="risk-high"></i>IP threat</span><span class="auth-pass-key"><i></i>Auth pass</span><span class="auth-fail-key"><i></i>Auth fail</span><span class="auth-review-key"><i></i>Auth review</span><span class="auth-none-key"><i></i>Auth none</span></div></div>${hops}</section>`);
+  auth?.insertAdjacentHTML("beforeend", `<section class="evidence-card geographic-route"><div class="route-heading"><div><h3>Email route</h3><p>Follow the message from its first observed server onward. Select a point to keep its IP, reputation and available authentication evidence open.</p></div><div class="globe-actions"><button type="button" data-globe-toggle>Start rotation</button><button type="button" data-globe-fit>Centre route</button></div></div><div class="email-globe-wrap"><canvas data-email-globe aria-label="Chronological email route grouped by approximate location, with IP reputation and authentication results"></canvas><div class="globe-tooltip" data-globe-tooltip hidden></div><div class="globe-legend"><span><i class="risk-unknown"></i>No reputation</span><span><i class="risk-low"></i>Low IP score</span><span><i class="risk-medium"></i>IP review</span><span><i class="risk-high"></i>IP threat</span><span class="auth-pass-key"><i></i>Auth pass</span><span class="auth-fail-key"><i></i>Auth fail</span><span class="auth-review-key"><i></i>Auth none/review</span><span class="auth-unobserved-key"><i></i>Auth not observed</span></div></div>${hops}</section>`);
   const content = panel("content");
   const rawHtml = report.body_html_safe || safeHtmlPreview(report.body_html || "");
   if (rawHtml) {
@@ -2803,6 +2882,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
   };
   const renderManagedOperation = (): boolean => {
     if (!managedModelOperation || !managedModelStatus || !installManagedQwen || !removeManagedQwen) return false;
+    managedModelStatus.hidden = false;
     const installing = managedModelOperation.phase === "installing";
     installManagedQwen.hidden = !installing;
     installManagedQwen.disabled = true;
@@ -2835,6 +2915,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
   const refreshManagedModel = async () => {
     if (renderManagedOperation()) return;
     if (managedModelStatus && installManagedQwen && removeManagedQwen) {
+      managedModelStatus.hidden = false;
       managedModelStatus.textContent = "Checking the local AI component…";
       installManagedQwen.hidden = false;
       installManagedQwen.disabled = true;
@@ -2855,7 +2936,10 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       if (machineProcessor) machineProcessor.textContent = runtime.cpu;
       if (machineMemory) machineMemory.textContent = memory;
       if (machineExecution) machineExecution.textContent = runtime.accelerator + (runtime.loaded_on_gpu ? " · accelerated" : "");
-      if (machineModelName) machineModelName.textContent = runtime.model;
+      if (machineModelName) {
+        machineModelName.textContent = usesMlx ? "Qwen3 4B · MLX 4-bit" : runtime.model;
+        machineModelName.title = runtime.model;
+      }
       if (executionGuidanceMessage) {
         executionGuidanceMessage.hidden = false;
         executionGuidanceMessage.textContent = usesMlx
@@ -2875,12 +2959,11 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
           modelStatusBadge.className = `model-status-badge ${runtime.cpu_only && runtime.cpu_optimization ? "optimized" : "ready"}`;
           modelStatusBadge.textContent = runtime.cpu_only && runtime.cpu_optimization ? "CPU optimized" : "Installed";
         }
-        managedModelStatus.textContent = usesMlx
-          ? "The Qwen MLX model is installed and loads only during analysis."
-          : "The local Qwen model is installed and ready for analysis.";
+        managedModelStatus.hidden = true;
         installManagedQwen.hidden = true;
         removeManagedQwen.hidden = false;
       } else {
+        managedModelStatus.hidden = false;
         machineModelRow?.classList.add("is-missing");
         if (modelStatusBadge) {
           modelStatusBadge.hidden = false;

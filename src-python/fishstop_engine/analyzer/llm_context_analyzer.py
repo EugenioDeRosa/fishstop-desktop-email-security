@@ -692,29 +692,6 @@ def _attachment_anomaly_for_llm(att: dict) -> str:
     return "; ".join(parts) if parts else "none"
 
 
-def _mime_finding_category(finding: dict) -> str:
-    """Classify current and older reports consistently for verdict synthesis."""
-    explicit = str(finding.get("category") or "").lower()
-    if explicit:
-        return explicit
-    code = str(finding.get("code") or "")
-    if code in {
-        "DuplicateSingletonHeader", "NoBoundaryInMultipartDefect",
-        "StartBoundaryNotFoundDefect", "MultipartInvariantViolationDefect",
-        "InvalidMultipartContentTransferEncodingDefect",
-        "MissingHeaderBodySeparatorDefect", "FirstHeaderLineIsContinuationDefect",
-        "DiscardedLeadingNonHeaderLines",
-    }:
-        return "security_ambiguity"
-    if code in {
-        "InvalidBase64LengthDefect", "InvalidBase64CharactersDefect",
-        "InvalidBase64PaddingDefect", "CloseBoundaryNotFoundDefect",
-        "UndecodableBytesDefect",
-    } or finding.get("kind") == "decode_error":
-        return "damaged_content"
-    return "compatibility_notice"
-
-
 def _technical_context_lines(soc: dict, body_for_llm: str = "", link_reputation: dict | None = None) -> list[str]:
     spf_status = _auth_status(soc, "SPF")
     dkim_status = _auth_status(soc, "DKIM")
@@ -749,7 +726,7 @@ def _technical_context_lines(soc: dict, body_for_llm: str = "", link_reputation:
             "Conversation selection boundary: verdict target(s) are embedded message(s) "
             f"from {identities}; their authentication is unavailable. SPF, DKIM, DMARC, "
             "routing hops and injection IP belong only to the delivered outer message "
-            f"from {soc.get('from_') or 'unknown outer sender'}. MIME structure and attachments "
+            f"from {soc.get('from_') or 'unknown outer sender'}. The message container and attachments "
             "belong to the complete delivered file and are not proof that a specific embedded "
             "sender created or sent them"
         )
@@ -801,43 +778,6 @@ def _technical_context_lines(soc: dict, body_for_llm: str = "", link_reputation:
         )
     if soc.get("display_name_spoofing"):
         lines.append(f"Display name spoofing indicator: {soc.get('display_name_spoofing')}")
-
-    mime_findings = soc.get("mime_findings") or []
-    mime_security_findings = [
-        finding for finding in mime_findings
-        if finding.get("level") in {"HIGH", "MEDIUM"}
-        and _mime_finding_category(finding) == "security_ambiguity"
-    ]
-    mime_damaged_findings = [
-        finding for finding in mime_findings
-        if _mime_finding_category(finding) == "damaged_content"
-    ]
-    if mime_security_findings:
-        lines.append(
-            "MIME parser ambiguity detected: "
-            f"security_relevant_findings={len(mime_security_findings)} "
-            f"defects={int(soc.get('mime_defect_count') or 0)} "
-            f"duplicate_singleton_headers={int(soc.get('mime_duplicate_header_count') or 0)}; "
-            "treat parsed fields and transfer-decoded content with caution"
-        )
-    if mime_damaged_findings:
-        lines.append(
-            f"Damaged MIME content detected: findings={len(mime_damaged_findings)}; "
-            "some content may be incomplete, but damage is not phishing evidence by itself"
-        )
-    alternative_analysis = soc.get("mime_alternative_analysis") or {}
-    if alternative_analysis.get("status") == "divergent":
-        alternative_message = re.sub(
-            r"\s+", " ", str(alternative_analysis.get("message") or "")
-        ).strip()
-        lines.append(
-            "MIME alternatives differ substantially: "
-            + (
-                alternative_message
-                if alternative_message
-                else "all divergent visible variants are included in the untrusted email body and must be evaluated"
-            )
-        )
 
     for att in attachments[:5]:
         anomaly = _attachment_anomaly_for_llm(att)
@@ -934,11 +874,12 @@ def _technical_context_lines(soc: dict, body_for_llm: str = "", link_reputation:
 
     auth_only_fields = {"SPF", "DKIM", "DMARC", "Return-Path"}
     fields_already_summarized = {
-        "PDF Content", "PDF Attachment", "MIME structure", "MIME alternatives",
-        "OTX Threat Intelligence",
+        "PDF Content", "PDF Attachment", "OTX Threat Intelligence",
     }
     for flag in (soc.get("flags") or []):
         if flag.get("level") not in {"HIGH", "MEDIUM"}:
+            continue
+        if str(flag.get("field") or "").strip().casefold().startswith("mime "):
             continue
         if flag.get("field") in auth_only_fields or flag.get("field") in fields_already_summarized:
             continue
@@ -2723,14 +2664,6 @@ def _technical_risk(soc: dict, semantic: dict | None = None) -> tuple[str, list[
 
     if any(link.get("is_ip") for link in (soc.get("links") or [])):
         suspicious.append("the message contains a direct-IP URL")
-    if any(
-        finding.get("level") in {"HIGH", "MEDIUM"}
-        and _mime_finding_category(finding) == "security_ambiguity"
-        for finding in (soc.get("mime_findings") or [])
-    ):
-        suspicious.append("the email has ambiguous or malformed MIME structure")
-    if (soc.get("mime_alternative_analysis") or {}).get("status") == "divergent":
-        suspicious.append("the visible MIME alternatives contain substantially different content")
     if any(is_risky_lookalike_alert(alert) for alert in (soc.get("lookalike_alerts") or [])):
         suspicious.append("a lookalike or deceptive domain was detected")
     for link in (soc.get("links") or []):

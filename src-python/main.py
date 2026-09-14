@@ -23,7 +23,7 @@ from fishstop_engine.analyzer.conversation import (
 )
 from fishstop_engine.analyzer.lookalike import check_lookalike_domains
 from fishstop_engine.otx_intelligence import apply_on_demand_otx_intelligence
-from fishstop_engine.parser import _sanitize_eml_bytes_with_findings
+from fishstop_engine.parser import _sanitize_eml_bytes
 from fishstop_engine.reputation import enrich as enrich_reputation
 
 def _json_safe(value: Any) -> Any:
@@ -110,16 +110,13 @@ def analyze(path_value: str) -> dict[str, Any]:
     conversation_manifest = inspect_conversation_bytes(raw)
     selection_value = os.getenv("FISHSTOP_CONVERSATION_SELECTION", "").strip()
     conversation_selection = json.loads(selection_value) if selection_value else None
-    normalized_bytes, source_mime_findings = _sanitize_eml_bytes_with_findings(raw)
+    normalized_bytes = _sanitize_eml_bytes(raw)
     # Do not write next to the user-selected file: it may be read-only.
     with tempfile.NamedTemporaryFile(suffix=".eml", delete=False) as normalized_file:
         normalized_path = Path(normalized_file.name)
         normalized_file.write(normalized_bytes)
     try:
-        report = EmlSOCAnalyzer().analyze(
-            str(normalized_path),
-            source_mime_findings=source_mime_findings,
-        )
+        report = EmlSOCAnalyzer().analyze(str(normalized_path))
     finally:
         normalized_path.unlink(missing_ok=True)
     apply_conversation_selection(report, conversation_manifest, conversation_selection)

@@ -60,13 +60,6 @@ type AnalysisReport = {
   eml_sha256?: string;
   raw_eml_preview?: string;
   raw_eml_preview_error?: string;
-  mime_status?: "clean" | "notice" | "review";
-  mime_defect_count?: number;
-  mime_duplicate_header_count?: number;
-  mime_review_finding_count?: number;
-  mime_notice_finding_count?: number;
-  mime_findings?: Array<{ kind?: string; code?: string; category?: "security_ambiguity" | "damaged_content" | "compatibility_notice"; level?: "HIGH" | "MEDIUM" | "LOW" | "INFO"; part_path?: string; header?: string; count?: number; values_diverge?: boolean; domains_diverge?: boolean; distinct_values?: string[]; distinct_domains?: string[]; message?: string }>;
-  mime_alternative_analysis?: { status?: "not_applicable" | "consistent" | "divergent"; groups_analyzed?: number; divergent_group_count?: number; different_group_count?: number; security_relevant?: boolean; message?: string; groups?: Array<{ part_path?: string; alternative_count?: number; content_types?: string[]; minimum_similarity?: number; divergent?: boolean; link_mismatch?: boolean; has_differences?: boolean; security_relevant?: boolean; security_reasons?: string[]; message?: string; link_differences?: Array<{ left_part_path?: string; right_part_path?: string; left_only_urls?: string[]; right_only_urls?: string[]; introduced_domains?: string[]; lookalike_domains?: string[]; lookalike_brands?: string[]; link_context_alert_domains?: string[]; message?: string }>; alternatives?: Array<{ part_path?: string; content_type?: string; effective_content_type?: string; character_count?: number; token_count?: number; urls?: string[]; url_domains?: string[]; cta_urls?: string[]; cta_domains?: string[]; risky_urls?: string[]; sensitive_actions?: string[] }> }> };
   return_path_domain_mismatch?: boolean; reply_to_mismatch?: boolean; display_name_spoofing?: string;
   links?: Array<{ url?: string; host?: string; registered_domain?: string; is_ip?: boolean; scheme?: string; source?: string; display_text?: string; display_host?: string; display_registered_domain?: string; display_mismatch?: boolean; resolved_display_destination?: boolean; signature_tracking_redirect?: boolean; html_call_to_action?: boolean; has_userinfo?: boolean; has_credentials?: boolean; nonstandard_port?: boolean; port?: number; nested_redirect_count?: number; redirect_hosts?: string[]; redirect_downloads?: Array<{ filename?: string; extension?: string; dangerous?: boolean }>; unicode_host?: boolean; unicode_path_or_query?: boolean; role?: string; actionable?: boolean; sources?: string[]; download_filename?: string; download_extension?: string; download_source?: string; dangerous_download?: boolean; financial_attachment_mismatch?: boolean; context_risk_level?: string; context_risk_message?: string }>;
   link_reputation?: Record<string, ReputationResult>;
@@ -713,7 +706,7 @@ function structuredReportData(report: AnalysisReport): SiemReport {
     if (attachment.hash_sha256) addIndicator({ type: "sha256", value: attachment.hash_sha256, source: "attachment", risk: attachment.file_reputation?.status, reputation: publicReputation(attachment.file_reputation), context: compactObject({ filename: attachment.filename }) });
   });
 
-  const findings: Array<Record<string, unknown>> = (report.flags || []).map((flag, index) => compactObject({
+  const findings: Array<Record<string, unknown>> = verdictFlags(report).map((flag, index) => compactObject({
     id: `static.${String(flag.field || "finding").toLowerCase().replace(/[^a-z0-9]+/g, "_")}.${index + 1}`,
     severity: flag.level.toLowerCase(), category: "static_analysis", field: flag.field, description: flag.message,
   }));
@@ -775,7 +768,6 @@ function structuredReportData(report: AnalysisReport): SiemReport {
       static_engine: "FishStop", ai_status: report.phi4_analysis?.status,
       ai_model: report.phi4_analysis?.model, ai_backend: report.identity_analysis?.backend,
       duration_ms: report.phi4_analysis?.duration_ms,
-      mime_status: report.mime_status, mime_defect_count: report.mime_defect_count,
       authentication_scope: report.selected_target_authentication_scope || report.authentication_scope,
     },
   };
@@ -1005,6 +997,7 @@ function verdictFlags(report: AnalysisReport): SocFlag[] {
     authFromEmlHeader(report, "DMARC").status.toLowerCase(),
   );
   return (report.flags || []).filter((flag) => {
+    if (flag.field.trim().toLowerCase().startsWith("mime ")) return false;
     if (
       report.selected_target_authentication_scope === "embedded_unavailable"
       && ["spf", "dkim", "dmarc", "authentication-results", "received", "return-path", "reply-to", "display name"].includes(flag.field.trim().toLowerCase())
@@ -1666,46 +1659,6 @@ function reportMarkup(report: AnalysisReport): string {
     : informationalIdnAlerts.length
       ? `${informationalIdnAlerts.length} internationalized domain(s) observed; no homograph evidence found.`
       : "No lookalike domains detected.";
-  const mimeAnalysis = report.mime_alternative_analysis;
-  const mimeFindings = report.mime_findings || [];
-  const mimeFindingCategory = (finding: (typeof mimeFindings)[number]) => {
-    if (finding.category) return finding.category;
-    const code = finding.code || "";
-    if (["DuplicateSingletonHeader", "NoBoundaryInMultipartDefect", "StartBoundaryNotFoundDefect", "MultipartInvariantViolationDefect", "InvalidMultipartContentTransferEncodingDefect", "MissingHeaderBodySeparatorDefect", "FirstHeaderLineIsContinuationDefect", "DiscardedLeadingNonHeaderLines"].includes(code)) return "security_ambiguity";
-    if (["InvalidBase64LengthDefect", "InvalidBase64CharactersDefect", "InvalidBase64PaddingDefect", "CloseBoundaryNotFoundDefect", "UndecodableBytesDefect"].includes(code) || finding.kind === "decode_error") return "damaged_content";
-    return "compatibility_notice";
-  };
-  const mimeSecurityFindings = mimeFindings.filter((finding) => mimeFindingCategory(finding) === "security_ambiguity");
-  const mimeDamagedFindings = mimeFindings.filter((finding) => mimeFindingCategory(finding) === "damaged_content");
-  const mimeCompatibilityFindings = mimeFindings.filter((finding) => mimeFindingCategory(finding) === "compatibility_notice");
-  const mimeHasSecurityAmbiguity = mimeSecurityFindings.length > 0 || mimeAnalysis?.status === "divergent";
-  const mimeTone: CheckTone = mimeHasSecurityAmbiguity || mimeDamagedFindings.some((finding) => ["HIGH", "MEDIUM"].includes(finding.level || "")) ? "warn" : mimeFindings.length ? "neutral" : "pass";
-  const mimeCategoryLabel = (finding: (typeof mimeFindings)[number]) => mimeFindingCategory(finding) === "security_ambiguity"
-    ? "Security ambiguity"
-    : mimeFindingCategory(finding) === "damaged_content" ? "Damaged content" : "Compatibility notice";
-  const mimeFindingRows = mimeFindings.map((finding) => staticCheckItem(
-    mimeFindingCategory(finding) === "security_ambiguity" && finding.level === "HIGH" ? "fail" : ["security_ambiguity", "damaged_content"].includes(mimeFindingCategory(finding)) && finding.level === "MEDIUM" ? "warn" : "neutral",
-    finding.header ? `${finding.code || finding.kind || "MIME finding"} · ${finding.header}` : finding.code || finding.kind || "MIME finding",
-    finding.message || `MIME part ${finding.part_path || "unknown"} requires review.`,
-    mimeCategoryLabel(finding),
-  )).join("");
-  const alternativeRows = (mimeAnalysis?.groups || []).filter((group) => group.divergent).map((group) => staticCheckItem(
-    "warn",
-    `Alternative group ${group.part_path || "unknown"}`,
-    group.message || `${group.alternative_count || 0} variant(s) · ${(group.content_types || []).join(", ") || "unknown types"} · minimum similarity ${Math.round((group.minimum_similarity ?? 1) * 100)}%.`,
-    "Security ambiguity · all variants analysed",
-  )).join("");
-  const mimeSummary = mimeHasSecurityAmbiguity
-    ? "The message contains a structural ambiguity that could make email clients or security tools interpret it differently."
-    : mimeDamagedFindings.length
-      ? "Some message content is damaged or incomplete. This requires attention but is not phishing evidence by itself."
-      : mimeCompatibilityFindings.length
-        ? "Minor email-format compatibility issues were found; they do not affect the security verdict."
-        : "Email structure checked. No conflicting interpretations were detected.";
-  const mimeRows = `${mimeFindingRows}${alternativeRows}` || staticCheckItem("pass", "Message structure checked", "Text, HTML and MIME structure can be interpreted consistently.", "Passed");
-  const mimeInspection = report.mime_status === "clean"
-    ? ""
-    : `<section class="html-form-inspection static-surface-${mimeTone}"><div><p class="page-kicker">MESSAGE STRUCTURE</p><h3>Email format consistency</h3><p>${escapeHtml(mimeSummary)}</p></div><ul>${mimeRows}</ul></section>`;
   const fields = (items: Array<[string, string | undefined | null | boolean]>) => `<dl class="field-list">${items.filter(([, value]) => value !== undefined && value !== null && value !== "").map(([label, value]) => `<div><dt>${label}</dt><dd>${escapeHtml(String(value))}</dd></div>`).join("") || "<div><dd>No data available.</dd></div>"}</dl>`;
   const menu = [["summary", "Summary"], ["sender", "Sender"], ["auth", "Sender verification"], ["links", "Links"], ["files", "Files"], ["content", "Content"], ["technical", "Message details"]];
   const tabs = menu.map(([id, label], index) => `<button class="report-tab ${index === 0 ? "active" : ""}" data-report-tab="${id}" type="button">${label}</button>`).join("");
@@ -1713,7 +1666,7 @@ function reportMarkup(report: AnalysisReport): string {
     const panelContent = id === "content"
       ? `<div class="report-grid"><section class="content-detail-card"><h3>Content</h3>${fields([["Source", report.body_source], ["Selection", report.body_context]])}<div class="extracted-body-block"><h4>Extracted body</h4><pre>${escapeHtml((report.body_ai || report.body_clean || "No extractable text.").slice(0, 12000))}</pre></div></section></div>`
       : content;
-    const composedContent = id === "content" ? `${conversationScopeDetails}${mimeInspection}${copyDeceptionDetails}${panelContent}${htmlFormDetails}` : panelContent;
+    const composedContent = id === "content" ? `${conversationScopeDetails}${copyDeceptionDetails}${panelContent}${htmlFormDetails}` : panelContent;
     return `<section class="report-panel ${active ? "active" : ""}" data-report-panel="${id}">${composedContent}</section>`;
   };
   const forwardedIdentity = report.forwarded_identity?.from
@@ -3251,7 +3204,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
     const stateLabel = document.querySelector<HTMLElement>("#analysis-state-label");
     const title = document.querySelector<HTMLHeadingElement>("#analysis-title");
     const result = document.querySelector<HTMLDivElement>("#analysis-result");
-    if (stateLabel) stateLabel.textContent = "READING MESSAGE STRUCTURE";
+    if (stateLabel) stateLabel.textContent = "READING EMAIL";
     if (title) title.textContent = fileName;
     uploadStatus.textContent = "Looking for forwarded messages and quoted replies…";
     if (result) result.innerHTML = conversationInspectionMarkup(fileName);

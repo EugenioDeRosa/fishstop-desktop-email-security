@@ -457,6 +457,33 @@ def _looks_like_html(value: str) -> bool:
 
 _RAW_URL_TOKEN_RE = re.compile(r"https?://[^\s<>()]+", re.IGNORECASE)
 
+_MIME_SENSITIVE_ACTION_PATTERNS = {
+    "credential_submission": re.compile(
+        r"\b(?:send|provide|share|enter|submit|invia|fornisci|condividi|inserisci|comunica)\b"
+        r".{0,96}\b(?:password|credential|credenzial|otp|pin|security\s+code|codice\s+di\s+sicurezza|"
+        r"recovery\s+code|wallet\s+(?:seed|phrase))\b",
+        re.IGNORECASE | re.DOTALL,
+    ),
+    "payment_request": re.compile(
+        r"\b(?:pay|transfer|send|deposit|paga|pagare|trasferisci|invia|versa)\b"
+        r".{0,96}\b(?:payment|money|funds?|invoice|bank|iban|bitcoin|crypto|"
+        r"pagamento|denaro|fondi|fattura|bonifico)\b",
+        re.IGNORECASE | re.DOTALL,
+    ),
+    "sensitive_information_request": re.compile(
+        r"\b(?:send|provide|share|enter|submit|confirm|invia|fornisci|condividi|inserisci|conferma)\b"
+        r".{0,96}\b(?:social\s+security|tax\s+id|passport|identity\s+(?:card|document)|"
+        r"credit\s+card|bank\s+account|codice\s+fiscale|passaporto|documento\s+d.identit|"
+        r"carta\s+di\s+credito|conto\s+bancario)\b",
+        re.IGNORECASE | re.DOTALL,
+    ),
+    "account_security_action": re.compile(
+        r"\b(?:verify|secure|unlock|restore|confirm|reset|verifica|proteggi|sblocca|ripristina|conferma|reimposta)\b"
+        r".{0,72}\b(?:account|identity|login|password|profilo|account|identit|accesso)\b",
+        re.IGNORECASE | re.DOTALL,
+    ),
+}
+
 
 def _prefer_html_over_link_heavy_plain(plain: str, html: str) -> bool:
     """Prefer visible HTML text when the plain alternative is tracking-URL noise.
@@ -646,15 +673,58 @@ def _alternative_comparison_tokens(value: str) -> list[str]:
     return re.findall(r"[\w@.-]{2,}", value, flags=re.UNICODE)
 
 
-def _alternative_pair_is_divergent(left: dict, right: dict, similarity: float) -> bool:
-    if set(left.get("urls") or ()) != set(right.get("urls") or ()):
-        return True
+def _alternative_sensitive_actions(value: str) -> list[str]:
+    """Return security-sensitive requests explicitly visible in one alternative."""
+    return [
+        label
+        for label, pattern in _MIME_SENSITIVE_ACTION_PATTERNS.items()
+        if pattern.search(value or "")
+    ]
+
+
+def _alternative_text_is_substantially_different(
+    left: dict,
+    right: dict,
+    similarity: float,
+) -> bool:
     largest = max(int(left.get("token_count") or 0), int(right.get("token_count") or 0))
     if largest < 6:
         return False
     smallest = min(int(left.get("token_count") or 0), int(right.get("token_count") or 0))
     severe_length_gap = smallest / max(largest, 1) < 0.30
     return similarity < 0.55 or (severe_length_gap and similarity < 0.72)
+
+
+def _alternative_pair_security_reasons(
+    left: dict,
+    right: dict,
+    similarity: float,
+) -> list[str]:
+    """Separate ordinary MIME representation differences from security ambiguity."""
+    reasons: list[str] = []
+    if _alternative_text_is_substantially_different(left, right, similarity):
+        reasons.append("substantially different visible text")
+
+    left_domains = set(left.get("url_domains") or ())
+    right_domains = set(right.get("url_domains") or ())
+    left_cta_domains = set(left.get("cta_domains") or ())
+    right_cta_domains = set(right.get("cta_domains") or ())
+    cta_domain_changed = (
+        left_cta_domains != right_cta_domains
+        if left_cta_domains and right_cta_domains
+        else bool(left_cta_domains - right_domains or right_cta_domains - left_domains)
+    )
+    if cta_domain_changed:
+        reasons.append("the primary call-to-action changes registered domain")
+
+    left_sensitive = set(left.get("sensitive_actions") or ())
+    right_sensitive = set(right.get("sensitive_actions") or ())
+    if left_sensitive != right_sensitive:
+        reasons.append("a sensitive action appears in only one alternative")
+
+    if set(left.get("risky_urls") or ()) != set(right.get("risky_urls") or ()):
+        reasons.append("a risky URL appears in only one alternative")
+    return reasons
 
 
 def _alternative_similarity(left_tokens: list[str], right_tokens: list[str]) -> float:
@@ -677,7 +747,9 @@ def _alternative_similarity(left_tokens: list[str], right_tokens: list[str]) -> 
     return max(sequence, dice)
 
 
-def _alternative_link_metadata(variant: dict) -> tuple[list[str], list[str], list[str]]:
+def _alternative_link_metadata(
+    variant: dict,
+) -> tuple[list[str], list[str], list[str], list[str], list[str]]:
     """Extract actionable web links from the original MIME alternative."""
     content_type = str(variant.get("effective_content_type") or variant.get("content_type") or "")
     source = str(variant.get("source") or "")
@@ -700,7 +772,27 @@ def _alternative_link_metadata(variant: dict) -> tuple[list[str], list[str], lis
         str(link.get("url") or "") for link in actionable
         if link.get("html_call_to_action") and link.get("url")
     ))
-    return urls[:20], domains[:20], cta_urls[:20]
+    cta_domains = list(dict.fromkeys(
+        str(link.get("registered_domain") or link.get("host") or "").lower()
+        for link in actionable
+        if link.get("html_call_to_action")
+        and (link.get("registered_domain") or link.get("host"))
+    ))
+    risky_urls = list(dict.fromkeys(
+        str(link.get("url") or "") for link in actionable
+        if link.get("url") and (
+            link.get("is_ip")
+            or link.get("dangerous_download")
+            or link.get("display_mismatch")
+        )
+    ))
+    return (
+        urls[:20],
+        domains[:20],
+        cta_urls[:20],
+        cta_domains[:20],
+        risky_urls[:20],
+    )
 
 
 def _alternative_link_difference(left: dict, right: dict) -> dict | None:
@@ -764,7 +856,13 @@ def _analyze_mime_alternatives(body_variants: list[dict]) -> tuple[dict, set[str
         token_sequences: dict[str, list[str]] = {}
         for variant in variants:
             tokens = _alternative_comparison_tokens(str(variant.get("text") or ""))
-            urls, url_domains, cta_urls = _alternative_link_metadata(variant)
+            (
+                urls,
+                url_domains,
+                cta_urls,
+                cta_domains,
+                risky_urls,
+            ) = _alternative_link_metadata(variant)
             token_sequences[variant["path"]] = tokens
             metadata.append({
                 "part_path": variant["path"],
@@ -775,11 +873,17 @@ def _analyze_mime_alternatives(body_variants: list[dict]) -> tuple[dict, set[str
                 "urls": urls,
                 "url_domains": url_domains,
                 "cta_urls": cta_urls,
+                "cta_domains": cta_domains,
+                "risky_urls": risky_urls,
+                "sensitive_actions": _alternative_sensitive_actions(
+                    str(variant.get("text") or "")
+                ),
             })
 
         minimum_similarity = 1.0
         divergent = False
         link_differences: list[dict] = []
+        group_security_reasons: list[str] = []
         for left_index, left in enumerate(metadata):
             for right in metadata[left_index + 1:]:
                 left_tokens = token_sequences[left["part_path"]]
@@ -792,10 +896,28 @@ def _analyze_mime_alternatives(body_variants: list[dict]) -> tuple[dict, set[str
                 link_difference = _alternative_link_difference(left, right)
                 if link_difference:
                     link_differences.append(link_difference)
-                if _alternative_pair_is_divergent(left, right, similarity):
+                security_reasons = _alternative_pair_security_reasons(
+                    left,
+                    right,
+                    similarity,
+                )
+                if security_reasons:
                     divergent = True
                     divergent_paths.update({left["part_path"], right["part_path"]})
+                    group_security_reasons.extend(security_reasons)
 
+        unique_security_reasons = list(dict.fromkeys(group_security_reasons))
+        group_message = (
+            link_differences[0]["message"]
+            if link_differences
+            else (
+                "Security-relevant MIME difference: "
+                + ", ".join(unique_security_reasons)
+                + "."
+                if unique_security_reasons
+                else ""
+            )
+        )
         group_results.append({
             "part_path": group_path,
             "alternative_count": len(metadata),
@@ -803,12 +925,16 @@ def _analyze_mime_alternatives(body_variants: list[dict]) -> tuple[dict, set[str
             "minimum_similarity": round(minimum_similarity, 3),
             "divergent": divergent,
             "link_mismatch": bool(link_differences),
+            "has_differences": bool(link_differences) or minimum_similarity < 1.0,
+            "security_relevant": divergent,
+            "security_reasons": unique_security_reasons,
             "link_differences": link_differences,
-            "message": link_differences[0]["message"] if link_differences else "",
+            "message": group_message,
             "alternatives": metadata,
         })
 
     divergent_count = sum(1 for group in group_results if group["divergent"])
+    difference_count = sum(1 for group in group_results if group["has_differences"])
     if not group_results:
         status = "not_applicable"
         message = "No multipart/alternative body with multiple text variants was found."
@@ -828,11 +954,17 @@ def _analyze_mime_alternatives(body_variants: list[dict]) -> tuple[dict, set[str
             message = f"{link_messages[0]} Every divergent variant is included in AI analysis."
     else:
         status = "consistent"
-        message = "MIME text alternatives contain materially consistent visible content."
+        message = (
+            "MIME text alternatives contain non-security representation differences."
+            if difference_count
+            else "MIME text alternatives contain materially consistent visible content."
+        )
     return ({
         "status": status,
         "groups_analyzed": len(group_results),
         "divergent_group_count": divergent_count,
+        "different_group_count": difference_count,
+        "security_relevant": bool(divergent_count),
         "groups": group_results,
         "message": message,
     }, divergent_paths)
@@ -890,7 +1022,7 @@ def _enrich_alternative_link_findings(
                 enriched_messages.append(message)
         if group.get("link_differences"):
             group["message"] = group["link_differences"][0].get("message") or group.get("message") or ""
-    if enriched_messages:
+    if enriched_messages and analysis.get("status") == "divergent":
         analysis["message"] = f"{enriched_messages[0]} Every divergent variant is included in AI analysis."
 
 

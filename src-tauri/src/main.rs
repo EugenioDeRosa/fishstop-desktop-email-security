@@ -413,6 +413,27 @@ async fn save_reputation_keys(
     .map_err(|error| format!("Secure credential saving was interrupted: {error}"))?
 }
 
+#[tauri::command]
+async fn remove_reputation_key(
+    user_sub: String,
+    provider: String,
+    cache: tauri::State<'_, Arc<Mutex<ReputationCredentialCache>>>,
+) -> Result<(), String> {
+    let cache = Arc::clone(&cache);
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut credentials = load_reputation_credentials(&user_sub, &cache)?;
+        match provider.as_str() {
+            "virustotal" => credentials.virustotal.clear(),
+            "abuseipdb" => credentials.abuseipdb.clear(),
+            "otx" => credentials.otx.clear(),
+            _ => return Err("Unknown reputation provider.".to_string()),
+        }
+        save_secure_material(&user_sub, credentials, &cache)
+    })
+    .await
+    .map_err(|error| format!("Secure credential removal was interrupted: {error}"))?
+}
+
 #[derive(Debug, Deserialize)]
 struct TokenResponse {
     access_token: String,
@@ -2249,6 +2270,7 @@ fn main() {
             analyze_mailbox_message,
             reputation_key_status,
             save_reputation_keys,
+            remove_reputation_key,
             load_analysis_history,
             save_analysis_history,
             clear_analysis_history,

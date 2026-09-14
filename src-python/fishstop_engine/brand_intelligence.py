@@ -17,6 +17,7 @@ from fishstop_engine.domain_utils import registered_domain, registrable_label
 
 WIKIDATA_API = "https://www.wikidata.org/w/api.php"
 ENTITY_DATA_URL = "https://www.wikidata.org/wiki/Special:EntityData/{entity_id}.json"
+CRT_SH_URL = "https://crt.sh/"
 WIKIDATA_HEADERS = {"User-Agent": "FishStopDesktop/0.1 (local email-security analysis)"}
 _EMAIL_RE = re.compile(r"[A-Z0-9._%+\-]+@([A-Z0-9.\-]+\.[A-Z]{2,})", re.IGNORECASE)
 _POSTAL_ADDRESS_CONTEXT_RE = re.compile(
@@ -30,6 +31,8 @@ _TRAVEL_CONTEXT_RE = re.compile(
 _MAX_ALIAS_REDIRECTS = 3
 _REDIRECT_STATUSES = {301, 302, 303, 307, 308}
 _MAX_OFFICIAL_PAGE_BYTES = 512 * 1024
+_MAX_CT_ENTRIES = 5000
+_MAX_CT_CANDIDATES = 256
 _DMARC_PASS_STATUSES = {"pass", "bestguesspass"}
 _LEGAL_ENTITY_SUFFIXES = {
     "ag", "corp", "corporation", "gmbh", "inc", "incorporated", "limited",
@@ -86,6 +89,44 @@ def _domain_names_brand(domain: str, brand: str) -> bool:
         and len(brand_key) >= 4
         and _normalised_brand_key(registrable_label(domain)) == brand_key
     )
+
+
+@lru_cache(maxsize=128)
+def _crt_sh_candidate_domains(brand_label: str) -> frozenset[str]:
+    """Generate untrusted same-label domain candidates from Certificate Transparency.
+
+    Certificate presence proves neither ownership nor current control.  Callers
+    must still require an exact brand label and verify a redirect to an official
+    Wikidata domain before accepting any candidate.
+    """
+    label = _normalised_brand_key(brand_label)
+    if len(label) < 4 or len(label) > 63 or not label.isascii() or not label.isalnum():
+        return frozenset()
+    try:
+        response = requests.get(
+            CRT_SH_URL,
+            params={"q": f"%.{label}.%", "output": "json"},
+            timeout=6,
+            headers=WIKIDATA_HEADERS,
+        )
+        response.raise_for_status()
+        entries = response.json()
+    except (requests.RequestException, ValueError):
+        return frozenset()
+    if not isinstance(entries, list):
+        return frozenset()
+
+    candidates: set[str] = set()
+    for entry in entries[:_MAX_CT_ENTRIES]:
+        if not isinstance(entry, dict):
+            continue
+        for raw_name in str(entry.get("name_value") or "").splitlines():
+            domain = registered_domain(raw_name.strip().lower().lstrip("*."))
+            if domain:
+                candidates.add(domain)
+            if len(candidates) >= _MAX_CT_CANDIDATES:
+                return frozenset(candidates)
+    return frozenset(candidates)
 
 
 def _resolves_only_to_public_addresses(host: str) -> bool:
@@ -423,6 +464,21 @@ def assess_brand_coherence(report: dict, entities: list[dict]) -> list[dict]:
         ):
             if from_domain in linked_domains:
                 associated_domains.add(from_domain)
+            elif official_domains:
+                # CT is only a discovery source.  Limit the lookup to the
+                # authenticated sender's exact brand label and promote that
+                # single domain only after the existing hardened redirect
+                # verifier reaches a Wikidata official domain.
+                ct_candidates = {
+                    candidate
+                    for candidate in _crt_sh_candidate_domains(registrable_label(from_domain))
+                    if _domain_names_brand(candidate, name)
+                }
+                if from_domain in ct_candidates and any(
+                    _redirects_to_official_domain(from_domain, candidate)
+                    for candidate in official_domains
+                ):
+                    associated_domains.add(from_domain)
 
         # A strongly authenticated official sender may legitimately direct a
         # recipient to a different service domain owned by the same

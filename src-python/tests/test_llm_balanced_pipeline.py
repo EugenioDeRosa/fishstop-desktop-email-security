@@ -445,6 +445,66 @@ class BalancedPipelineTests(unittest.TestCase):
         self.assertEqual(result["analysis"]["intent_evidence"], body)
         self.assertEqual(result["analysis"]["final_verdict"], "phishing")
 
+    def test_delivered_security_code_is_informational_not_credential_collection(self):
+        body = (
+            "Epic Games Il tuo codice di sicurezza Ciao, Eugenio! "
+            "Inserisci questo codice a 6 cifre per verificare la tua identità: "
+            "461197 Questo codice è valido per 10 minuti. Se non hai richiesto "
+            "il codice, puoi ignorare questo messaggio."
+        )
+        result, _ = self._analyze(
+            {
+                "from_": "Epic Games <account@accts.epicgames.com>",
+                "subject": "Il tuo codice di sicurezza",
+                "body_for_ai": body,
+                "links": [],
+                "attachments": [],
+                "effective_auth_results": {
+                    "SPF": {"status": "pass"},
+                    "DKIM": {"status": "pass"},
+                    "DMARC": {"status": "pass"},
+                },
+            },
+            _primary(
+                summary="The email asks the recipient to submit an authentication secret.",
+                action="provide_credentials",
+                channel="known_procedure",
+                evidence="Inserisci questo codice a 6 cifre per verificare la tua identità: 461197",
+                credential_type="otp",
+                risk_assessment="phishing",
+                risk_evidence="Inserisci questo codice a 6 cifre",
+            ),
+        )
+
+        analysis = result["analysis"]
+        self.assertEqual("informational", analysis["requested_action"])
+        self.assertFalse(analysis["semantic_extraction"]["asks_for_credentials"])
+        self.assertEqual("benign", analysis["content_risk"])
+        self.assertEqual("legitimate", analysis["final_verdict"])
+        self.assertEqual(
+            "The email provides a one-time authentication code for an independently initiated verification flow.",
+            analysis["content_summary"],
+        )
+
+    def test_request_to_reveal_security_code_remains_phishing(self):
+        body = "Reply with the security code you just received so we can verify your account."
+        result, _ = self._analyze(
+            {
+                "from_": "Support <notice@example.net>",
+                "subject": "Account verification",
+                "body_for_ai": body,
+                "links": [],
+                "attachments": [],
+            },
+            _primary(),
+        )
+
+        analysis = result["analysis"]
+        self.assertEqual("provide_credentials", analysis["requested_action"])
+        self.assertTrue(analysis["semantic_extraction"]["asks_for_credentials"])
+        self.assertEqual("malicious", analysis["content_risk"])
+        self.assertEqual("phishing", analysis["final_verdict"])
+
     def test_related_checks_share_one_adaptive_audit(self):
         evidence = "Verify your account using the button below."
         audit = {
@@ -839,7 +899,8 @@ class BalancedPipelineTests(unittest.TestCase):
     def test_shared_prompt_keeps_critical_policy_rules(self):
         fixed_prompt = llm.SYSTEM_MESSAGE + llm.TASK_INSTRUCTIONS
         for rule in (
-            "credentials for entering/sending",
+            "credentials when the recipient is asked to disclose",
+            "delivers or displays a one-time security",
             "payment_destination_change",
             "Bank details alone are insufficient",
             "A payment demand plus threatened harm is extortion",

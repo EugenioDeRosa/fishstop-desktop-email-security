@@ -11,7 +11,7 @@ Versione attuale: **1.0.0**.
 - Ispezione sicura di HTML e allegati, senza eseguire script, form o contenuti remoti.
 - Analisi locale dell'identità dichiarata e dell'intento del messaggio tramite un modello Qwen gestito automaticamente da FishStop.
 - Riconoscimento delle conversazioni incorporate nelle email inoltrate o nelle risposte: prima dell'analisi è possibile scegliere quali messaggi valutare e quali includere soltanto come contesto.
-- Controlli di reputazione con VirusTotal, AbuseIPDB e AlienVault OTX. Ai servizi esterni vengono inviati esclusivamente indicatori tecnici compatibili con ciascun servizio, mai il file `.eml` o il testo dell'email.
+- Controlli di reputazione con VirusTotal, AbuseIPDB e AlienVault OTX, con Spamhaus ZEN come fallback per gli IP quando AbuseIPDB non è configurato. Ai servizi esterni vengono inviati esclusivamente indicatori tecnici compatibili con ciascun servizio, mai il file `.eml` o il testo dell'email.
 - Importazione di un file `.eml` tramite selezione o trascinamento, fino a 40 MB.
 - Collegamento facoltativo e in sola lettura della casella Gmail o Outlook associata all'accesso. FishStop mostra gli ultimi 10 messaggi e scarica il MIME/EML completo solo quando si avvia l'analisi.
 - Cronologia locale, statistiche per periodo, report tecnico consultabile ed esportazione JSON.

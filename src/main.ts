@@ -66,7 +66,7 @@ type AnalysisReport = {
   mime_review_finding_count?: number;
   mime_notice_finding_count?: number;
   mime_findings?: Array<{ kind?: string; code?: string; category?: "security_ambiguity" | "damaged_content" | "compatibility_notice"; level?: "HIGH" | "MEDIUM" | "LOW" | "INFO"; part_path?: string; header?: string; count?: number; values_diverge?: boolean; domains_diverge?: boolean; distinct_values?: string[]; distinct_domains?: string[]; message?: string }>;
-  mime_alternative_analysis?: { status?: "not_applicable" | "consistent" | "divergent"; groups_analyzed?: number; divergent_group_count?: number; message?: string; groups?: Array<{ part_path?: string; alternative_count?: number; content_types?: string[]; minimum_similarity?: number; divergent?: boolean; link_mismatch?: boolean; message?: string; link_differences?: Array<{ left_part_path?: string; right_part_path?: string; left_only_urls?: string[]; right_only_urls?: string[]; introduced_domains?: string[]; lookalike_domains?: string[]; lookalike_brands?: string[]; link_context_alert_domains?: string[]; message?: string }>; alternatives?: Array<{ part_path?: string; content_type?: string; effective_content_type?: string; character_count?: number; token_count?: number; urls?: string[]; url_domains?: string[]; cta_urls?: string[] }> }> };
+  mime_alternative_analysis?: { status?: "not_applicable" | "consistent" | "divergent"; groups_analyzed?: number; divergent_group_count?: number; different_group_count?: number; security_relevant?: boolean; message?: string; groups?: Array<{ part_path?: string; alternative_count?: number; content_types?: string[]; minimum_similarity?: number; divergent?: boolean; link_mismatch?: boolean; has_differences?: boolean; security_relevant?: boolean; security_reasons?: string[]; message?: string; link_differences?: Array<{ left_part_path?: string; right_part_path?: string; left_only_urls?: string[]; right_only_urls?: string[]; introduced_domains?: string[]; lookalike_domains?: string[]; lookalike_brands?: string[]; link_context_alert_domains?: string[]; message?: string }>; alternatives?: Array<{ part_path?: string; content_type?: string; effective_content_type?: string; character_count?: number; token_count?: number; urls?: string[]; url_domains?: string[]; cta_urls?: string[]; cta_domains?: string[]; risky_urls?: string[]; sensitive_actions?: string[] }> }> };
   return_path_domain_mismatch?: boolean; reply_to_mismatch?: boolean; display_name_spoofing?: string;
   links?: Array<{ url?: string; host?: string; registered_domain?: string; is_ip?: boolean; scheme?: string; source?: string; display_text?: string; display_host?: string; display_registered_domain?: string; display_mismatch?: boolean; resolved_display_destination?: boolean; signature_tracking_redirect?: boolean; html_call_to_action?: boolean; has_userinfo?: boolean; has_credentials?: boolean; nonstandard_port?: boolean; port?: number; nested_redirect_count?: number; redirect_hosts?: string[]; redirect_downloads?: Array<{ filename?: string; extension?: string; dangerous?: boolean }>; unicode_host?: boolean; unicode_path_or_query?: boolean; role?: string; actionable?: boolean; sources?: string[]; download_filename?: string; download_extension?: string; download_source?: string; dangerous_download?: boolean; financial_attachment_mismatch?: boolean; context_risk_level?: string; context_risk_message?: string }>;
   link_reputation?: Record<string, ReputationResult>;
@@ -135,7 +135,8 @@ type SiemReport = {
   content?: Record<string, unknown>;
   analysis?: Record<string, unknown>;
 };
-type ReputationResult = { status?: string; message?: string; detection_ratio?: string; malicious?: number; suspicious?: number; total_engines?: number; threat_label?: string; file_type?: string; file_name?: string; last_analysis?: string | number; permalink?: string; abuseConfidenceScore?: number; totalReports?: number; country?: string; country_code?: string; city?: string; region?: string; isp?: string; org?: string; asn?: string; timezone?: string; lat?: number; lon?: number; is_proxy?: boolean; is_hosting?: boolean; resolved_ip?: string; resolved_domain?: string; used_parent_fallback?: string; url?: string; title?: string; crowdsourced_context_summary?: string };
+type SpamhausResult = { status?: string; message?: string; provider?: "spamhaus"; classification?: "not_listed" | "threat" | "policy" | "unknown"; codes?: string[]; threat_codes?: string[]; policy_codes?: string[]; categories?: string[] };
+type ReputationResult = { status?: string; message?: string; detection_ratio?: string; malicious?: number; suspicious?: number; total_engines?: number; threat_label?: string; file_type?: string; file_name?: string; last_analysis?: string | number; permalink?: string; abuseConfidenceScore?: number; totalReports?: number; spamhaus?: SpamhausResult; country?: string; country_code?: string; city?: string; region?: string; isp?: string; org?: string; asn?: string; timezone?: string; lat?: number; lon?: number; is_proxy?: boolean; is_hosting?: boolean; resolved_ip?: string; resolved_domain?: string; used_parent_fallback?: string; url?: string; title?: string; crowdsourced_context_summary?: string };
 type AnalysisRecord = { id: string; analyzedAt: string; report: AnalysisReport; analysisDurationMs?: number };
 type ActiveAnalysis = { userSub: string; fileName: string; source?: "file" | "inbox"; status: "processing" | "complete" | "error"; analysisId?: string; report?: AnalysisReport; recordId?: string | null; error?: string; completedChecks?: number[]; progressMessage?: string; progressPercent?: number };
 type StatisticsPeriod = "today" | "week" | "month" | "3m" | "6m" | "9m" | "12m" | "all";
@@ -236,6 +237,12 @@ async function refreshReputationSettings(user: AuthUser): Promise<void> {
       const icon = row.querySelector(":scope > i"); if (icon) icon.textContent = ready ? "✓" : "—";
       const detail = row.querySelector(".credential-static-copy small"); if (detail) detail.textContent = ready ? "Stored in the system keychain" : "Key not configured";
       const status = row.querySelector(":scope > b"); if (status) status.textContent = ready ? "Ready" : "Required";
+      const remove = row.querySelector<HTMLButtonElement>(".remove-reputation-key");
+      if (remove) {
+        remove.hidden = !ready;
+        remove.disabled = false;
+        remove.textContent = "Remove";
+      }
       const input = row.querySelector<HTMLInputElement>("input");
       if (input) input.placeholder = ready ? "Enter a new key or leave unchanged" : `Enter the ${provider === "otx" ? "OTX" : provider === "virustotal" ? "VirusTotal" : "AbuseIPDB"} token`;
     });
@@ -663,6 +670,7 @@ function publicReputation(result?: ReputationResult): Record<string, unknown> | 
     threat_label: result.threat_label,
     abuse_confidence_score: result.abuseConfidenceScore,
     total_reports: result.totalReports,
+    spamhaus: result.spamhaus,
     last_analysis: result.last_analysis,
   });
 }
@@ -1357,6 +1365,8 @@ function reputationCheckTone(result?: ReputationResult): CheckTone | undefined {
   if (status === "malicious" || (score !== undefined && score >= 50)) return "fail";
   if (status === "suspicious" || (score !== undefined && score >= 25)) return "warn";
   if (status === "clean" || (status === "ok" && (score === undefined || score < 25))) return "pass";
+  if (result.spamhaus?.status === "listed" && result.spamhaus.classification === "threat") return "warn";
+  if (result.spamhaus?.status === "clean") return "pass";
   return undefined;
 }
 
@@ -1366,9 +1376,17 @@ function abuseIpDbAvailable(result?: ReputationResult): boolean {
 }
 
 function abuseIpDbSummary(result?: ReputationResult): string {
-  if (!abuseIpDbAvailable(result)) return "AbuseIPDB unavailable";
-  const reports = result?.totalReports ?? 0;
-  return `AbuseIPDB · ${result?.abuseConfidenceScore}/100 · ${reports} ${reports === 1 ? "report" : "reports"}`;
+  if (abuseIpDbAvailable(result)) {
+    const reports = result?.totalReports ?? 0;
+    return `AbuseIPDB · ${result?.abuseConfidenceScore}/100 · ${reports} ${reports === 1 ? "report" : "reports"}`;
+  }
+  const spamhaus = result?.spamhaus;
+  const categories = (spamhaus?.categories || []).join(", ");
+  if (spamhaus?.status === "clean") return "Spamhaus ZEN · not listed";
+  if (spamhaus?.status === "listed" && spamhaus.classification === "threat") return `Spamhaus ZEN · threat listing${categories ? ` (${categories})` : ""}`;
+  if (spamhaus?.status === "listed" && spamhaus.classification === "policy") return `Spamhaus ZEN · policy listing${categories ? ` (${categories})` : ""} · not treated as a threat`;
+  if (spamhaus?.status === "listed") return `Spamhaus ZEN · listing with unknown classification${categories ? ` (${categories})` : ""}`;
+  return spamhaus?.message || "IP reputation unavailable";
 }
 
 function normalizedOtxUrl(value?: string): string {
@@ -1713,13 +1731,18 @@ function reputationRows(items: Array<{ title: string; detail: string; result?: R
   return items.length ? items.map(({ title, detail, result, copyValue }) => {
     const status = result?.status || "skipped";
     const isAbuseIpDb = detail.includes("AbuseIPDB");
+    const spamhausThreat = result?.spamhaus?.status === "listed" && result.spamhaus.classification === "threat";
+    const spamhausPolicy = result?.spamhaus?.status === "listed" && result.spamhaus.classification === "policy";
+    const spamhausClean = result?.spamhaus?.status === "clean";
     const score = result?.abuseConfidenceScore;
     const tone = status === "malicious" || (score !== undefined && score >= 50) ? "danger"
-      : status === "suspicious" || (score !== undefined && score >= 25) ? "review"
-        : status === "clean" || (status === "ok" && score !== undefined) ? "safe" : "neutral";
-    const displayStatus = isAbuseIpDb && !abuseIpDbAvailable(result) ? "UNAVAILABLE" : status === "ok" && score === 0 ? "CLEAN" : status === "ok" ? (score !== undefined && score < 25 ? "LOW RISK" : "REVIEW") : status === "skipped" && result?.message?.startsWith("Domain resolution") ? "UNRESOLVED" : status.toUpperCase();
+      : status === "suspicious" || (score !== undefined && score >= 25) || spamhausThreat ? "review"
+        : status === "clean" || (status === "ok" && score !== undefined) || spamhausClean ? "safe" : "neutral";
+    const displayStatus = isAbuseIpDb && !abuseIpDbAvailable(result)
+      ? spamhausThreat ? "REVIEW" : spamhausPolicy ? "POLICY" : spamhausClean ? "CLEAN" : "UNAVAILABLE"
+      : status === "ok" && score === 0 ? "CLEAN" : status === "ok" ? (score !== undefined && score < 25 ? "LOW RISK" : "REVIEW") : status === "skipped" && result?.message?.startsWith("Domain resolution") ? "UNRESOLVED" : status.toUpperCase();
     const metrics = isAbuseIpDb && !abuseIpDbAvailable(result)
-      ? result?.message || "AbuseIPDB check unavailable"
+      ? abuseIpDbSummary(result)
       : result?.detection_ratio || (result?.abuseConfidenceScore !== undefined ? `${score === 0 ? "No abuse reports · " : ""}Abuse confidence ${result.abuseConfidenceScore}/100 · Reports ${result.totalReports || 0}` : result?.message || "No check available");
     const extra = [result?.used_parent_fallback && `Fallback indicator analysed: ${result.used_parent_fallback}`, result?.threat_label && `Threat: ${result.threat_label}`, result?.file_type && `Type: ${result.file_type}`, result?.last_analysis && `Last analysis: ${result.last_analysis}`, result?.crowdsourced_context_summary && `Community context: ${result.crowdsourced_context_summary}`, result?.city || result?.country ? `Location: ${[result?.city, result?.region, result?.country].filter(Boolean).join(", ")}` : "", result?.isp && `ISP: ${result.isp}`].filter(Boolean).join(" · ");
     const external = result?.permalink || (result?.url?.startsWith("https://www.abuseipdb.com/") ? result.url : "");
@@ -1768,7 +1791,7 @@ function addReputationPanel(report: AnalysisReport): void {
   if (!shell || !tabs || shell.querySelector('[data-report-panel="reputation"]')) return;
   const urls = reputationRows(Object.entries(report.link_reputation || {}).map(([url, result]) => ({ title: url, detail: result.title || "VirusTotal URL", result })));
   const files = reputationRows((report.attachments || []).filter((item) => item.hash_sha256).map((item) => ({ title: item.filename || item.hash_sha256 || "Attachment", detail: item.hash_sha256 || "", result: item.file_reputation })));
-  const hops = reputationRows(Object.entries(report.hop_reputation || {}).map(([ip, result]) => ({ title: ip, detail: "AbuseIPDB · IP hop", result: { ...result, ...(report.geolocation_results?.[ip] || {}) } })));
+  const hops = reputationRows(Object.entries(report.hop_reputation || {}).map(([ip, result]) => ({ title: ip, detail: "IP reputation · AbuseIPDB / Spamhaus ZEN", result: { ...result, ...(report.geolocation_results?.[ip] || {}) } })));
   const domains = Object.entries(report.domain_reputation || {}).map(([domain, intelligence]) => {
     const infrastructure = intelligence.infrastructure || {};
     const vt = intelligence.virustotal || {};
@@ -1822,7 +1845,7 @@ function renderEmailGlobe(report: AnalysisReport): void {
     const hopCheckpoints = (report.authentication_checkpoints || []).filter((checkpoint) => checkpoint.association === "exact" && checkpoint.linked_hop_index === routeIndex);
     const reputation = report.hop_reputation?.[ip];
     const strongOtxIpMatch = otxMatchesForIp(report, ip).some(isStrongOtxMatch);
-    const hasReputation = abuseIpDbAvailable(reputation) || strongOtxIpMatch;
+    const hasReputation = abuseIpDbAvailable(reputation) || ["clean", "listed"].includes(reputation?.spamhaus?.status || "") || strongOtxIpMatch;
     const role: GlobeHop["role"] = routeIndex === 0 ? "sender" : routeIndex === 1 ? "injection" : routeIndex === received.length - 1 ? "recipient" : "relay";
     const globeHop: GlobeHop = { lat: Number(geo.lat), lon: Number(geo.lon), ip, fromHost: hop.from_host || "—", byHost: hop.by_host || "—", city: geo.city || "", country: geo.country || "", isp: geo.isp || "", score: abuseIpDbAvailable(reputation) ? reputation?.abuseConfidenceScore : undefined, reports: abuseIpDbAvailable(reputation) ? reputation?.totalReports : undefined, abuseSummary: abuseIpDbSummary(reputation), role, order: routeIndex + 1, checkpoints: hopCheckpoints, hasReputation, strongOtxIpMatch };
     hops.push(globeHop);
@@ -2651,8 +2674,8 @@ function contentFor(section: Section, user: AuthUser): string {
   if (section === "settings") {
     const keys = reputationKeys(user);
     const reputationReady = Boolean(keys.virustotal || keys.abuseipdb || keys.otx);
-    const keyRow = (provider: "virustotal" | "abuseipdb" | "otx", name: string, value: string) => `<li class="${value ? "ready" : "missing"}" data-reputation-provider="${provider}"><i aria-hidden="true">${value ? "✓" : "—"}</i><div class="credential-static-copy"><strong>${name}</strong><small>${value ? `Stored locally · ${escapeHtml(maskedSecret(value))}` : "Key not configured"}</small></div><label class="credential-inline-field"><span>${name}</span><input form="reputation-settings" name="${provider}" type="password" autocomplete="new-password" aria-label="${name}" placeholder="${value ? "Enter a new key or leave unchanged" : `Enter the ${provider === "otx" ? "OTX" : provider === "virustotal" ? "VirusTotal" : "AbuseIPDB"} token`}" /></label><b>${value ? "Ready" : "Required"}</b></li>`;
-    return `<div class="page-heading"><div><p class="page-kicker">LOCAL CONFIGURATION</p><h1>Settings</h1><p>External intelligence and local analysis runtime.</p></div></div><div class="settings-grid"><section class="settings-card settings-reputation"><p class="page-kicker">EXTERNAL INTELLIGENCE</p><h2>Reputation</h2><p class="settings-note">Reputation checks reveal whether links, sender domains, public IP addresses or attachment hashes have been reported as suspicious or malicious. Add your API keys to enable these checks; the email content is never sent.</p><ul class="credential-list">${keyRow("virustotal", "VirusTotal API key", keys.virustotal)}${keyRow("abuseipdb", "AbuseIPDB API key", keys.abuseipdb)}${keyRow("otx", "AlienVault OTX API key", keys.otx)}</ul><button class="soft-action edit-credentials" id="edit-reputation-keys" type="button">${reputationReady ? "Edit keys" : "Configure keys"}</button><form id="reputation-settings" ${reputationReady ? "hidden" : ""}><label>VirusTotal API key<input name="virustotal" type="password" autocomplete="new-password" placeholder="${keys.virustotal ? "Leave empty to keep the current key" : "Enter the VirusTotal token"}" /></label><label>AbuseIPDB API key<input name="abuseipdb" type="password" autocomplete="new-password" placeholder="${keys.abuseipdb ? "Leave empty to keep the current key" : "Enter the AbuseIPDB token"}" /></label><label>AlienVault OTX API key <small>Required</small><input name="otx" type="password" autocomplete="new-password" placeholder="${keys.otx ? "Leave empty to keep the current key" : "Enter the OTX token"}" /></label><div><button class="primary-action" type="submit">Save changes</button>${reputationReady ? `<button class="cancel-credentials" id="cancel-reputation-edit" type="button">Cancel</button>` : ""}<span id="settings-status" aria-live="polite"></span></div></form></section><section class="settings-card ollama-lab"><p class="page-kicker">LOCAL AI ENVIRONMENT</p><h2>Machine and automatic model</h2><p class="settings-note">FishStop uses a local AI model to understand email context and its declared identity without sending sensitive data off the device.</p><div class="machine-profile" id="machine-profile" aria-live="polite"><p>Reading machine information…</p></div></section></div>`;
+    const keyRow = (provider: "virustotal" | "abuseipdb" | "otx", name: string, value: string) => `<li class="${value ? "ready" : "missing"}" data-reputation-provider="${provider}"><i aria-hidden="true">${value ? "✓" : "—"}</i><div class="credential-static-copy"><strong>${name}</strong><small>${value ? `Stored locally · ${escapeHtml(maskedSecret(value))}` : "Key not configured"}</small></div><label class="credential-inline-field"><span>${name}</span><input form="reputation-settings" name="${provider}" type="password" autocomplete="new-password" aria-label="${name}" placeholder="${value ? "Enter a new key or leave unchanged" : `Enter the ${provider === "otx" ? "OTX" : provider === "virustotal" ? "VirusTotal" : "AbuseIPDB"} token`}" /></label><b>${value ? "Ready" : "Required"}</b><button class="remove-reputation-key" type="button" data-remove-reputation-key="${provider}" aria-label="Remove ${name}" ${value ? "" : "hidden"}>Remove</button></li>`;
+    return `<div class="page-heading"><div><p class="page-kicker">LOCAL CONFIGURATION</p><h1>Settings</h1><p>External intelligence and local analysis runtime.</p></div></div><div class="settings-grid"><section class="settings-card settings-reputation"><p class="page-kicker">EXTERNAL INTELLIGENCE</p><h2>Reputation</h2><p class="settings-note">Reputation checks reveal whether links, sender domains, public IP addresses or attachment hashes have been reported as suspicious or malicious. Add your API keys to enable the configured providers; public IPs use Spamhaus ZEN as a keyless fallback when AbuseIPDB is not configured. The email content is never sent.</p><ul class="credential-list">${keyRow("virustotal", "VirusTotal API key", keys.virustotal)}${keyRow("abuseipdb", "AbuseIPDB API key", keys.abuseipdb)}${keyRow("otx", "AlienVault OTX API key", keys.otx)}</ul><button class="soft-action edit-credentials" id="edit-reputation-keys" type="button">${reputationReady ? "Edit keys" : "Configure keys"}</button><form id="reputation-settings" ${reputationReady ? "hidden" : ""}><label>VirusTotal API key<input name="virustotal" type="password" autocomplete="new-password" placeholder="${keys.virustotal ? "Leave empty to keep the current key" : "Enter the VirusTotal token"}" /></label><label>AbuseIPDB API key<input name="abuseipdb" type="password" autocomplete="new-password" placeholder="${keys.abuseipdb ? "Leave empty to keep the current key" : "Enter the AbuseIPDB token"}" /></label><label>AlienVault OTX API key <small>Required</small><input name="otx" type="password" autocomplete="new-password" placeholder="${keys.otx ? "Leave empty to keep the current key" : "Enter the OTX token"}" /></label><div><button class="primary-action" type="submit">Save changes</button>${reputationReady ? `<button class="cancel-credentials" id="cancel-reputation-edit" type="button">Cancel</button>` : ""}<span id="settings-status" aria-live="polite"></span></div></form></section><section class="settings-card ollama-lab"><p class="page-kicker">LOCAL AI ENVIRONMENT</p><h2>Machine and automatic model</h2><p class="settings-note">FishStop uses a local AI model to understand email context and its declared identity without sending sensitive data off the device.</p><div class="machine-profile" id="machine-profile" aria-live="polite"><p>Reading machine information…</p></div></section></div>`;
   }
   const dashboardHighRiskCount = history.filter((record) => assessment(record.report).tone === "danger").length;
   const dashboardReviewCount = history.filter((record) => assessment(record.report).tone === "review").length;
@@ -2839,6 +2862,26 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       await refreshReputationSettings(user);
       void refreshProtectionStatus(user, true);
     }).catch((error) => { console.error("Could not save credentials", error); if (status) status.textContent = "Could not save the settings. Please try again."; });
+  });
+  document.querySelectorAll<HTMLButtonElement>(".remove-reputation-key").forEach((button) => {
+    button.addEventListener("click", () => {
+      const provider = button.dataset.removeReputationKey;
+      if (!provider) return;
+      const status = document.querySelector<HTMLElement>("#settings-status");
+      button.disabled = true;
+      button.textContent = "Removing…";
+      if (status) status.textContent = "Removing the key from the system keychain…";
+      void invoke("remove_reputation_key", { userSub: user.sub, provider }).then(async () => {
+        if (status) status.textContent = "API key removed.";
+        await refreshReputationSettings(user);
+        void refreshProtectionStatus(user, true);
+      }).catch((error) => {
+        console.error("Could not remove credential", error);
+        button.disabled = false;
+        button.textContent = "Remove";
+        if (status) status.textContent = "Could not remove the API key. Please try again.";
+      });
+    });
   });
   const machineProfile = document.querySelector<HTMLElement>("#machine-profile");
   if (machineProfile) machineProfile.innerHTML = `<dl><div><dt>System</dt><dd id="machine-system">Reading…</dd></div><div><dt>Processor</dt><dd id="machine-processor">Reading…</dd></div><div><dt>Memory</dt><dd id="machine-memory">Reading…</dd></div><div><dt>Execution</dt><dd id="machine-execution">Reading…</dd></div><div class="machine-model-row" id="machine-model-row"><dt>Selected model</dt><dd><div class="machine-model-heading"><strong id="machine-model-name">Checking…</strong><span class="model-status-badge" id="model-status-badge" hidden></span></div><small id="managed-model-status">Checking the bundled AI runtime…</small><div class="managed-model-progress" id="managed-model-progress" hidden><div><span id="managed-model-progress-label">Preparing download…</span><strong id="managed-model-progress-value">0%</strong></div><div class="managed-model-progress-track" id="managed-model-progress-track" role="progressbar" aria-label="AI model download progress" aria-valuemin="0" aria-valuemax="100"><i id="managed-model-progress-fill"></i></div></div><div class="machine-model-actions"><button class="primary-action" id="install-managed-qwen" type="button" disabled>Checking…</button><button class="model-remove-action" id="remove-managed-qwen" type="button" hidden>Remove model</button></div></dd></div></dl><div class="execution-guidance" id="execution-guidance"><p id="execution-guidance-message">Reading the local acceleration profile…</p><section class="cpu-optimization" id="cpu-optimization" hidden><div class="cpu-optimization-heading"><span class="cpu-optimization-mark" aria-hidden="true"><i></i><i></i><i></i></span><div><p class="page-kicker">CPU PERFORMANCE</p><h4>Optimize this computer</h4></div></div><p>FishStop will benchmark the local model with a short sample text and save the fastest CPU setting for future analyses. The text and results never leave this device.</p><div class="cpu-optimization-progress" id="cpu-optimization-progress" hidden><span id="cpu-optimization-progress-label">Preparing the local benchmark…</span><div role="progressbar" aria-label="CPU optimization progress" aria-valuemin="0" aria-valuemax="100" id="cpu-optimization-progress-track"><i id="cpu-optimization-progress-fill"></i></div></div><p class="cpu-optimization-result" id="cpu-optimization-result"></p><button class="soft-action" id="optimize-cpu-performance" type="button">Optimize CPU performance</button></section></div>`;

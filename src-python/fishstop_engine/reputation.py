@@ -14,9 +14,32 @@ try:
 except ImportError:  # Static parsing must remain usable without optional lookups.
     requests = None
 
+try:
+    import dns.exception
+    import dns.resolver
+except ImportError:  # Static parsing must remain usable without optional lookups.
+    dns = None
+
 VT = "https://www.virustotal.com/api/v3"
 ABUSE = "https://api.abuseipdb.com/api/v2/check"
 RDAP = "https://rdap.org/domain"
+SPAMHAUS_ZEN = "zen.spamhaus.org"
+_SPAMHAUS_THREAT_CODES = {
+    "127.0.0.2": "SBL",
+    "127.0.0.3": "CSS",
+    "127.0.0.4": "XBL",
+    "127.0.0.5": "XBL",
+    "127.0.0.6": "XBL",
+    "127.0.0.7": "XBL",
+    "127.0.0.8": "SBL",
+    "127.0.0.9": "DROP",
+}
+_SPAMHAUS_POLICY_CODES = {"127.0.0.10": "PBL", "127.0.0.11": "PBL"}
+_SPAMHAUS_ERROR_CODES = {
+    "127.255.255.252": "Invalid Spamhaus query",
+    "127.255.255.254": "Spamhaus blocks the configured public/open DNS resolver",
+    "127.255.255.255": "Spamhaus query limit exceeded",
+}
 
 
 def _vt_status(data: dict, base: dict) -> dict:
@@ -132,6 +155,78 @@ def check_ip(api_key: str, ip: str) -> dict:
         return {**base, "status": "error", "message": f"AbuseIPDB unavailable: {error}"}
 
 
+def check_spamhaus(ip: str) -> dict:
+    """Check a public IP against ZEN while keeping PBL policy hits non-threatening."""
+    raw_ip = str(ip or "").strip().strip("[]")
+    base = {"ip": raw_ip, "status": "skipped", "provider": "spamhaus"}
+    try:
+        address = ipaddress.ip_address(raw_ip)
+        if not address.is_global:
+            return {**base, "message": "Non-public IP: check skipped"}
+    except ValueError:
+        return {**base, "message": "Invalid IP address"}
+    if dns is None:
+        return {**base, "message": "Spamhaus lookup unavailable: install dnspython."}
+
+    if address.version == 4:
+        reversed_ip = ".".join(reversed(address.exploded.split(".")))
+    else:
+        reversed_ip = ".".join(reversed(address.exploded.replace(":", "")))
+    query = f"{reversed_ip}.{SPAMHAUS_ZEN}"
+    try:
+        answers = dns.resolver.resolve(query, "A", lifetime=4)
+        codes = sorted({str(answer) for answer in answers})
+    except dns.resolver.NXDOMAIN:
+        return {**base, "status": "clean", "classification": "not_listed", "codes": []}
+    except dns.exception.DNSException as error:
+        return {**base, "status": "error", "message": f"Spamhaus lookup unavailable: {error}"}
+
+    error_codes = [code for code in codes if code in _SPAMHAUS_ERROR_CODES]
+    if error_codes or any(code.startswith("127.255.255.") for code in codes):
+        return {
+            **base,
+            "status": "error",
+            "codes": codes,
+            "message": "; ".join(
+                _SPAMHAUS_ERROR_CODES.get(code, "Spamhaus returned an error code")
+                for code in codes if code.startswith("127.255.255.")
+            ),
+        }
+    if not codes or any(not code.startswith("127.0.0.") for code in codes):
+        return {**base, "status": "error", "codes": codes, "message": "Invalid Spamhaus DNS response"}
+
+    threat_codes = [code for code in codes if code in _SPAMHAUS_THREAT_CODES]
+    policy_codes = [code for code in codes if code in _SPAMHAUS_POLICY_CODES]
+    categories = sorted({
+        *(_SPAMHAUS_THREAT_CODES[code] for code in threat_codes),
+        *(_SPAMHAUS_POLICY_CODES[code] for code in policy_codes),
+    })
+    return {
+        **base,
+        "status": "listed",
+        "classification": "threat" if threat_codes else "policy" if policy_codes else "unknown",
+        "codes": codes,
+        "threat_codes": threat_codes,
+        "policy_codes": policy_codes,
+        "categories": categories,
+    }
+
+
+def check_hop_ip(api_key: str, ip: str) -> dict:
+    """Use Spamhaus as the keyless fallback without changing AbuseIPDB's schema."""
+    result = check_ip(api_key, ip)
+    if api_key:
+        spamhaus = {
+            "ip": str(ip or "").strip().strip("[]"),
+            "status": "skipped",
+            "provider": "spamhaus",
+            "message": "Spamhaus fallback not needed because AbuseIPDB is configured.",
+        }
+    else:
+        spamhaus = check_spamhaus(ip)
+    return {**result, "spamhaus": spamhaus}
+
+
 def _parent_domain_for_reputation(domain: str) -> str:
     """Return the Public Suffix List registrable parent for reputation lookup."""
     normalized = (domain or "").lower().strip(". ")
@@ -243,7 +338,7 @@ def enrich(report: dict, vt_key: str, abuse_key: str) -> dict:
     # to lower analysis latency without exhausting API quotas or the user's link.
     with ThreadPoolExecutor(max_workers=4, thread_name_prefix="fishstop-reputation") as executor:
         url_jobs = {url: executor.submit(check_url, vt_key, url) for url in urls}
-        hop_jobs = {ip: executor.submit(check_ip, abuse_key, ip) for ip in ips}
+        hop_jobs = {ip: executor.submit(check_hop_ip, abuse_key, ip) for ip in ips}
         geo_jobs = {ip: executor.submit(geolocate, ip) for ip in ips}
         domain_jobs = {
             domain: executor.submit(

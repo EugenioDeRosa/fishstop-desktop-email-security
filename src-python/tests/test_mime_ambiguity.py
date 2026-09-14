@@ -258,6 +258,62 @@ class MimeAmbiguityTests(unittest.TestCase):
             for line in _technical_context_lines(report)
         ))
 
+    def test_same_domain_tracking_urls_are_recorded_without_security_escalation(self):
+        text = (
+            "Read the latest design newsletter and explore the audio reactive demo. "
+            "Contact the author if you have questions."
+        )
+        report = self._analyze(self._multipart_message(
+            f"{text} https://news.example/post?id=42 https://links.example/demo?source=plain",
+            (
+                f"<p>{text}</p>"
+                '<a href="https://news.example/post?id=42&utm_source=email">Read online</a>'
+                '<a class="button" href="https://links.example/demo?source=html">Open demo</a>'
+            ),
+        ))
+
+        analysis = report["mime_alternative_analysis"]
+        group = analysis["groups"][0]
+        self.assertEqual("consistent", analysis["status"])
+        self.assertEqual(1, analysis["different_group_count"])
+        self.assertFalse(analysis["security_relevant"])
+        self.assertIn("non-security representation differences", analysis["message"])
+        self.assertTrue(group["link_mismatch"])
+        self.assertTrue(group["has_differences"])
+        self.assertFalse(group["security_relevant"])
+        self.assertEqual([], group["security_reasons"])
+        self.assertEqual("clean", report["mime_status"])
+        self.assertFalse(any(
+            flag["field"] == "MIME alternatives"
+            for flag in report["flags"]
+        ))
+        self.assertNotIn("[MIME alternative:", report["body_for_ai"])
+
+    def test_sensitive_action_in_one_variant_is_security_relevant_on_same_domain(self):
+        common = (
+            "This is the monthly account bulletin with product news and service updates. "
+            "You can read the complete bulletin online."
+        )
+        report = self._analyze(self._multipart_message(
+            f"{common} https://example.com/news",
+            (
+                f"<p>{common}</p>"
+                "<p>Enter your password in the linked form to verify your account.</p>"
+                '<a class="button" href="https://example.com/verify">Continue</a>'
+            ),
+        ))
+
+        analysis = report["mime_alternative_analysis"]
+        group = analysis["groups"][0]
+        self.assertEqual("divergent", analysis["status"])
+        self.assertTrue(group["security_relevant"])
+        self.assertIn(
+            "a sensitive action appears in only one alternative",
+            group["security_reasons"],
+        )
+        self.assertEqual("review", report["mime_status"])
+        self.assertIn("Enter your password", report["body_for_ai"])
+
     def test_reordered_equivalent_alternatives_are_not_marked_divergent(self):
         report = self._analyze(self._multipart_message(
             "Invoice 42 is available. Contact accounting for questions.",

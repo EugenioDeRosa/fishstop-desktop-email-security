@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod ollama_runtime;
+mod model_download;
 
 use std::{
     collections::{HashMap, HashSet},
@@ -2146,18 +2147,6 @@ async fn ollama_runtime_status(
 }
 
 #[tauri::command]
-async fn set_fine_tuned_model_enabled(
-    enabled: bool,
-    app: tauri::AppHandle,
-) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        ollama_runtime::set_fine_tuned_model_enabled(&app, enabled)
-    })
-    .await
-    .map_err(|error| format!("AI model preference update interrupted: {error}"))?
-}
-
-#[tauri::command]
 async fn install_default_ollama_model(
     app: tauri::AppHandle,
     runtime: tauri::State<'_, Arc<Mutex<OllamaRuntime>>>,
@@ -2299,7 +2288,6 @@ fn main() {
             warm_ollama_model,
             optimize_cpu_performance,
             ollama_runtime_status,
-            set_fine_tuned_model_enabled,
             install_default_ollama_model,
             remove_default_ollama_model,
             local_engine_status,

@@ -1,6 +1,5 @@
 use std::{
     fs,
-    io::{BufRead, BufReader},
     path::{Component, Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{Arc, Mutex, OnceLock},
@@ -17,9 +16,8 @@ use sha2::{Digest, Sha256};
 #[cfg(target_os = "windows")]
 use std::io::{Read, Write};
 
-pub const MANAGED_MODEL: &str = "qwen3:4b-instruct-2507-q4_K_M";
-pub const FINE_TUNED_MODEL: &str = "fishstop-qwen3:4b-finetuned-q4_K_M";
-pub const EXPERIMENTAL_MLX_MODEL: &str = "mlx-community/Qwen3-4B-Instruct-2507-4bit";
+pub const FINE_TUNED_MODEL: &str = "fishstop-qwen3:4b-finetuned-v5-q4_K_M";
+pub const MANAGED_MODEL: &str = FINE_TUNED_MODEL;
 pub const FINE_TUNED_MLX_MODEL: &str = "fishstop/Qwen3-4B-Instruct-2507-FineTuned-4bit";
 pub const CPU_REQUEST_TIMEOUT_SECONDS: u64 = 600;
 pub const CPU_RESPONSE_IDLE_TIMEOUT_SECONDS: u64 = 300;
@@ -100,11 +98,7 @@ pub struct OllamaRuntimeStatus {
     pub fine_tuned_enabled: bool,
     pub fine_tuned_model: String,
     pub fine_tuned_version: Option<String>,
-}
-
-#[derive(Default, Serialize, Deserialize)]
-struct AiModelPreferences {
-    use_fine_tuned_model: bool,
+    pub model_download_available: bool,
 }
 
 #[derive(Deserialize)]
@@ -128,20 +122,6 @@ struct OllamaProcess {
     name: Option<String>,
     model: Option<String>,
     size_vram: Option<u64>,
-}
-
-#[derive(Deserialize)]
-struct PullProgress {
-    status: String,
-    total: Option<u64>,
-    completed: Option<u64>,
-}
-
-#[derive(Deserialize)]
-struct MlxDownloadProgress {
-    status: String,
-    total: u64,
-    completed: u64,
 }
 
 #[derive(Serialize, Clone)]
@@ -290,33 +270,6 @@ fn managed_model_installed(app: &AppHandle, model: &str) -> bool {
     .any(|path| path.is_file())
 }
 
-fn model_preferences_path(app: &AppHandle) -> Result<PathBuf, String> {
-    app.path()
-        .app_data_dir()
-        .map(|directory| directory.join("ai-model-preferences.json"))
-        .map_err(|error| format!("Could not locate FishSTOP data: {error}"))
-}
-
-fn load_model_preferences(app: &AppHandle) -> AiModelPreferences {
-    model_preferences_path(app)
-        .ok()
-        .and_then(|path| fs::read(path).ok())
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default()
-}
-
-fn save_model_preferences(app: &AppHandle, preferences: &AiModelPreferences) -> Result<(), String> {
-    let path = model_preferences_path(app)?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|error| format!("Could not prepare FishSTOP settings: {error}"))?;
-    }
-    let contents = serde_json::to_vec_pretty(preferences)
-        .map_err(|error| format!("Could not encode the AI settings: {error}"))?;
-    fs::write(path, contents)
-        .map_err(|error| format!("Could not save the AI settings: {error}"))
-}
-
 fn ollama_fine_tuned_available(app: &AppHandle) -> bool {
     [MANAGED_ENDPOINT, "http://127.0.0.1:11434"]
         .iter()
@@ -337,23 +290,7 @@ pub fn fine_tuned_model_available(app: &AppHandle) -> bool {
 }
 
 pub fn fine_tuned_model_enabled(app: &AppHandle) -> bool {
-    load_model_preferences(app).use_fine_tuned_model && fine_tuned_model_available(app)
-}
-
-pub fn set_fine_tuned_model_enabled(app: &AppHandle, enabled: bool) -> Result<(), String> {
-    if enabled && !fine_tuned_model_available(app) {
-        return Err("The fine-tuned Qwen model is not available on this device.".to_string());
-    }
-    save_model_preferences(
-        app,
-        &AiModelPreferences {
-            use_fine_tuned_model: enabled,
-        },
-    )
-}
-
-fn disable_fine_tuned_model(app: &AppHandle) {
-    let _ = save_model_preferences(app, &AiModelPreferences::default());
+    fine_tuned_model_available(app)
 }
 
 pub fn recommended_model() -> &'static str {
@@ -362,10 +299,9 @@ pub fn recommended_model() -> &'static str {
 
 pub fn experimental_mlx_enabled() -> bool {
     cfg!(all(target_os = "macos", target_arch = "aarch64"))
-        && (!cfg!(debug_assertions)
-            || std::env::var("FISHSTOP_LLM_PROVIDER")
-                .map(|value| value.eq_ignore_ascii_case("mlx"))
-                .unwrap_or(false))
+        && std::env::var("FISHSTOP_LLM_PROVIDER")
+            .map(|value| value.eq_ignore_ascii_case("mlx"))
+            .unwrap_or(false)
 }
 
 pub fn experimental_mlx_ready() -> bool {
@@ -407,13 +343,6 @@ fn experimental_mlx_runtime_available(_app: &AppHandle) -> bool {
         .is_some_and(|path| path.is_file())
 }
 
-fn experimental_mlx_model_path(app: &AppHandle) -> Result<PathBuf, String> {
-    app.path()
-        .app_data_dir()
-        .map(|directory| directory.join("mlx-models").join("qwen3-4b-instruct-2507-4bit"))
-        .map_err(|error| format!("Could not locate FishSTOP data: {error}"))
-}
-
 fn fine_tuned_mlx_model_path(app: &AppHandle) -> Result<PathBuf, String> {
     app.path()
         .app_data_dir()
@@ -437,12 +366,6 @@ fn valid_mlx_model_directory(directory: &Path) -> bool {
                 let name = name.to_string_lossy();
                 name.starts_with("model") && name.ends_with(".safetensors")
             })
-}
-
-fn experimental_mlx_model_installed(app: &AppHandle) -> bool {
-    experimental_mlx_model_path(app)
-        .ok()
-        .is_some_and(|directory| valid_mlx_model_directory(&directory))
 }
 
 fn fine_tuned_mlx_model_installed(app: &AppHandle) -> bool {
@@ -483,83 +406,12 @@ fn experimental_mlx_command(_app: &AppHandle) -> Result<Command, String> {
     }
 }
 
-fn install_experimental_mlx_model(app: &AppHandle) -> Result<(), String> {
-    let destination = experimental_mlx_model_path(app)?;
-    if experimental_mlx_model_installed(app) {
-        return Ok(());
-    }
-    let partial = destination.with_extension("partial");
-    if partial.exists() {
-        fs::remove_dir_all(&partial)
-            .map_err(|error| format!("Could not clear an incomplete MLX download: {error}"))?;
-    }
-    if let Some(parent) = partial.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|error| format!("Could not prepare MLX model storage: {error}"))?;
-    }
-    let _ = app.emit(
-        "ollama-model-progress",
-        ModelProgress {
-            status: "Downloading the Qwen MLX model…".to_string(),
-            total: None,
-            completed: None,
-        },
-    );
-    let cache = app
-        .path()
-        .app_data_dir()
-        .map_err(|error| format!("Could not locate FishSTOP data: {error}"))?
-        .join("mlx-cache");
-    let mut command = experimental_mlx_command(app)?;
-    command
-        .arg("--download")
-        .arg(&partial)
-        .env("HF_HOME", cache)
-        .env("HF_HUB_DISABLE_TELEMETRY", "1")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
-    let mut child = command
-        .spawn()
-        .map_err(|error| format!("Could not start the MLX model download: {error}"))?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "Could not monitor the MLX model download.".to_string())?;
-    for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-        if let Ok(progress) = serde_json::from_str::<MlxDownloadProgress>(&line) {
-            let _ = app.emit(
-                "ollama-model-progress",
-                ModelProgress {
-                    status: progress.status,
-                    total: Some(progress.total),
-                    completed: Some(progress.completed),
-                },
-            );
-        }
-    }
-    let status = child
-        .wait()
-        .map_err(|error| format!("Could not finish the MLX model download: {error}"))?;
-    if !status.success() {
-        let _ = fs::remove_dir_all(&partial);
-        return Err("The Qwen MLX model download failed.".to_string());
-    }
-    if destination.exists() {
-        fs::remove_dir_all(&destination)
-            .map_err(|error| format!("Could not replace the MLX model: {error}"))?;
-    }
-    fs::rename(&partial, &destination)
-        .map_err(|error| format!("Could not finish the MLX model installation: {error}"))?;
-    Ok(())
-}
-
 fn remove_experimental_mlx_model(
     app: &AppHandle,
     runtime: &Arc<Mutex<OllamaRuntime>>,
 ) -> Result<(), String> {
     stop_experimental_mlx(runtime)?;
-    let destination = experimental_mlx_model_path(app)?;
+    let destination = fine_tuned_mlx_model_path(app)?;
     if destination.exists() {
         fs::remove_dir_all(destination)
             .map_err(|error| format!("Could not remove the MLX model: {error}"))?;
@@ -574,22 +426,17 @@ pub fn start_experimental_mlx(
     if !experimental_mlx_enabled() {
         return Err("The experimental MLX backend requires Apple Silicon.".to_string());
     }
-    if experimental_mlx_ready() {
+    if experimental_mlx_ready() && fine_tuned_model_enabled(app) {
         let fine_tuned = fine_tuned_model_enabled(app);
         return Ok(PreparedModel {
-            name: if fine_tuned {
-                FINE_TUNED_MLX_MODEL
-            } else {
-                EXPERIMENTAL_MLX_MODEL
-            }
-            .to_string(),
+            name: FINE_TUNED_MLX_MODEL.to_string(),
             gpu_accelerated: true,
             fine_tuned,
         });
     }
 
-    if !experimental_mlx_model_installed(app) && !fine_tuned_model_enabled(app) {
-        return Err("Install the Qwen MLX model from Settings before starting an analysis.".to_string());
+    if !fine_tuned_model_enabled(app) {
+        return Err("The FishSTOP fine-tuned MLX model is not installed. Use the default GGUF backend to download FishSTOP AI v5.".to_string());
     }
 
     let cache = app
@@ -600,12 +447,7 @@ pub fn start_experimental_mlx(
     fs::create_dir_all(&cache)
         .map_err(|error| format!("Could not prepare MLX model storage: {error}"))?;
 
-    let requested_fine_tuned = fine_tuned_model_enabled(app);
-    let model = if requested_fine_tuned {
-        fine_tuned_mlx_model_path(app)?
-    } else {
-        experimental_mlx_model_path(app)?
-    };
+    let model = fine_tuned_mlx_model_path(app)?;
     let mut command = experimental_mlx_command(app)?;
 
     {
@@ -642,14 +484,9 @@ pub fn start_experimental_mlx(
     for _ in 0..1800 {
         if experimental_mlx_ready() {
             return Ok(PreparedModel {
-                name: if requested_fine_tuned {
-                    FINE_TUNED_MLX_MODEL
-                } else {
-                    EXPERIMENTAL_MLX_MODEL
-                }
-                .to_string(),
+                name: FINE_TUNED_MLX_MODEL.to_string(),
                 gpu_accelerated: true,
-                fine_tuned: requested_fine_tuned,
+                fine_tuned: true,
             });
         }
         let stopped = runtime
@@ -664,19 +501,11 @@ pub fn start_experimental_mlx(
             .is_some();
         if stopped {
             let _ = stop_experimental_mlx(runtime);
-            if requested_fine_tuned {
-                disable_fine_tuned_model(app);
-                return start_experimental_mlx(app, runtime);
-            }
             return Err("MLX stopped before the model was ready.".to_string());
         }
         thread::sleep(Duration::from_millis(500));
     }
     let _ = stop_experimental_mlx(runtime);
-    if requested_fine_tuned {
-        disable_fine_tuned_model(app);
-        return start_experimental_mlx(app, runtime);
-    }
     Err("MLX did not load the model within 15 minutes.".to_string())
 }
 
@@ -1292,7 +1121,7 @@ fn ensure_server(
     app: &AppHandle,
     runtime: &Arc<Mutex<OllamaRuntime>>,
 ) -> Result<(String, bool), String> {
-    let fine_tuned_requested = load_model_preferences(app).use_fine_tuned_model;
+    let fine_tuned_requested = true;
     let managed_has_fine_tuned = ready(MANAGED_ENDPOINT)
         && models_at(MANAGED_ENDPOINT)
             .is_ok_and(|models| models.iter().any(|model| model == FINE_TUNED_MODEL));
@@ -1380,33 +1209,6 @@ fn ensure_server(
     Err("Local AI runtime unavailable. Install the FishStop AI model from Settings.".to_string())
 }
 
-pub fn prepare_model(
-    app: &AppHandle,
-    runtime: &Arc<Mutex<OllamaRuntime>>,
-) -> Result<PreparedModel, String> {
-    if runtime
-        .lock()
-        .map_err(|_| "The local AI runtime is unavailable.".to_string())?
-        .cpu_optimization_running
-    {
-        return Err(
-            "CPU optimization is still running. Wait for the benchmark to finish before starting an analysis."
-                .to_string(),
-        );
-    }
-    let (endpoint, _) = ensure_server(app, runtime)?;
-    let (_, loaded_on_gpu) = loaded_model(&endpoint);
-    let fine_tuned = fine_tuned_model_enabled(app);
-    Ok(PreparedModel {
-        name: if fine_tuned { FINE_TUNED_MODEL } else { recommended_model() }.to_string(),
-        // Ollama may not report VRAM until the first model load. Apple Silicon
-        // is known to use Metal, while every uncertain case receives the safer
-        // CPU timeout for its first analysis.
-        gpu_accelerated: loaded_on_gpu || cfg!(all(target_os = "macos", target_arch = "aarch64")),
-        fine_tuned,
-    })
-}
-
 fn warm_model(
     app: &AppHandle,
     runtime: &Arc<Mutex<OllamaRuntime>>,
@@ -1466,12 +1268,6 @@ pub fn warm_selected_model(
                 .to_string(),
         );
     }
-    if fine_tuned_model_enabled(app) {
-        match warm_model(app, runtime, FINE_TUNED_MODEL) {
-            Ok(prepared) => return Ok(prepared),
-            Err(_) => disable_fine_tuned_model(app),
-        }
-    }
     warm_model(app, runtime, recommended_model())
 }
 
@@ -1508,17 +1304,13 @@ pub fn status(app: &AppHandle, _runtime: &Arc<Mutex<OllamaRuntime>>) -> OllamaRu
     if experimental_mlx_enabled() {
         let ready = experimental_mlx_ready();
         let available = experimental_mlx_runtime_available(app);
-        let model_installed = experimental_mlx_model_installed(app);
+        let model_installed = fine_tuned_mlx_model_installed(app);
         let fine_tuned_available = fine_tuned_mlx_model_installed(app);
-        let fine_tuned_enabled = fine_tuned_available && load_model_preferences(app).use_fine_tuned_model;
-        let selected_model = if fine_tuned_enabled {
-            FINE_TUNED_MLX_MODEL
-        } else {
-            EXPERIMENTAL_MLX_MODEL
-        };
+        let fine_tuned_enabled = fine_tuned_available;
+        let selected_model = FINE_TUNED_MLX_MODEL;
         return OllamaRuntimeStatus {
             runtime_ready: available,
-            model_ready: available && (model_installed || fine_tuned_enabled),
+            model_ready: available && fine_tuned_enabled,
             managed: true,
             model: selected_model.to_string(),
             platform,
@@ -1531,7 +1323,7 @@ pub fn status(app: &AppHandle, _runtime: &Arc<Mutex<OllamaRuntime>>) -> OllamaRu
             } else if available && model_installed {
                 "MLX will load on demand and release memory after analysis.".to_string()
             } else if available {
-                "Install the Qwen MLX model from Settings before analysis.".to_string()
+                "Install a fine-tuned MLX export or use the default FishSTOP AI backend.".to_string()
             } else {
                 "The native MLX runtime is unavailable.".to_string()
             },
@@ -1542,7 +1334,8 @@ pub fn status(app: &AppHandle, _runtime: &Arc<Mutex<OllamaRuntime>>) -> OllamaRu
             fine_tuned_available,
             fine_tuned_enabled,
             fine_tuned_model: FINE_TUNED_MLX_MODEL.to_string(),
-            fine_tuned_version: None,
+            fine_tuned_version: Some(crate::model_download::version()),
+            model_download_available: !experimental_mlx_enabled() && crate::model_download::download_available(),
         };
     }
     // Each endpoint is queried once, in parallel. Tags prove runtime availability
@@ -1557,7 +1350,7 @@ pub fn status(app: &AppHandle, _runtime: &Arc<Mutex<OllamaRuntime>>) -> OllamaRu
         .is_some_and(|tags| tags.iter().any(|tag| tag.name == FINE_TUNED_MODEL));
     let fine_tuned_available = has_fine_tuned(&managed_tags) || has_fine_tuned(&external_tags)
         || (bundled_binary(app).is_some() && managed_model_installed(app, FINE_TUNED_MODEL));
-    let fine_tuned_enabled = fine_tuned_available && load_model_preferences(app).use_fine_tuned_model;
+    let fine_tuned_enabled = fine_tuned_available;
     let model = if fine_tuned_enabled { FINE_TUNED_MODEL } else { recommended_model() }.to_string();
     let external_fine_tuned = fine_tuned_enabled && has_fine_tuned(&external_tags);
     let has_selected = |tags: &Option<Vec<OllamaTag>>| tags.as_ref()
@@ -1594,7 +1387,8 @@ pub fn status(app: &AppHandle, _runtime: &Arc<Mutex<OllamaRuntime>>) -> OllamaRu
                 fine_tuned_available,
                 fine_tuned_enabled,
                 fine_tuned_model: FINE_TUNED_MODEL.to_string(),
-                fine_tuned_version: fine_tuned_version_from_tags(tags),
+                fine_tuned_version: fine_tuned_version_from_tags(tags).or_else(|| Some(crate::model_download::version())),
+                model_download_available: crate::model_download::download_available(),
             };
         }
     }
@@ -1617,7 +1411,8 @@ pub fn status(app: &AppHandle, _runtime: &Arc<Mutex<OllamaRuntime>>) -> OllamaRu
         fine_tuned_available,
         fine_tuned_enabled,
         fine_tuned_model: FINE_TUNED_MODEL.to_string(),
-        fine_tuned_version: None,
+        fine_tuned_version: Some(crate::model_download::version()),
+            model_download_available: !experimental_mlx_enabled() && crate::model_download::download_available(),
     }
 }
 pub fn install_default_model(
@@ -1625,32 +1420,22 @@ pub fn install_default_model(
     runtime: &Arc<Mutex<OllamaRuntime>>,
 ) -> Result<(), String> {
     if experimental_mlx_enabled() {
-        return install_experimental_mlx_model(app);
+        return Err("The v5 download uses the default GGUF backend. A native fine-tuned MLX export must be installed separately.".into());
+    }
+    if !crate::model_download::download_available() {
+        return Err("The FishSTOP v5 download is not configured in this build.".into());
     }
     let (endpoint, _) = ensure_server(app, runtime)?;
-    let response = client()?
-        .post(format!("{endpoint}/api/pull"))
-        .json(&serde_json::json!({"name": recommended_model(), "stream": true}))
-        .send()
-        .and_then(|response| response.error_for_status())
-        .map_err(|error| format!("Could not download the AI model: {error}"))?;
-    for line in BufReader::new(response).lines() {
-        let line = line.map_err(|error| format!("AI model download interrupted: {error}"))?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        let progress: PullProgress = serde_json::from_str(&line)
-            .map_err(|error| format!("Invalid AI model download progress: {error}"))?;
-        app.emit(
-            "ollama-model-progress",
-            ModelProgress {
-                status: progress.status,
-                total: progress.total,
-                completed: progress.completed,
-            },
-        )
-        .map_err(|error| format!("Could not update AI model download progress: {error}"))?;
+    if !models_at(&endpoint)?.iter().any(|model| model == FINE_TUNED_MODEL) {
+        crate::model_download::install(app, &endpoint)?;
     }
+    app.emit("ollama-model-progress", ModelProgress {
+        status: "Checking FishSTOP AI v5 on this device…".into(), total: None, completed: None,
+    }).map_err(|error| error.to_string())?;
+    warm_selected_model(app, runtime)?;
+    app.emit("ollama-model-progress", ModelProgress {
+        status: "FishSTOP AI v5 is ready.".into(), total: None, completed: None,
+    }).map_err(|error| error.to_string())?;
     Ok(())
 }
 

@@ -136,11 +136,11 @@ Dopo l'installazione sono necessari due passaggi per attivare tutte le funzioni 
 1. Avvia FishStop ed effettua l'accesso con Google o Microsoft.
 2. Apri **Settings** dal menu laterale.
 3. Nella scheda **Machine and automatic model**, individua la sezione **FishStop AI → Local AI model**.
-4. Seleziona **Install AI model**.
+4. Seleziona **Install FishSTOP AI v5**.
 5. Mantieni FishStop aperto fino al completamento del download. La schermata mostra lo stato e l'avanzamento dell'installazione.
 6. Quando compare il messaggio che il modello locale è installato e pronto, l'analisi semantica è attiva.
 
-Non è necessario installare Python, Ollama o MLX: il runtime adatto alla piattaforma è già incluso nell'app. Su Apple Silicon viene usato MLX; sui Mac Intel e su Windows viene usato il runtime Ollama incluso. Il modello può essere rimosso in qualsiasi momento con **Remove model**.
+Non è necessario installare Python, Ollama o MLX: il runtime adatto alla piattaforma è già incluso nell'app. Su Windows e macOS, anche Apple Silicon, il runtime Ollama incluso usa lo stesso modello FishSTOP AI v5. MLX resta un backend sperimentale esplicitamente attivabile con un export fine-tuned dedicato. Il modello può essere rimosso in qualsiasi momento con **Remove model**.
 
 ### 2. Inserire le chiavi API di reputazione
 
@@ -172,16 +172,35 @@ FishStop seleziona automaticamente il backend e il modello adatti alla piattafor
 
 Il modello viene caricato soltanto durante l'analisi e viene rilasciato al termine, anche in caso di errore o annullamento. Se l'AI non conclude entro il tempo previsto, i controlli statici restano comunque disponibili.
 
-### Modello Qwen fine-tuned opzionale
+### FishSTOP AI v5: modello di riferimento
 
-FishStop rileva automaticamente anche una variante fine-tuned già esportata e quantizzata. Quando è presente, in **Settings → Machine and automatic model** compare la spunta **Use fine-tuned Qwen**. La preferenza viene salvata sul dispositivo; disattivandola viene usato il Qwen standard. Se il modello personalizzato non si avvia, FishStop disabilita la preferenza e riprova automaticamente con il modello standard.
+L'app usa il nostro Qwen3 4B fine-tuned v5 come modello AI predefinito e non
+mostra più il toggle per passare a Qwen standard. Il tag selezionato è
+`fishstop-qwen3:4b-finetuned-v5-q4_K_M`; le vecchie preferenze non lo disattivano.
+Se il modello non si avvia, l'app segnala l'errore invece di sostituirlo
+silenziosamente con un altro modello.
 
-Il modello personalizzato deve rispettare una di queste convenzioni:
+In **Settings → Machine and automatic model**, **Install FishSTOP AI v5**
+scarica il modello completo quantizzato Q4_K_M (circa 2,5 GB), verifica dimensione
+e SHA-256, lo importa nel runtime locale e ne verifica il caricamento.
+Il download usa streaming, mostra l'avanzamento e riutilizza un file già
+verificato dopo un errore di importazione. Un download interrotto va riavviato.
+Dopo l'installazione il modello funziona offline. **Remove** rimuove il tag v5
+selezionato senza eliminare altri modelli dell'utente.
 
-- **Ollama (Windows, macOS Intel e sviluppo non-MLX):** modello registrato con il nome `fishstop-qwen3:4b-finetuned-q4_K_M`;
-- **MLX (Apple Silicon):** modello MLX completo e unificato nella cartella dati dell'app, sotto `mlx-models/qwen3-4b-instruct-2507-finetuned-4bit`, contenente almeno `config.json` e uno o più file `model*.safetensors`.
+Il catalogo di distribuzione è `src-tauri/model-catalog.json` e contiene già il
+link pubblico al [modello v5 su Hugging Face](https://huggingface.co/fishstop/fishstop-AI),
+fissato alla revisione `b12b12895c0e812eeace23452195d2aacf13de80`.
+Dimensione e checksum attesi sono registrati nel catalogo e verificati dall'app.
 
-L'artefatto distribuito deve essere il modello risultante dall'unione dell'adapter con Qwen, non il solo adapter LoRA. In questo modo lo stesso controllo nelle impostazioni rimane affidabile con entrambi i backend locali.
+Il file distribuito è `fishstop-qwen3-v5-Q4_K_M.gguf`, il modello completo.
+Non aggiungere pesi o token di accesso al Git del codice. Gli installer includono
+il runtime; i pesi vengono scaricati solo su richiesta dell'utente.
+
+Per lo sviluppo MLX esplicito su Apple Silicon, è necessario un modello
+fine-tuned MLX completo sotto
+`mlx-models/qwen3-4b-instruct-2507-finetuned-4bit` nella cartella dati dell'app.
+L'app non installa più il modello MLX standard come alternativa al v5.
 
 ## Privacy e dati locali
 

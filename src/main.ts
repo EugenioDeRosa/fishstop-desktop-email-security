@@ -174,7 +174,7 @@ type OllamaRuntimeStatus = {
   accelerator: string; selection_reason: string; loaded_model?: string; loaded_on_gpu: boolean;
   cpu_only: boolean; cpu_optimization?: CpuOptimizationSummary;
   fine_tuned_available: boolean; fine_tuned_enabled: boolean; fine_tuned_model: string;
-  fine_tuned_version?: string | null;
+  fine_tuned_version?: string | null; model_download_available: boolean;
 };
 type OllamaModelProgress = { status: string; total?: number; completed?: number };
 type ManagedModelOperation = { phase: "installing" | "removing"; status: string; total?: number; completed?: number };
@@ -3018,7 +3018,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
     }
   });
   const machineProfile = document.querySelector<HTMLElement>("#machine-profile");
-  if (machineProfile) machineProfile.innerHTML = `<dl><div><dt>System</dt><dd id="machine-system">Reading…</dd></div><div><dt>Processor</dt><dd id="machine-processor">Reading…</dd></div><div><dt>Memory</dt><dd id="machine-memory">Reading…</dd></div><div><dt>Execution</dt><dd id="machine-execution">Reading…</dd></div><div class="machine-model-row" id="machine-model-row"><dt>Selected model</dt><dd><div class="machine-model-heading"><strong id="machine-model-name">Checking…</strong><span class="model-status-badge" id="model-status-badge" hidden></span><button class="model-remove-action" id="remove-managed-qwen" type="button" aria-haspopup="dialog" aria-controls="remove-model-dialog" hidden>Remove</button></div><small id="managed-model-status">Checking the bundled AI runtime…</small><div class="managed-model-progress" id="managed-model-progress" hidden><div><span id="managed-model-progress-label">Preparing download…</span><strong id="managed-model-progress-value">0%</strong></div><div class="managed-model-progress-track" id="managed-model-progress-track" role="progressbar" aria-label="AI model download progress" aria-valuemin="0" aria-valuemax="100"><i id="managed-model-progress-fill"></i></div></div><div class="machine-model-actions"><button class="primary-action" id="install-managed-qwen" type="button" disabled>Checking…</button></div></dd></div></dl><label class="fine-tuned-model-toggle" id="fine-tuned-model-toggle" hidden><span><strong>Use fine-tuned Qwen</strong><small>Use the FishStop adapter for email-security analysis. If it cannot be loaded, the standard model is used automatically.</small></span><input id="fine-tuned-model-enabled" type="checkbox" role="switch" /><i aria-hidden="true"></i></label><p class="fine-tuned-model-status" id="fine-tuned-model-status" aria-live="polite"></p><div class="execution-guidance" id="execution-guidance"><p id="execution-guidance-message">Reading the local acceleration profile…</p><section class="cpu-optimization" id="cpu-optimization" hidden><div class="cpu-optimization-heading"><span class="cpu-optimization-mark" aria-hidden="true"><i></i><i></i><i></i></span><div><p class="page-kicker">CPU PERFORMANCE</p><h4>Optimize this computer</h4></div></div><p>FishStop will benchmark the local model with a short sample text and save the fastest CPU setting for future analyses. The text and results never leave this device.</p><div class="cpu-optimization-progress" id="cpu-optimization-progress" hidden><span id="cpu-optimization-progress-label">Preparing the local benchmark…</span><div role="progressbar" aria-label="CPU optimization progress" aria-valuemin="0" aria-valuemax="100" id="cpu-optimization-progress-track"><i id="cpu-optimization-progress-fill"></i></div></div><p class="cpu-optimization-result" id="cpu-optimization-result"></p><button class="soft-action" id="optimize-cpu-performance" type="button">Optimize CPU performance</button></section></div>`;
+  if (machineProfile) machineProfile.innerHTML = `<dl><div><dt>System</dt><dd id="machine-system">Reading…</dd></div><div><dt>Processor</dt><dd id="machine-processor">Reading…</dd></div><div><dt>Memory</dt><dd id="machine-memory">Reading…</dd></div><div><dt>Execution</dt><dd id="machine-execution">Reading…</dd></div><div class="machine-model-row" id="machine-model-row"><dt>Selected model</dt><dd><div class="machine-model-heading"><strong id="machine-model-name">Checking…</strong><span class="model-status-badge" id="model-status-badge" hidden></span><button class="model-remove-action" id="remove-managed-qwen" type="button" aria-haspopup="dialog" aria-controls="remove-model-dialog" hidden>Remove</button></div><small id="managed-model-status">Checking the bundled AI runtime…</small><div class="managed-model-progress" id="managed-model-progress" hidden><div><span id="managed-model-progress-label">Preparing download…</span><strong id="managed-model-progress-value">0%</strong></div><div class="managed-model-progress-track" id="managed-model-progress-track" role="progressbar" aria-label="AI model download progress" aria-valuemin="0" aria-valuemax="100"><i id="managed-model-progress-fill"></i></div></div><div class="machine-model-actions"><button class="primary-action" id="install-managed-qwen" type="button" disabled>Checking…</button></div></dd></div></dl><p class="fine-tuned-model-status" id="fine-tuned-model-status" aria-live="polite"></p><div class="execution-guidance" id="execution-guidance"><p id="execution-guidance-message">Reading the local acceleration profile…</p><section class="cpu-optimization" id="cpu-optimization" hidden><div class="cpu-optimization-heading"><span class="cpu-optimization-mark" aria-hidden="true"><i></i><i></i><i></i></span><div><p class="page-kicker">CPU PERFORMANCE</p><h4>Optimize this computer</h4></div></div><p>FishStop will benchmark the local model with a short sample text and save the fastest CPU setting for future analyses. The text and results never leave this device.</p><div class="cpu-optimization-progress" id="cpu-optimization-progress" hidden><span id="cpu-optimization-progress-label">Preparing the local benchmark…</span><div role="progressbar" aria-label="CPU optimization progress" aria-valuemin="0" aria-valuemax="100" id="cpu-optimization-progress-track"><i id="cpu-optimization-progress-fill"></i></div></div><p class="cpu-optimization-result" id="cpu-optimization-result"></p><button class="soft-action" id="optimize-cpu-performance" type="button">Optimize CPU performance</button></section></div>`;
   const machineSystem = document.querySelector<HTMLElement>("#machine-system");
   const machineProcessor = document.querySelector<HTMLElement>("#machine-processor");
   const machineMemory = document.querySelector<HTMLElement>("#machine-memory");
@@ -3031,8 +3031,6 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
   if (managedModelStatus) managedModelStatus.textContent = "Checking the local AI component…";
   const installManagedQwen = document.querySelector<HTMLButtonElement>("#install-managed-qwen");
   const removeManagedQwen = document.querySelector<HTMLButtonElement>("#remove-managed-qwen");
-  const fineTunedModelToggle = document.querySelector<HTMLLabelElement>("#fine-tuned-model-toggle");
-  const fineTunedModelEnabled = document.querySelector<HTMLInputElement>("#fine-tuned-model-enabled");
   const fineTunedModelStatus = document.querySelector<HTMLElement>("#fine-tuned-model-status");
   const managedProgress = document.querySelector<HTMLElement>("#managed-model-progress");
   const managedProgressLabel = document.querySelector<HTMLElement>("#managed-model-progress-label");
@@ -3102,20 +3100,13 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       if (machineMemory) machineMemory.textContent = memory;
       if (machineExecution) machineExecution.textContent = runtime.accelerator + (runtime.loaded_on_gpu ? " · accelerated" : "");
       if (renderManagedOperation()) return;
-      if (fineTunedModelToggle && fineTunedModelEnabled && fineTunedModelStatus) {
-        fineTunedModelToggle.hidden = !runtime.fine_tuned_available;
-        fineTunedModelEnabled.checked = runtime.fine_tuned_enabled;
-        fineTunedModelEnabled.disabled = false;
-        fineTunedModelStatus.textContent = runtime.fine_tuned_available
-          ? runtime.fine_tuned_enabled
-            ? `Fine-tune version: ${runtime.fine_tuned_version ?? "unknown"} · Active.`
-            : `Fine-tune version: ${runtime.fine_tuned_version ?? "unknown"} · Available. Standard Qwen is active.`
-          : "";
+      if (fineTunedModelStatus) {
+        fineTunedModelStatus.textContent = runtime.model_ready
+          ? `FishSTOP AI ${runtime.fine_tuned_version ?? "v5"} · Active on this device.`
+          : "FishSTOP AI v5 · Local email-security model · Download: 2.5 GB.";
       }
       if (machineModelName) {
-        machineModelName.textContent = runtime.fine_tuned_enabled
-          ? usesMlx ? "Qwen3 4B fine-tuned · MLX 4-bit" : "FishStop Qwen3 4B fine-tuned"
-          : usesMlx ? "Qwen3 4B · MLX 4-bit" : runtime.model;
+        machineModelName.textContent = "FishSTOP AI v5" + (usesMlx ? " · MLX" : "");
         machineModelName.title = runtime.model;
       }
       if (executionGuidanceMessage) {
@@ -3127,7 +3118,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
             : "FishStop runs local AI analysis entirely on this computer's CPU.";
       }
       machineModelRow?.classList.remove("is-busy", "is-missing", "is-ready");
-      installManagedQwen.textContent = "Install AI model";
+      installManagedQwen.textContent = "Install FishSTOP AI v5";
       removeManagedQwen.textContent = "Remove";
       removeManagedQwen.disabled = false;
       if (runtime.model_ready) {
@@ -3147,13 +3138,14 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
           modelStatusBadge.className = "model-status-badge missing";
           modelStatusBadge.textContent = "Not installed";
         }
-        managedModelStatus.textContent = runtime.runtime_ready
-          ? usesMlx
-            ? "Install the Qwen model optimized for MLX to enable AI-assisted analysis."
-            : "Install the local Qwen model to enable AI-assisted analysis."
-          : usesMlx ? "The local MLX component is unavailable." : "The local AI component is unavailable.";
+        managedModelStatus.textContent = !runtime.model_download_available
+          ? usesMlx ? "The fine-tuned MLX download is not available. Use the default FishSTOP AI backend."
+            : "FishSTOP AI v5 is not yet available for download in this version."
+          : runtime.runtime_ready
+            ? "Install FishSTOP AI v5 to enable private, local email analysis."
+            : "The local AI component is unavailable.";
         installManagedQwen.hidden = false;
-        installManagedQwen.disabled = !runtime.runtime_ready;
+        installManagedQwen.disabled = !runtime.runtime_ready || !runtime.model_download_available;
         removeManagedQwen.hidden = true;
       }
       if (cpuOptimization && optimizeCpuPerformance && cpuOptimizationResult && cpuOptimizationProgress) {
@@ -3205,25 +3197,8 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       }
       if (installManagedQwen) { installManagedQwen.hidden = false; installManagedQwen.disabled = true; installManagedQwen.textContent = "Install unavailable"; }
       if (removeManagedQwen) removeManagedQwen.hidden = true;
-      if (fineTunedModelToggle) fineTunedModelToggle.hidden = true;
     }
   };
-  fineTunedModelEnabled?.addEventListener("change", async () => {
-    if (!fineTunedModelStatus || !fineTunedModelEnabled) return;
-    const enabled = fineTunedModelEnabled.checked;
-    fineTunedModelEnabled.disabled = true;
-    fineTunedModelStatus.textContent = "Saving AI model preference…";
-    try {
-      await invoke("set_fine_tuned_model_enabled", { enabled });
-      await refreshManagedModel(true);
-      void refreshProtectionStatus(user, true);
-    } catch (error) {
-      console.error("Could not update the fine-tuned model preference", error);
-      fineTunedModelEnabled.checked = !enabled;
-      fineTunedModelEnabled.disabled = false;
-      fineTunedModelStatus.textContent = "The preference could not be saved. Standard Qwen remains available.";
-    }
-  });
   installManagedQwen?.addEventListener("click", async () => {
     if (!managedModelStatus || !installManagedQwen || managedModelOperation) return;
     managedModelOperation = { phase: "installing", status: "Preparing AI model download…" };
@@ -3243,7 +3218,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       managedModelOperation = null;
       await refreshManagedModel(true);
     }
-    if (installationError) { console.error("AI model installation failed", installationError); managedModelStatus.textContent = "The AI model could not be installed. Please try again."; }
+    if (installationError) { console.error("AI model installation failed", installationError); managedModelStatus.hidden = false; managedModelStatus.textContent = typeof installationError === "string" ? installationError : "FishSTOP AI v5 could not be installed. Please try again."; }
     else void refreshProtectionStatus(user, true);
   });
   if (machineProfile) root.insertAdjacentHTML("beforeend", `<dialog class="confirm-dialog remove-model-dialog" id="remove-model-dialog" aria-labelledby="remove-model-title" aria-describedby="remove-model-description"><div class="dialog-mark">!</div><p class="page-kicker">LOCAL AI MODEL</p><h2 id="remove-model-title">Remove AI model?</h2><p id="remove-model-description">Removing this model will <strong>significantly reduce phishing-detection performance</strong>. FishStop will lose AI-assisted understanding of message content and intent. Only technical checks will remain until you reinstall the model.</p><div class="dialog-actions"><button id="cancel-remove-model" type="button" autofocus>Keep model</button><button id="confirm-remove-model" type="button">Remove</button></div></dialog>`);

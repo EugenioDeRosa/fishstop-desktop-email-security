@@ -1,0 +1,8 @@
+{
+  "version": "v5",
+  "model": "fishstop-qwen3:4b-finetuned-v5-q4_K_M",
+  "file": "fishstop-qwen3-v5-Q4_K_M.gguf",
+  "size_bytes": 2497280448,
+  "sha256": "bbb685dd1c8694d865b831c6874e54ba6a7b0ed0652f13ed55432ea8253a059e",
+  "download_url": "https://huggingface.co/fishstop/fishstop-AI/resolve/b12b12895c0e812eeace23452195d2aacf13de80/fishstop-qwen3-v5-Q4_K_M.gguf"
+}

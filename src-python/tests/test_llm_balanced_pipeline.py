@@ -761,6 +761,38 @@ class BalancedPipelineTests(unittest.TestCase):
         self.assertEqual("uncertain", analysis["identity_risk"])
         self.assertEqual("review", analysis["final_verdict"])
 
+    def test_document_link_request_is_recovered_without_button_markup(self):
+        for label in ("View payment receipt here", "Download your invoice", "Visualizza la ricevuta qui"):
+            with self.subTest(label=label):
+                analysis = llm.apply_email_risk_policy({
+                    "from_": "Michael Autwell <office@circlea.info>",
+                    "subject": "Payment on October 5th 2026",
+                    "body_for_ai": "Good morning. The past-due amount was processed for payment on October 2nd, 2026. Please find the payment receipt dated October 5th, 2026, attached for your records.\n" + label + "\nPlease let me know if you have any questions.",
+                    "links": [{"url": "https://myportfolio.com/receipt", "host": "myportfolio.com",
+                               "scheme": "https", "display_text": label,
+                               "financial_attachment_mismatch": True}],
+                    "attachments": [],
+                }, _primary())
+                self.assertEqual("visit_link", analysis["requested_action"])
+                self.assertEqual("supplied_link", analysis["action_channel"])
+                self.assertEqual(label, analysis["intent_evidence"])
+                self.assertEqual("review", analysis["final_verdict"])
+                self.assertNotIn("without a clearly identified risky request", analysis["content_summary"])
+
+    def test_document_vocabulary_and_footer_links_do_not_create_action(self):
+        for role in ("signature", "unsubscribe", "navigation"):
+            with self.subTest(role=role):
+                analysis = llm.apply_email_risk_policy({
+                    "subject": "Payment processed",
+                    "body_for_ai": "The payment receipt is attached for your records.",
+                    "links": [{"url": "https://example.com/", "host": "example.com",
+                               "display_text": "View payment receipt here", "role": role}],
+                    "attachments": [],
+                }, _primary())
+                self.assertEqual("informational", analysis["requested_action"])
+        self.assertEqual("", llm._explicit_link_action_evidence({
+            "body_for_ai": "View payment receipt here", "links": []}))
+
     def test_forwarded_link_request_is_recovered_when_model_calls_it_informational(self):
         evidence = "Per visualizzarlo, clicca sul link qui sotto."
         analysis = llm.apply_email_risk_policy(

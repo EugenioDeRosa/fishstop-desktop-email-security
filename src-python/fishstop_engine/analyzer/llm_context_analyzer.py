@@ -1110,6 +1110,14 @@ _LINK_ACTION_PATTERN = re.compile(
     r".{0,96}\b(?:link|collegamento|url|button|pulsante|qui\s+sopra|above|below)\b",
     re.IGNORECASE,
 )
+# Ordinary document links need not be styled as buttons or say "click link".
+_RESOURCE_LINK_ACTION_PATTERN = re.compile(
+    r"^(?:please\s+|per\s+favore\s+)?(?:view|open|read|review|download|access|"
+    r"visualizza|apri|leggi|consulta|scarica|esamina)\b"
+    r".{0,96}\b(?:receipt|invoice|document|file|report|statement|pdf|"
+    r"ricevuta|fattura|documento|rendiconto|estratto)\b",
+    re.IGNORECASE,
+)
 _ACCOUNT_ACTION_CONTEXT_PATTERN = re.compile(
     r"\b(?:account|sign[ -]?in|login|password|credential|security|verify|verification|"
     r"withdrawal|suspend(?:ed|ed)?|disabled|access|account|sicurezza|accesso|"
@@ -1244,6 +1252,13 @@ def _explicit_link_action_evidence(soc: dict) -> str:
     for segment in _evidence_segments(soc):
         if _LINK_ACTION_PATTERN.search(segment):
             return _clip_exact_span(segment, 180)
+        if (_RESOURCE_LINK_ACTION_PATTERN.search(segment)
+                and re.search(r"\b(?:here|qui)\s*[.!]?\s*$", segment, re.IGNORECASE)
+                and _actionable_links(soc)):
+            return _clip_exact_span(segment, 180)
+    for label in _actionable_link_texts(soc):
+        if _RESOURCE_LINK_ACTION_PATTERN.search(label):
+            return _clip_exact_span(label, 180)
     return ""
 
 

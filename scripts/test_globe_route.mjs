@@ -4,7 +4,15 @@ import ts from 'typescript';
 
 const source = readFileSync(new URL('../src/globe-route.ts', import.meta.url), 'utf8');
 const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText;
-const { focusZoom, maintainedRouteZoom, smoothZoom, travelDuration, routeFrame, nearestMarker } = await import(`data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`);
+const { focusZoom, maintainedRouteZoom, smoothZoom, travelDuration, routeFrame, nearestMarker, globeInViewport } = await import(`data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`);
+
+const globeRect = top => ({ top, bottom: top + 360, left: 40, right: 640, width: 600, height: 360 });
+assert.equal(globeInViewport(globeRect(850), 1200, 800), false, 'The tour waits while the globe is below the viewport');
+assert.equal(globeInViewport(globeRect(790), 1200, 800), false, 'A tiny visible sliver does not start the tour');
+assert.equal(globeInViewport(globeRect(600), 1200, 800), true, 'The tour starts when enough of the globe is visible');
+assert.equal(globeInViewport(globeRect(-400), 1200, 800), false, 'The tour pauses after scrolling past the globe');
+assert.equal(globeInViewport(globeRect(0), 320, 200), true, 'Visibility accommodates viewports smaller than the globe');
+assert.equal(globeInViewport({ ...globeRect(0), width: 0 }, 1200, 800), false, 'Hidden layouts do not start the tour');
 
 assert.equal(focusZoom([], 160), 1, 'Single hop keeps the overview');
 assert.equal(focusZoom([0], 160), 4, 'Coincident hops have bounded zoom');

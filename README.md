@@ -8,13 +8,14 @@ Versione attuale: **1.0.0**.
 
 - Analisi di header, catena di recapito, SPF, DKIM, DMARC, `Reply-To` e `Return-Path`.
 - Rilevamento di domini lookalike, URL mascherati, redirect, download rischiosi e incongruenze tra la richiesta e la risorsa proposta.
-- Ispezione sicura di HTML e allegati, senza eseguire script, form o contenuti remoti.
+- Ispezione sicura di HTML e allegati, senza eseguire script, form o contenuti remoti. La preview conserva colori, sfondi, tabelle e formattazione di base; immagini e link restano inattivi.
 - Analisi locale dell'identità dichiarata e dell'intento del messaggio tramite un modello Qwen gestito automaticamente da FishStop.
 - Riconoscimento delle conversazioni incorporate nelle email inoltrate o nelle risposte: prima dell'analisi è possibile scegliere quali messaggi valutare e quali includere soltanto come contesto.
 - Controlli di reputazione con VirusTotal, AbuseIPDB e AlienVault OTX, con Spamhaus ZEN come fallback per gli IP quando AbuseIPDB non è configurato. Ai servizi esterni vengono inviati esclusivamente indicatori tecnici compatibili con ciascun servizio, mai il file `.eml` o il testo dell'email.
 - Importazione di un file `.eml` tramite selezione o trascinamento, fino a 40 MB.
 - Collegamento facoltativo e in sola lettura della casella Gmail o Outlook associata all'accesso. FishStop mostra gli ultimi 10 messaggi e scarica il MIME/EML completo solo quando si avvia l'analisi.
 - Cronologia locale, statistiche per periodo, report tecnico consultabile ed esportazione JSON.
+- Brand intelligence automatica con evidenze deterministiche di impersonificazione, lookalike del brand dichiarato, verifica DKIM indipendente e controlli DNS/RDAP. Il registro dei partner è facoltativo e riservato agli strumenti avanzati. Configurazione e limiti in [Verifica dell'identità](docs/brand-identity-verification.md).
 
 ## Report JSON per SIEM
 

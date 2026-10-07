@@ -39,13 +39,13 @@ TRACKER_HTML = """
 
 
 class HtmlPreviewSecurityTests(unittest.TestCase):
-    def test_sanitizer_removes_css_and_every_remote_resource(self):
+    def test_sanitizer_removes_active_css_and_every_remote_resource(self):
         preview = sanitize_html_for_preview(TRACKER_HTML)
         normalized = preview.lower()
 
         self.assertNotIn("tracker.example", normalized)
         self.assertNotRegex(normalized, r"<\s*(?:script|style|iframe|object|embed|form|input|meta|link|svg)\b")
-        self.assertNotRegex(normalized, r"\s(?:style|href|src|srcset|xlink:href|action|poster|background|ping)\s*=")
+        self.assertNotRegex(normalized, r"\s(?:href|src|srcset|xlink:href|action|poster|background|ping)\s*=")
         self.assertIn("visible message", normalized)
         self.assertIn("remote image blocked: company logo", normalized)
 
@@ -63,7 +63,7 @@ class HtmlPreviewSecurityTests(unittest.TestCase):
         self.assertIn("Content-Security-Policy", document)
         self.assertIn("default-src 'none'", document)
         self.assertIn("img-src 'none'", document)
-        self.assertIn("style-src 'none'", document)
+        self.assertIn("style-src 'unsafe-inline'", document)
         self.assertIn("script-src 'none'", document)
         self.assertIn('name="referrer" content="no-referrer"', document)
         self.assertNotRegex(document.lower(), r"<\s*(?:script|style)\b")
@@ -86,7 +86,55 @@ class HtmlPreviewSecurityTests(unittest.TestCase):
 
         preview = report["body_html_safe"]
         self.assertNotIn("tracker.example", preview.lower())
-        self.assertFalse(re.search(r"\sstyle\s*=", preview, flags=re.IGNORECASE))
+        self.assertNotIn("url(", preview.lower())
+
+    def test_preserves_email_canvas_table_typography_and_safe_local_rules(self):
+        preview = sanitize_html_for_preview('''<html><head><style>
+            @import "https://tracker.example/styles";
+            .card { background-color:#123456; color:white; padding:24px; margin:0 auto; }
+            td { font-size:16px; text-align:center; }
+            #heading { font-weight:bold; }
+            .card { background-image:url(https://tracker.example/pixel); }
+        </style></head><body bgcolor="#eee"><table width="100%" cellpadding="12"><tr>
+        <td class="card" id="heading" style="font-size:18px">Invoice details</td>
+        </tr></table></body></html>''')
+        for expected in ['background-color:#eee', 'background-color:#123456', 'color:white',
+                         'padding:24px', 'margin:0 auto', 'font-size:18px', 'font-weight:bold', 'text-align:center',
+                         'width="100%"', 'cellpadding="12"', 'Invoice details']:
+            self.assertIn(expected, preview)
+        self.assertNotIn('font-size:16px', preview)
+        self.assertNotIn('tracker.example', preview)
+        self.assertNotIn('<style', preview)
+
+    def test_blocks_css_exfiltration_obfuscation_and_unbounded_layout(self):
+        preview = sanitize_html_for_preview(r'''<div style="color:red;
+          background:u\72l(https://tracker.example/pixel);
+          width:expression(alert(1)); font-family:url(https://tracker.example/font);
+          --secret:url(https://tracker.example/variable); position:fixed; z-index:999;
+          behavior:url(https://tracker.example/code); height:999999px;
+          animation:spin 1s infinite; color:var(--secret); padding:12px">Visible</div>
+          <link href="https://tracker.example/css"><img src="data:image/svg+xml,evil">
+          <iframe srcdoc="evil"></iframe><script>alert(1)</script>''')
+        self.assertIn('color:red', preview)
+        self.assertIn('padding:12px', preview)
+        for forbidden in ['tracker.example', 'url(', 'expression', 'position:', 'z-index:',
+                          'behavior', '999999', 'animation:', 'var(', 'data:image', 'srcdoc=']:
+            self.assertNotIn(forbidden, preview)
+
+    def test_stylesheet_important_specificity_and_inline_cascade(self):
+        preview = sanitize_html_for_preview('''<style>.card { color:red !important }
+          #content { background-color:blue } div { background-color:green }</style>
+          <div id="content" class="card" style="color:white;background-color:black">Text</div>''')
+        self.assertIn('color:red', preview)
+        self.assertIn('background-color:black', preview)
+        self.assertNotIn('color:white', preview)
+
+    def test_missing_css_parser_drops_styling_without_losing_text(self):
+        with patch('fishstop_engine.analyzer.preview_css.tinycss2', None):
+            preview = sanitize_html_for_preview('<div style="color:red;background:url(evil)">Visible</div>')
+        self.assertIn('Visible', preview)
+        self.assertNotIn('style=', preview)
+        self.assertNotIn('evil', preview)
 
     def test_tauri_main_webview_has_a_restrictive_csp(self):
         project_root = Path(__file__).resolve().parents[2]

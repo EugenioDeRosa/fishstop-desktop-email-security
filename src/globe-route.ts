@@ -2,6 +2,15 @@
 export const HOP_CLEARANCE_PX = 48;
 export const MAX_ROUTE_ZOOM = 4;
 
+/** Wait until a meaningful portion of the globe can actually be seen. */
+export function globeInViewport(rect: { top: number; bottom: number; left: number; right: number; width: number; height: number }, viewportWidth: number, viewportHeight: number): boolean {
+  if (rect.width <= 0 || rect.height <= 0 || viewportWidth <= 0 || viewportHeight <= 0) return false;
+  const visibleWidth = Math.max(0, Math.min(rect.right, viewportWidth) - Math.max(rect.left, 0));
+  const visibleHeight = Math.max(0, Math.min(rect.bottom, viewportHeight) - Math.max(rect.top, 0));
+  return visibleWidth >= Math.min(rect.width, viewportWidth) * .35
+    && visibleHeight >= Math.min(rect.height, viewportHeight) * .35;
+}
+
 export function focusZoom(distances: number[], radius: number): number {
   const nearby = distances.filter((angle) => angle < Math.PI / 2);
   if (!nearby.length || radius <= 0) return 1;

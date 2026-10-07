@@ -32,7 +32,7 @@ const EXPERIMENTAL_MLX_ENDPOINT: &str = "http://127.0.0.1:11436";
 const WINDOWS_CUDA_URL: &str = "https://github.com/EugenioDeRosa/fishstop-desktop-email-security/releases/latest/download/fishstop-ollama-cuda.zip";
 #[cfg(target_os = "windows")]
 const WINDOWS_CUDA_CHECKSUM_URL: &str = "https://github.com/EugenioDeRosa/fishstop-desktop-email-security/releases/latest/download/fishstop-ollama-cuda.zip.sha256";
-const MODEL_KEEP_ALIVE: &str = "15m";
+pub const MODEL_KEEP_ALIVE: &str = "2m";
 #[cfg(target_os = "windows")]
 const OLLAMA_RUNTIME_VERSION: &str = "v0.32.15";
 const ACCELERATED_MODEL_WARMUP_TIMEOUT: Duration = Duration::from_secs(90);
@@ -1209,6 +1209,22 @@ fn ensure_server(
     Err("Local AI runtime unavailable. Install the FishStop AI model from Settings.".to_string())
 }
 
+fn model_context_tokens(accelerator: &str, is_macos: bool) -> u64 {
+    if is_macos || accelerator.starts_with("GPU available:") { 4096 } else { CPU_CONTEXT_TOKENS }
+}
+
+pub fn model_load_options(app: &AppHandle) -> serde_json::Value {
+    let mut options = serde_json::json!({
+        "num_ctx": model_context_tokens(&machine_profile().4, cfg!(target_os = "macos")),
+    });
+    if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        if let Some(threads) = recommended_cpu_threads(app) {
+            options["num_thread"] = serde_json::json!(threads);
+        }
+    }
+    options
+}
+
 fn warm_model(
     app: &AppHandle,
     runtime: &Arc<Mutex<OllamaRuntime>>,
@@ -1221,15 +1237,9 @@ fn warm_model(
     } else {
         ACCELERATED_MODEL_WARMUP_TIMEOUT
     };
-    let mut options = serde_json::json!({
-        "num_predict": 1,
-        "num_ctx": if cpu_profile { CPU_CONTEXT_TOKENS } else { 4096 },
-    });
-    if cpu_profile {
-        if let Some(cpu_threads) = recommended_cpu_threads(app) {
-            options["num_thread"] = serde_json::json!(cpu_threads);
-        }
-    }
+    // Share runner allocation options with the actual inference request. Changing
+    // context size or thread count after warm-up can make Ollama reload the runner.
+    let options = model_load_options(app);
     Client::builder()
         .connect_timeout(Duration::from_secs(5))
         .timeout(warmup_timeout)
@@ -1459,6 +1469,14 @@ pub fn remove_default_model(
 #[cfg(test)]
 mod tests {
     use super::{fine_tuned_version_from_tags, machine_profile, OllamaTag, FINE_TUNED_MODEL};
+    #[test]
+    fn warmup_and_inference_use_the_same_hardware_context() {
+        use super::model_context_tokens;
+        assert_eq!(model_context_tokens("CPU", false), super::CPU_CONTEXT_TOKENS);
+        assert_eq!(model_context_tokens("GPU available: NVIDIA RTX", false), 4096);
+        assert_eq!(model_context_tokens("Apple Metal", true), 4096);
+        assert_eq!(model_context_tokens("CPU", true), 4096);
+    }
     #[test]
     fn adapter_version_follows_the_active_digest() {
         let tags = vec![

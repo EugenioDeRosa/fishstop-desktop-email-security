@@ -1,0 +1,160 @@
+{
+  "version": 1,
+  "verified_at": 1791331200,
+  "expires_at": 1799107200,
+  "records": [
+    {
+      "brand": "Google",
+      "aliases": [
+        "Google Workspace",
+        "Gmail"
+      ],
+      "reference": "https://about.google/; https://support.google.com/a/answer/174125",
+      "relations": [
+        {
+          "domain": "google.com",
+          "role": "official",
+          "scopes": [
+            "sender",
+            "reply",
+            "visit_link",
+            "verify_account",
+            "change_account_settings"
+          ]
+        },
+        {
+          "domain": "about.google",
+          "role": "official",
+          "scopes": [
+            "visit_link"
+          ]
+        }
+      ]
+    },
+    {
+      "brand": "Microsoft",
+      "aliases": [
+        "Microsoft 365"
+      ],
+      "reference": "https://www.microsoft.com/; https://support.microsoft.com/account-billing/how-to-determine-if-an-email-from-the-microsoft-account-team-is-genuine-494f1221-860b-4f42-9b11-554a2e9dcb49",
+      "relations": [
+        {
+          "domain": "microsoft.com",
+          "role": "official",
+          "scopes": [
+            "sender",
+            "reply",
+            "visit_link",
+            "verify_account",
+            "change_account_settings"
+          ]
+        }
+      ]
+    },
+    {
+      "brand": "American Express",
+      "aliases": [
+        "Amex"
+      ],
+      "reference": "https://www.americanexpress.com/; https://www.wikidata.org/wiki/Q194360",
+      "relations": [
+        {
+          "domain": "americanexpress.com",
+          "role": "official",
+          "scopes": [
+            "sender",
+            "reply",
+            "visit_link",
+            "verify_account",
+            "change_account_settings"
+          ]
+        }
+      ]
+    },
+    {
+      "brand": "PayPal",
+      "aliases": [],
+      "reference": "https://www.paypal.com/us/cshelp/article/how-do-i-spot-a-fake-fraudulent-or-phishing-paypal-email-or-website-help164",
+      "relations": [
+        {
+          "domain": "paypal.com",
+          "role": "official",
+          "scopes": [
+            "sender",
+            "reply",
+            "visit_link",
+            "verify_account",
+            "change_account_settings"
+          ]
+        }
+      ]
+    },
+    {
+      "brand": "Apple",
+      "aliases": [
+        "iCloud"
+      ],
+      "reference": "https://support.apple.com/en-ie/102568; https://www.icloud.com/",
+      "relations": [
+        {
+          "domain": "apple.com",
+          "role": "official",
+          "scopes": [
+            "sender",
+            "reply",
+            "visit_link",
+            "verify_account",
+            "change_account_settings"
+          ]
+        },
+        {
+          "domain": "icloud.com",
+          "role": "official",
+          "scopes": [
+            "sender",
+            "reply",
+            "visit_link",
+            "verify_account",
+            "change_account_settings"
+          ]
+        }
+      ]
+    },
+    {
+      "brand": "Netflix",
+      "aliases": [],
+      "reference": "https://help.netflix.com/en/node/65674",
+      "relations": [
+        {
+          "domain": "netflix.com",
+          "role": "official",
+          "scopes": [
+            "sender",
+            "reply",
+            "visit_link",
+            "verify_account",
+            "change_account_settings"
+          ]
+        }
+      ]
+    },
+    {
+      "brand": "Trust Wallet",
+      "aliases": [],
+      "reference": "https://trustwallet.com/terms-of-service",
+      "relations": [
+        {
+          "domain": "trustwallet.com",
+          "role": "official",
+          "scopes": [
+            "sender",
+            "reply",
+            "visit_link",
+            "verify_account",
+            "change_account_settings"
+          ]
+        }
+      ]
+    }
+  ]
+}

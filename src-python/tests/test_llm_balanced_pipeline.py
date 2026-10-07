@@ -557,7 +557,9 @@ class BalancedPipelineTests(unittest.TestCase):
         self.assertEqual(calls, ["primary:1", "audit:intent+security_lure"])
         self.assertEqual(result["performance"]["llm_calls"], 2)
         self.assertEqual(result["analysis"]["requested_action"], "verify_account")
-        self.assertEqual(result["analysis"]["final_verdict"], "phishing")
+        self.assertEqual(result["analysis"]["final_verdict"], "review")
+        self.assertEqual(result["identity_analysis"]["impersonation"]["score"], 0,
+                         "An AI allegation without independent company-domain evidence cannot convict impersonation")
 
     def test_reward_redemption_lure_is_not_reduced_to_a_generic_link(self):
         body = (

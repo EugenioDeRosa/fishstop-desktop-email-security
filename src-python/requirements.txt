@@ -5,3 +5,7 @@ requests>=2.31.0
 dnspython>=2.6.0
 publicsuffix2>=2.20191221
 oletools==0.60.2
+
+dkimpy>=1.1.8
+cryptography>=43.0.0
+tinycss2>=1.4.0,<2

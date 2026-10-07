@@ -10,7 +10,7 @@ use std::{
     net::TcpListener,
     path::PathBuf,
     process::{Command, Output, Stdio},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
     thread,
     time::{Duration, Instant},
 };
@@ -1497,6 +1497,9 @@ fn configure_engine_output(mut command: Command) -> Command {
     command
         .env("PYTHONUTF8", "1")
         .env("PYTHONIOENCODING", "utf-8");
+    if let Some(directory) = IDENTITY_DATA_DIR.get() {
+        command.env("FISHSTOP_IDENTITY_DATA_DIR", directory);
+    }
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
@@ -1505,6 +1508,8 @@ fn configure_engine_output(mut command: Command) -> Command {
     }
     command
 }
+
+static IDENTITY_DATA_DIR: OnceLock<PathBuf> = OnceLock::new();
 
 fn engine_command() -> Result<Command, String> {
     // A packaged engine can sit next to the debug executable after a local
@@ -1960,7 +1965,14 @@ fn analyze_ai_with_engine(
                 "OLLAMA_REQUEST_TIMEOUT",
                 ollama_request_timeout_seconds(gpu_accelerated).to_string(),
             )
-            .env("OLLAMA_KEEP_ALIVE", "-1m");
+            .env("OLLAMA_KEEP_ALIVE", ollama_runtime::MODEL_KEEP_ALIVE);
+        let load_options = ollama_runtime::model_load_options(&app);
+        if let Some(context) = load_options["num_ctx"].as_u64() {
+            engine.env("OLLAMA_NUM_CTX", context.to_string());
+        }
+        if let Some(threads) = load_options["num_thread"].as_u64() {
+            engine.env("OLLAMA_NUM_THREAD", threads.to_string());
+        }
         if use_mlx {
             engine
                 .env("FISHSTOP_LLM_PROVIDER", "mlx")
@@ -1968,10 +1980,6 @@ fn analyze_ai_with_engine(
         }
         if !gpu_accelerated {
             engine
-                .env(
-                    "OLLAMA_NUM_CTX",
-                    ollama_runtime::CPU_CONTEXT_TOKENS.to_string(),
-                )
                 .env(
                     "OLLAMA_NUM_PREDICT",
                     ollama_runtime::CPU_OUTPUT_TOKENS.to_string(),
@@ -1984,9 +1992,6 @@ fn analyze_ai_with_engine(
                     "OLLAMA_AUDIT_NUM_PREDICT",
                     ollama_runtime::CPU_AUDIT_TOKENS.to_string(),
                 );
-            if let Some(cpu_threads) = ollama_runtime::recommended_cpu_threads(&app) {
-                engine.env("OLLAMA_NUM_THREAD", cpu_threads.to_string());
-            }
         }
         run_command_with_timeout_cancellable(
             engine,
@@ -2045,12 +2050,14 @@ async fn analyze_phi4(
                     message: "Loading the local AI model…".to_string(),
                 },
             );
+            let preparation_started = Instant::now();
             let prepared = if use_mlx {
                 ollama_runtime::start_experimental_mlx(&app, &runtime)?
             } else {
                 ollama_runtime::warm_selected_model(&app, &runtime)?
             };
             loaded_model = Some(prepared.name.clone());
+            let preparation_ms = preparation_started.elapsed().as_millis() as u64;
             if cancellation.is_cancelled(&analysis_id) {
                 return Err("Analysis cancelled.".to_string());
             }
@@ -2068,7 +2075,8 @@ async fn analyze_phi4(
                     .to_string(),
                 },
             );
-            analyze_ai_with_engine(
+            let engine_started = Instant::now();
+            let mut value = analyze_ai_with_engine(
                 "phi4",
                 report,
                 &prepared.name,
@@ -2077,13 +2085,22 @@ async fn analyze_phi4(
                 analysis_id,
                 cancellation,
                 app.clone(),
-            )
+            )?;
+            if let Some(metrics) = value.get_mut("performance").and_then(serde_json::Value::as_object_mut) {
+                metrics.insert("runtime_prepare_ms".into(), preparation_ms.into());
+                metrics.insert("engine_process_ms".into(), (engine_started.elapsed().as_millis() as u64).into());
+            }
+            Ok(value)
         })();
         if use_mlx {
             let _ = ollama_runtime::stop_experimental_mlx(&runtime);
-        } else if let Some(model) = loaded_model.as_deref() {
-            let _ = ollama_runtime::unload_model(model);
+        } else {
+            if let Some(model) = loaded_model.as_deref() {
+                let _ = ollama_runtime::unload_model(model);
+            }
         }
+        // Release the runner after every analysis, including success, errors,
+        // and cancellation. keep_alive only permits reuse between its AI passes.
         result
     })
     .await
@@ -2133,6 +2150,28 @@ async fn optimize_cpu_performance(
     })
     .await
     .map_err(|error| format!("CPU optimization was interrupted: {error}"))?
+}
+
+#[tauri::command]
+async fn identity_registry(request: serde_json::Value) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let bytes = serde_json::to_vec(&request).map_err(|error| error.to_string())?;
+        if bytes.len() > 2 * 1024 * 1024 { return Err("Identity directory input is too large.".to_string()); }
+        let path = std::env::temp_dir().join(format!("fishstop-identity-{}.json", random_url_safe(16)));
+        fs::write(&path, bytes).map_err(|error| error.to_string())?;
+        let result = (|| {
+            let mut command = engine_command()?;
+            command.arg("identity-registry").arg(&path);
+            let output = run_command_with_timeout_cancellable(command, Duration::from_secs(15), "the identity registry", None, None)?;
+            let value: serde_json::Value = serde_json::from_slice(&output.stdout).map_err(|error| error.to_string())?;
+            if !output.status.success() || value.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+                return Err(value.get("error").and_then(|v| v.as_str()).unwrap_or("Could not update the identity registry.").to_string());
+            }
+            Ok(value.get("result").cloned().unwrap_or(serde_json::Value::Null))
+        })();
+        let _ = fs::remove_file(path);
+        result
+    }).await.map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -2245,6 +2284,7 @@ fn main() {
             // On-demand exact lookups no longer use it, so remove the obsolete
             // cache once instead of leaving hundreds of megabytes on disk.
             if let Ok(app_data) = _app.path().app_data_dir() {
+                let _ = IDENTITY_DATA_DIR.set(app_data.join("identity"));
                 let legacy_otx_cache = app_data.join("otx");
                 if legacy_otx_cache.is_dir() {
                     fs::remove_dir_all(&legacy_otx_cache).map_err(|error| {
@@ -2288,6 +2328,7 @@ fn main() {
             warm_ollama_model,
             optimize_cpu_performance,
             ollama_runtime_status,
+            identity_registry,
             install_default_ollama_model,
             remove_default_ollama_model,
             local_engine_status,

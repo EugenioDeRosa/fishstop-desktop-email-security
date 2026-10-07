@@ -20,6 +20,7 @@ except ImportError:
 
 
 _ACTIVE_PREVIEW_TAGS = {
+    "style", "head", "template", "audio", "video", "source", "track", "picture",
     "script",
     "iframe",
     "object",
@@ -156,6 +157,20 @@ def _text_has_zero_inline_font_size(text_node) -> bool:
 
 def _sanitize_preview_soup(html: str, block_images: bool = True) -> str:
     soup = _parse_html_for_preview(html)
+    from .preview_css import inline_presentation, safe_value
+    inline_presentation(soup)
+    # Preserve the email's own canvas colours instead of losing <body> styling
+    # when extracting its contents for the sandboxed preview.
+    canvas_parts = []
+    for canvas in [soup.html, soup.body]:
+        if canvas:
+            if safe_value("background-color", str(canvas.get("bgcolor") or "")):
+                canvas_parts.append("background-color:" + str(canvas["bgcolor"]))
+            if safe_value("color", str(canvas.get("text") or "")):
+                canvas_parts.append("color:" + str(canvas["text"]))
+            if canvas.get("style"):
+                canvas_parts.append(str(canvas["style"]))
+    canvas_style = ";".join(canvas_parts)
 
     for tag in soup(list(_ACTIVE_PREVIEW_TAGS)):
         tag.decompose()
@@ -173,9 +188,20 @@ def _sanitize_preview_soup(html: str, block_images: bool = True) -> str:
             placeholder.string = label
             placeholder["data-fishstop-placeholder"] = "remote-image"
             placeholder["title"] = "Remote image was not loaded to prevent tracking or external content."
+            placeholder["style"] = "display:inline-block;padding:8px;margin:4px;border:1px dashed #9ca3af;color:#4b5563;background-color:#f3f4f6;font-size:12px"
             img.replace_with(placeholder)
 
+    allowed_tags = {"html", "body", "div", "span", "p", "br", "hr", "a", "font", "center",
+                    "table", "thead", "tbody", "tfoot", "tr", "td", "th", "caption", "col", "colgroup",
+                    "h1", "h2", "h3", "h4", "h5", "h6", "b", "strong", "i", "em", "u", "s", "strike",
+                    "small", "big", "sub", "sup", "blockquote", "pre", "code", "ul", "ol", "li", "dl", "dt", "dd",
+                    "section", "article", "header", "footer", "main", "address"}
     for tag in soup.find_all(True):
+        if tag.name is None:
+            continue
+        if tag.name not in allowed_tags:
+            tag.decompose()
+            continue
         for attr in list(tag.attrs):
             attr_l = attr.lower()
             if attr_l.startswith("on") or attr_l in _URL_PREVIEW_ATTRS:
@@ -183,17 +209,23 @@ def _sanitize_preview_soup(html: str, block_images: bool = True) -> str:
                 if tag.name == "a":
                     tag.attrs["title"] = "Link removed for safety: use the Links found in the email section."
                 continue
-            # Remove all sender-controlled CSS, not only obvious url(...) and
-            # @import constructs. CSS has many resource-loading and historical
-            # execution primitives, and visual fidelity is less important than
-            # a preview that is guaranteed not to contact the sender.
-            if attr_l == "style":
-                del tag.attrs[attr]
+            # Only generated presentation CSS survives; the original declarations
+            # were parsed and validated before any markup reaches the webview.
+            if attr_l in {"style", "title"}:
                 continue
-            if attr_l in {"target", "ping"}:
-                del tag.attrs[attr]
+            value = str(tag.attrs[attr])
+            if attr_l in {"bgcolor", "color"} and safe_value("color", value):
+                continue
+            if attr_l in {"width", "height", "cellpadding", "cellspacing", "colspan", "rowspan", "border", "size"} and re.fullmatch(r"\d{1,4}%?", value) and int(value.rstrip("%")) <= (100 if value.endswith("%") else 2000):
+                continue
+            if attr_l in {"align", "valign"} and value.lower() in {"left", "center", "right", "top", "middle", "bottom", "justify"}:
+                continue
+            if attr_l == "data-fishstop-placeholder":
+                continue
+            del tag.attrs[attr]
 
-    return soup.body.decode_contents() if soup.body else str(soup)
+    body = soup.body.decode_contents() if soup.body else str(soup)
+    return f'<div style="{html_lib.escape(canvas_style, quote=True)}">{body}</div>' if canvas_style else body
 
 
 def strip_html(html: str) -> str:
@@ -335,23 +367,23 @@ def sanitize_html_for_preview(html: str) -> str:
 
 def sanitize_html_for_js_preview(html: str) -> str:
     """
-    Return a complete, inert preview document protected by a deny-all CSP.
+    Return an inert preview document with presentation-only inline CSS.
 
     The historical function name is kept for compatibility. No JavaScript is
     included or allowed: the sanitized markup is static and cannot load remote
-    images, CSS, fonts, media, frames, or network connections.
+    images, external CSS, web fonts, media, frames, or network connections.
     """
     body = sanitize_html_for_preview(html)
     csp = (
         "default-src 'none'; "
         "base-uri 'none'; form-action 'none'; frame-src 'none'; child-src 'none'; "
         "connect-src 'none'; img-src 'none'; media-src 'none'; font-src 'none'; "
-        "style-src 'none'; script-src 'none'; object-src 'none'; "
+        "style-src 'unsafe-inline'; script-src 'none'; object-src 'none'; "
         "manifest-src 'none'; worker-src 'none'"
     )
     return (
         "<!doctype html><html><head><meta charset=\"utf-8\">"
         f"<meta http-equiv=\"Content-Security-Policy\" content=\"{html_lib.escape(csp, quote=True)}\">"
         "<meta name=\"referrer\" content=\"no-referrer\"></head>"
-        f"<body>{body}</body></html>"
+        f'<body style="margin:0;padding:16px;background-color:white;color:#111827;font-family:Arial,sans-serif;overflow-wrap:anywhere">{body}</body></html>'
     )

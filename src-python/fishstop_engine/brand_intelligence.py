@@ -12,13 +12,17 @@ from urllib.parse import urljoin, urlparse
 
 import requests
 
-from fishstop_engine.domain_utils import registered_domain, registrable_label
+from fishstop_engine.domain_utils import registered_domain, registrable_label, normalize_hostname
+from fishstop_engine.identity_store import cached, put, resolve_partner, relationship_matches
+from fishstop_engine.domain_identity import dns_observations, rdap_observations
+import time
 
 
 WIKIDATA_API = "https://www.wikidata.org/w/api.php"
 ENTITY_DATA_URL = "https://www.wikidata.org/wiki/Special:EntityData/{entity_id}.json"
 CRT_SH_URL = "https://crt.sh/"
 WIKIDATA_HEADERS = {"User-Agent": "FishStopDesktop/0.1 (local email-security analysis)"}
+IDENTITY_LOOKUP_BUDGET_SECONDS = 6
 _EMAIL_RE = re.compile(r"[A-Z0-9._%+\-]+@([A-Z0-9.\-]+\.[A-Z]{2,})", re.IGNORECASE)
 _POSTAL_ADDRESS_CONTEXT_RE = re.compile(
     r"\b(?:via|viale|piazza|corso|largo|strada|street|road|avenue|boulevard)\b.{0,140}\b\d{5}\b",
@@ -95,9 +99,8 @@ def _domain_names_brand(domain: str, brand: str) -> bool:
 def _crt_sh_candidate_domains(brand_label: str) -> frozenset[str]:
     """Generate untrusted same-label domain candidates from Certificate Transparency.
 
-    Certificate presence proves neither ownership nor current control.  Callers
-    must still require an exact brand label and verify a redirect to an official
-    Wikidata domain before accepting any candidate.
+    Certificate presence proves neither ownership nor current control. This
+    legacy discovery helper must never authorize a company or delegated domain.
     """
     label = _normalised_brand_key(brand_label)
     if len(label) < 4 or len(label) > 63 or not label.isascii() or not label.isalnum():
@@ -287,7 +290,7 @@ def _contact_domains(report: dict) -> list[dict]:
         ("Return-Path", report.get("return_path")),
     ):
         for domain in _EMAIL_RE.findall(str(raw or "")):
-            item = {"source": source, "domain": registered_domain(domain)}
+            item = {"source": source, "domain": registered_domain(domain), "hostname": normalize_hostname(domain)}
             if item["domain"] and item not in values:
                 values.append(item)
     return values
@@ -364,36 +367,71 @@ def _entity_is_brand_candidate(entity: dict) -> bool:
     )
 
 
-def _official_sites(name: str) -> tuple[list[str], str]:
-    """Return every current Wikidata P856 URL for the selected organisation."""
-    search = requests.get(
-        WIKIDATA_API,
-        params={"action": "wbsearchentities", "search": name, "language": "en", "format": "json", "limit": 1},
-        timeout=4,
-        headers=WIKIDATA_HEADERS,
-    ).json()
-    result = (search.get("search") or [{}])[0]
-    entity_id = str(result.get("id") or "")
-    if not entity_id:
-        return [], "No public organisation record was found."
-    entity = requests.get(ENTITY_DATA_URL.format(entity_id=entity_id), timeout=4, headers=WIKIDATA_HEADERS).json()
-    claims = ((entity.get("entities") or {}).get(entity_id) or {}).get("claims") or {}
-    statements = sorted(
-        claims.get("P856") or [],
-        key=lambda item: {"preferred": 0, "normal": 1, "deprecated": 2}.get(
-            str(item.get("rank") or "normal"), 1
-        ),
-    )
-    websites: list[str] = []
-    for statement in statements:
-        if str(statement.get("rank") or "normal") == "deprecated":
-            continue
-        value = (((statement.get("mainsnak") or {}).get("datavalue") or {}).get("value"))
-        if isinstance(value, str) and _official_domain(value) and value not in websites:
-            websites.append(value)
-    if websites:
-        return websites, "Official website data resolved from Wikidata."
-    return [], "The public organisation record has no official website field."
+def _wikidata_json(url: str, params: dict | None = None, deadline: float | None = None) -> dict:
+    """Fixed public endpoints only, bounded responses and no ambient credentials."""
+    import json
+    deadline = deadline or time.monotonic() + 5
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise requests.Timeout("Identity lookup deadline reached")
+    session = requests.Session()
+    session.trust_env = False
+    try:
+        with session.get(url, params=params, timeout=min(remaining, 2), headers=WIKIDATA_HEADERS,
+                         stream=True, allow_redirects=False) as response:
+            response.raise_for_status()
+            raw = response.raw.read(512 * 1024 + 1, decode_content=True)
+            if len(raw) > 512 * 1024:
+                raise ValueError("Organisation response exceeds the size limit")
+            return json.loads(raw)
+    finally:
+        session.close()
+
+
+def _organisation_claims(claims: dict) -> bool:
+    types = {((item.get("mainsnak", {}).get("datavalue") or {}).get("value") or {}).get("id")
+             for item in claims.get("P31", []) if item.get("rank") != "deprecated"}
+    organisation_types = {"Q43229", "Q4830453", "Q783794", "Q6881511", "Q891723", "Q22687",
+                          "Q7278", "Q79913", "Q3918", "Q31855", "Q484652", "Q167037",
+                          "Q6881511", "Q134161", "Q163740", "Q2659904", "Q161726"}
+    # Legal form / headquarters can corroborate specialised company subclasses.
+    # An arbitrary P856 (e.g. an artwork page) is never sufficient.
+    return bool(types & organisation_types or claims.get("P1454") or claims.get("P159"))
+
+
+def _official_sites(name: str, deadline: float | None = None) -> tuple[list[str], str]:
+    """Disambiguate organisation types before selecting current P856 websites."""
+    key = "wikidata-v2:" + _normalised_brand_key(name)
+    previous = cached(key)
+    if previous is not None:
+        return previous["websites"], previous["message"]
+    deadline = deadline or time.monotonic() + 5
+    search = _wikidata_json(WIKIDATA_API, {"action": "wbsearchentities", "search": name,
+        "language": "en", "format": "json", "limit": 5}, deadline)
+    matches = [item for item in search.get("search", [])
+        if _normalised_brand_key(item.get("label", "")) == _normalised_brand_key(name)
+        or _normalised_brand_key((item.get("match") or {}).get("text", "")) == _normalised_brand_key(name)]
+    ids = [item["id"] for item in matches if re.fullmatch(r"Q[0-9]+", str(item.get("id") or ""))][:5]
+    data = _wikidata_json(WIKIDATA_API, {"action": "wbgetentities", "ids": "|".join(ids),
+        "props": "claims", "format": "json"}, deadline).get("entities", {}) if ids else {}
+    candidates = [(identifier, entity.get("claims") or {}) for identifier, entity in data.items()
+                  if _organisation_claims(entity.get("claims") or {})]
+    websites = []
+    reference = ""
+    if len(candidates) == 1:
+        identifier, claims = candidates[0]
+        statements = sorted(claims.get("P856", []), key=lambda item: {"preferred": 0, "normal": 1, "deprecated": 2}.get(item.get("rank", "normal"), 1))
+        for item in statements:
+            value = ((item.get("mainsnak", {}).get("datavalue") or {}).get("value"))
+            if item.get("rank") != "deprecated" and isinstance(value, str) and _official_domain(value) and value not in websites:
+                websites.append(value)
+        reference = "https://www.wikidata.org/wiki/" + identifier
+    message = ("Public organisation website resolved; sender authentication is checked separately." if websites
+               else "Ambiguous company name: multiple plausible organisations were found." if len(candidates) > 1
+               else "No independently resolved organisation website is available.")
+    result = {"websites": websites, "message": message, "reference": reference, "observed_at": time.time()}
+    put(key, result, 86400 if websites else 300)
+    return websites, message
 
 
 def _official_site(name: str) -> tuple[str, str]:
@@ -427,121 +465,105 @@ def _dmarc_aligns_from(report: dict, from_domain: str) -> bool:
 
 
 def assess_brand_coherence(report: dict, entities: list[dict]) -> list[dict]:
-    """Return transparent domain comparisons; unknown data never becomes a detection."""
+    """Resolve claims with explicit provenance, without promoting infrastructure."""
     contacts = _contact_domains(report)
     results: list[dict] = []
-    for entity in entities[:8]:
+    sender = next((item["domain"] for item in contacts if item["source"] == "From"), "")
+    auth = report.get("domain_authentication") or {}
+    authenticated = auth.get("status") == "verified" and any(
+        registered_domain(domain) == sender for domain in auth.get("verified_domains", []))
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout, CancelledError
+    deadline = time.monotonic() + IDENTITY_LOOKUP_BUDGET_SECONDS
+    pool = ThreadPoolExecutor(max_workers=4)
+    candidates = [entity for entity in entities[:4] if entity.get("name") and _entity_is_brand_candidate(entity)]
+    partners = {str(entity["name"]): resolve_partner(str(entity["name"])) for entity in candidates}
+    futures = {str(entity["name"]): pool.submit(_official_sites, str(entity["name"]), deadline)
+               for entity in candidates if not partners[str(entity["name"])]}
+    dns_future = pool.submit(dns_observations, sender) if sender else None
+    rdap_future = pool.submit(rdap_observations, sender) if sender and candidates else None
+    def collected(future, default):
+        if future is None:
+            return default
+        try:
+            return future.result(timeout=max(0, deadline - time.monotonic()))
+        except (FutureTimeout, CancelledError, requests.RequestException, ValueError, KeyError, TypeError):
+            return default
+    observation = collected(dns_future, {})
+    registration = collected(rdap_future, {})
+    pool.shutdown(wait=False, cancel_futures=True)
+    for entity in candidates:
         name = str(entity.get("name") or "").strip()
         if not name or not _entity_is_brand_candidate(entity):
             continue
-        try:
-            websites, message = _official_sites(name)
-        except (requests.RequestException, ValueError, KeyError, TypeError):
-            websites, message = [], "Official-domain lookup is currently unavailable."
-        resolution_source = "wikidata" if websites else ""
-        official_domains = list(dict.fromkeys(filter(None, (_official_domain(site) for site in websites))))
-        official = official_domains[0] if official_domains else ""
-        associated_domains: set[str] = set()
-        trusted_action_domains: set[str] = set()
-
-        from_domain = next(
-            (item["domain"] for item in contacts if item["source"] == "From"),
-            "",
-        )
-        sender_dmarc_aligned = bool(
-            from_domain and _dmarc_aligns_from(report, from_domain)
-        )
-        linked_domains: set[str] = set()
-        if websites and sender_dmarc_aligned:
-            for site in websites:
-                linked_domains.update(_linked_domains_from_official_site(site))
-
-        if (
-            from_domain
-            and from_domain not in official_domains
-            and sender_dmarc_aligned
-            and _domain_names_brand(from_domain, name)
-        ):
-            if from_domain in linked_domains:
-                associated_domains.add(from_domain)
-            elif official_domains:
-                # CT is only a discovery source.  Limit the lookup to the
-                # authenticated sender's exact brand label and promote that
-                # single domain only after the existing hardened redirect
-                # verifier reaches a Wikidata official domain.
-                ct_candidates = {
-                    candidate
-                    for candidate in _crt_sh_candidate_domains(registrable_label(from_domain))
-                    if _domain_names_brand(candidate, name)
-                }
-                if from_domain in ct_candidates and any(
-                    _redirects_to_official_domain(from_domain, candidate)
-                    for candidate in official_domains
-                ):
-                    associated_domains.add(from_domain)
-
-        # A strongly authenticated official sender may legitimately direct a
-        # recipient to a different service domain owned by the same
-        # organisation. Corroborate only domains present in the current action
-        # and linked from the public official website; never infer ownership
-        # from brand spelling or a local allowlist.
-        sender_is_official = bool(
-            sender_dmarc_aligned
-            and from_domain
-            and (
-                from_domain in official_domains
-                or from_domain in associated_domains
-            )
-        )
-        if sender_is_official:
-            trusted_action_domains.update(
-                _selected_action_domains(report) & linked_domains
-            )
-
-        accepted_domains = set(official_domains) | associated_domains
+        partner = partners.get(name)
+        relations = partner.get("relations", []) if partner else []
+        if partner:
+            official_domains = [item["domain"] for item in relations if item["role"] == "official"]
+            websites = ["https://" + domain + "/" for domain in official_domains]
+            source = partner["source"]
+            reference = partner["reference"]
+            verified_at, expires_at = partner["verified_at"], partner["expires_at"]
+            message = "Company-to-domain relationships are recorded in an unexpired, scoped identity registry."
+        else:
+            try:
+                websites, message = collected(futures.get(name), ([], "Public organisation lookup is currently unavailable."))
+            except (requests.RequestException, ValueError, KeyError, TypeError):
+                websites, message = [], "Public organisation lookup is currently unavailable."
+            official_domains = list(dict.fromkeys(filter(None, (_official_domain(site) for site in websites))))
+            source = "wikidata" if official_domains else "unresolved"
+            public_evidence = cached("wikidata-v2:" + _normalised_brand_key(name)) or {}
+            reference = public_evidence.get("reference", "https://www.wikidata.org/") if official_domains else ""
+            verified_at = public_evidence.get("observed_at", time.time())
+            expires_at = verified_at + 86400
+        sender_domains = set(official_domains) if not partner else {
+            item["domain"] for item in relations if "sender" in item["scopes"]}
+        # An unknown website, redirect, CT certificate or shared provider can never add an accepted domain.
+        associated = sorted(sender_domains - set(official_domains))
         comparisons = []
         for contact in contacts:
             domain = contact["domain"]
-            redirects_to_official = bool(
-                official
-                and _redirects_to_official_domain(domain, official)
-            )
-            is_reply_destination = contact["source"] == "Reply-To"
-            comparisons.append({
-                **contact,
-                "role": "reply_destination" if is_reply_destination else "sender_identity",
-                "is_external": bool(accepted_domains and domain not in accepted_domains),
-                "mismatch_eligible": not is_reply_destination,
-                "matches_official": bool(
-                    official
-                    and (domain in accepted_domains or redirects_to_official)
-                ),
-                "redirects_to_official": bool(
-                    redirects_to_official or (domain != official and domain in associated_domains)
-                ),
-            })
-        mismatches = [
-            item for item in comparisons
-            if official and item["mismatch_eligible"] and not item["matches_official"]
-        ]
-        external_reply_domains = sorted({
-            item["domain"] for item in comparisons
-            if item["role"] == "reply_destination" and item["is_external"]
-        })
-        results.append({
-            "brand": name,
-            "entity_types": entity.get("entity_types") or [entity.get("entity_type")],
-            "official_website": websites[0] if websites else "",
-            "official_websites": websites,
-            "official_domain": official,
-            "official_domains": official_domains,
-            "associated_domains": sorted(associated_domains),
-            "trusted_action_domains": sorted(trusted_action_domains),
-            "external_reply_domains": external_reply_domains,
-            "resolution_source": resolution_source,
-            "contacts": comparisons,
-            "mismatches": mismatches,
-            "status": "mismatch" if mismatches else "aligned" if official and comparisons else "unverified",
-            "message": message,
-        })
+            is_sender = contact["source"] == "From"
+            allowed = sender_domains if is_sender else {
+                registered_domain(item["domain"]) for item in relations if "reply" in item["scopes"]}
+            if not partner and not is_sender:
+                allowed = set(official_domains)
+            matches = any(relationship_matches(contact["hostname"], item) and ("sender" if is_sender else "reply") in item["scopes"] for item in relations) if partner else domain in allowed
+            comparisons.append({**contact, "role": "sender_identity" if is_sender else "reply_destination" if contact["source"] == "Reply-To" else "transport",
+                                "is_external": bool(official_domains and not matches),
+                                "mismatch_eligible": is_sender, "matches_official": matches,
+                                "redirects_to_official": False})
+        mismatches = [item for item in comparisons if official_domains and item["mismatch_eligible"] and not item["matches_official"]]
+        coherent = bool(sender and any(item["source"] == "From" and item["matches_official"] for item in comparisons))
+        status = "mismatch" if mismatches else "aligned" if coherent and authenticated else "unverified"
+        action_relations = [item for item in relations if any(scope != "sender" and scope != "reply" for scope in item["scopes"])]
+        external_reply = sorted({item["domain"] for item in comparisons if item["role"] == "reply_destination" and item["is_external"]})
+        # Only independently authenticated, registry-associated messages update a baseline.
+        history_key = "baseline:" + (partner["id"] if partner else name.casefold()) + ":" + sender
+        previous = cached(history_key) if partner and authenticated and coherent else None
+        action_domains = sorted(_selected_action_domains(report))
+        anomalies = []
+        if previous and observation.get("status") == "observed":
+            if previous.get("provider") != observation.get("provider") and previous.get("provider") != "unknown" and observation.get("provider") != "unknown":
+                anomalies.append("The mail provider differs from the last independently authenticated observation.")
+            if external_reply and set(external_reply) - set(previous.get("reply_domains", [])):
+                anomalies.append("A new external reply destination was observed.")
+            if set(action_domains) - set(previous.get("action_domains", [])):
+                anomalies.append("A new action destination was observed for this confirmed sender.")
+        if partner and authenticated and coherent and not previous:
+            put(history_key, {"provider": observation.get("provider"), "reply_domains": external_reply,
+                              "action_domains": action_domains}, 90 * 86400)
+        results.append({"brand": name, "entity_types": entity.get("entity_types") or [entity.get("entity_type")],
+                        "official_website": websites[0] if websites else "", "official_websites": websites,
+                        "official_domain": official_domains[0] if official_domains else "", "official_domains": official_domains,
+                        "associated_domains": associated, "trusted_action_domains": [],
+                        "authorized_action_relations": action_relations if partner and authenticated and coherent else [],
+                        "external_reply_domains": external_reply, "resolution_source": source,
+                        "contacts": comparisons, "mismatches": mismatches, "status": status, "message": message,
+                        "reference_status": partner["source"] if partner else "public_reference" if official_domains else "unresolved",
+                        "sender_authentication": "verified" if authenticated else "unverified",
+                        "evidence": [{"source": source, "reference": reference, "observed_at": verified_at, "expires_at": expires_at,
+                                      "confidence": "high" if partner else "medium" if official_domains else "unknown"}] if official_domains else [],
+                        "dns_observations": observation,
+                        "registration_observations": registration,
+                        "anomalies": anomalies})
     return results

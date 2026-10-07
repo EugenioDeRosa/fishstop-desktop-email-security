@@ -147,6 +147,8 @@ def analyze(path_value: str) -> dict[str, Any]:
             "field": "Conversation scope",
             "message": conversation_manifest["technical_scope_message"],
         })
+    from fishstop_engine.domain_identity import verify_message_domain
+    report["domain_authentication"] = verify_message_domain(raw, report)
     report["eml_sha256"] = hashlib.sha256(raw).hexdigest()
     enrich_reputation(
         report,
@@ -215,6 +217,11 @@ def analyze_content_summary(report_path: str) -> dict[str, Any]:
     return _json_safe(generate_content_summary(report))
 
 
+def identity_registry(request_path: str) -> dict:
+    from fishstop_engine.identity_store import registry_operation
+    return registry_operation(json.loads(Path(request_path).read_text(encoding="utf-8")))
+
+
 def health_check(component: str | None = None) -> None:
     """Report that the packaged engine can start."""
     if component is not None:
@@ -236,6 +243,7 @@ def main() -> None:
         )
     try:
         result = {
+            "identity-registry": identity_registry,
             "static": analyze,
             "inspect": inspect,
             "phi4": analyze_phi4,

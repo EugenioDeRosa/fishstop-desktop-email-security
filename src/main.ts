@@ -2,12 +2,13 @@ import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
+import { identityRegistryMarkup, bindIdentityRegistry } from "./identity-registry";
 import { createStatusCache } from "./status-cache";
 import { analysisDurationEstimate, recordAnalysisDuration, createAnalysisProgress } from "./analysis-progress";
 import { currentTheme, initializeTheme, setTheme } from "./theme";
 import { geoDistance, geoGraticule, geoInterpolate, geoOrthographic, geoPath } from "d3-geo";
 import { feature, mesh } from "topojson-client";
-import { focusZoom, maintainedRouteZoom, travelDuration, smoothZoom, routeFrame, nearestMarker, MAX_ROUTE_ZOOM } from "./globe-route";
+import { focusZoom, maintainedRouteZoom, travelDuration, smoothZoom, routeFrame, nearestMarker, globeInViewport, MAX_ROUTE_ZOOM } from "./globe-route";
 import worldAtlas from "world-atlas/countries-110m.json";
 import { animate } from "motion/mini";
 import fishstopMailCheckUrl from "./fishstop-mail-check.svg";
@@ -56,6 +57,12 @@ type ReceivedHop = { from_host?: string; by_host?: string; sender_ip?: string; a
 type OtxPulseSummary = { id?: string; name?: string; author?: string; modified?: string; tags?: string[]; tlp?: string; url?: string };
 type OtxMatch = { indicator?: string; matched_indicator?: string; indicator_type?: string; match_type?: "exact"; source?: string; confidence?: "strong" | "supporting" | "informational"; classification?: "malicious" | "supporting" | "informational"; shared_infrastructure?: boolean; pulse_count?: number; pulses?: OtxPulseSummary[] };
 type OtxIntelligence = { status?: "match" | "context_only" | "no_match" | "unavailable"; lookup_mode?: "on_demand_exact"; checked_indicator_count?: number; failed_indicator_count?: number; strong_match_count?: number; context_match_count?: number; matches?: OtxMatch[]; message?: string };
+type ImpersonationAssessment = {
+  claimed_identity?: string; claimed_role?: string; status?: string; decision?: string;
+  score?: number; confidence?: string; identity_confidence?: string; rule_version?: number;
+  coverage?: Record<string, boolean>; missing?: string[];
+  signals?: Array<{ id: string; family: string; weight: number; polarity: string; strong?: boolean; evidence: string; source: string }>;
+};
 type AnalysisReport = {
   subject?: string; from_?: string; from_registered_domain?: string; reply_to?: string; return_path?: string; flags?: SocFlag[];
   delivered_to?: string; to?: string; date?: string; message_id?: string; errors_to?: string; importance?: string;
@@ -102,7 +109,7 @@ type AnalysisReport = {
   effective_auth_results?: Record<string, AuthResult>;
   authentication_checkpoints?: AuthenticationCheckpoint[];
   received_hops?: ReceivedHop[];
-  identity_analysis?: { status?: string; model?: string; backend?: string; message?: string; segments_analyzed?: number; entities?: Array<{ name?: string; confidence?: number; entity_type?: string; entity_types?: string[]; occurrences?: Array<{ source?: string; evidence?: string }> }>; coherence?: Array<{ brand?: string; official_website?: string; official_websites?: string[]; official_domain?: string; official_domains?: string[]; associated_domains?: string[]; trusted_action_domains?: string[]; external_reply_domains?: string[]; resolution_source?: string; status?: string; message?: string; mismatches?: Array<{ source?: string; domain?: string }> }> };
+  identity_analysis?: { impersonation?: ImpersonationAssessment; status?: string; model?: string; backend?: string; message?: string; segments_analyzed?: number; entities?: Array<{ name?: string; confidence?: number; entity_type?: string; entity_types?: string[]; occurrences?: Array<{ source?: string; evidence?: string }> }>; coherence?: Array<{ brand?: string; official_website?: string; official_websites?: string[]; official_domain?: string; official_domains?: string[]; associated_domains?: string[]; trusted_action_domains?: string[]; external_reply_domains?: string[]; resolution_source?: string; reference_status?: string; sender_authentication?: string; evidence?: Array<{ source?: string; reference?: string; observed_at?: number; expires_at?: number; confidence?: string }>; dns_observations?: { provider?: string; bimi_present?: boolean }; anomalies?: string[]; status?: string; message?: string; mismatches?: Array<{ source?: string; domain?: string }> }> };
   phi4_analysis?: { status?: string; model?: string; duration_ms?: number; performance?: { analysis_mode?: string; llm_calls?: number; wall_duration_ms?: number; load_duration_ms?: number; prompt_tokens?: number; generated_tokens?: number; calls?: Array<{ stage?: string; wall_duration_ms?: number; load_duration_ms?: number; prompt_eval_count?: number; prompt_eval_duration_ms?: number; eval_count?: number; eval_duration_ms?: number }> }; analysis?: { final_verdict?: string; content_summary?: string; semantic_reason?: string; explanation?: string; confidence?: number; requested_action?: string; action_channel?: string; intent_evidence?: string; intent_signals?: string[]; signal_evidence?: string; content_risk?: string; identity_risk?: string; technical_risk?: string; ambiguity?: string; scam_type?: string; threat_type?: string; coercion?: boolean; claimed_brand?: string; payment_destination_change?: boolean; semantic_extraction?: { asks_for_credentials?: boolean; asks_for_payment?: boolean; asks_for_sensitive_information?: boolean; asks_to_change_account_settings?: boolean; asks_to_verify_account?: boolean; asks_to_open_attachment?: boolean; requested_external_action?: boolean; security_alert?: boolean; impersonation_or_deception?: boolean; identity_deception?: boolean; scam_type?: string; threat_type?: string; coercion?: boolean }; corroboration?: { supports_decision?: boolean; details?: string[]; caveats?: string[] } }; message?: string };
   ai_content_summary?: { status?: string; summary?: string; model?: string; backend?: string; message?: string };
   ai_summary?: { status?: string; summary?: string; model?: string; backend?: string; message?: string };
@@ -889,32 +896,6 @@ function markLoadingCheck(container: HTMLElement, index: number): void {
   items.forEach((item, itemIndex) => item.classList.toggle("active", itemIndex === completedCount));
 }
 
-function completeAnalysisLoading(container: HTMLElement): number {
-  container.querySelectorAll<HTMLElement>("[data-loading-check]").forEach((_, index) => markLoadingCheck(container, index));
-  const loading = container.querySelector<HTMLElement>(".analysis-loading");
-  if (!loading) return 0;
-  // Even a very quick analysis must visibly travel through the remaining fill.
-  const remaining = 100 - Number(loading.getAttribute("aria-valuenow") || 0);
-  const durationMs = Math.max(800, remaining * 25);
-  loading.style.setProperty("--analysis-completion-duration", `${durationMs}ms`);
-  loading.style.setProperty("--analysis-progress", "100%");
-  loading.setAttribute("aria-valuenow", "100");
-  loading.classList.add("is-complete");
-  const kicker = loading.querySelector<HTMLElement>(".page-kicker");
-  const title = loading.querySelector<HTMLElement>("h2");
-  const copy = loading.querySelector<HTMLElement>(".loading-copy");
-  const mark = loading.querySelector<HTMLElement>(".loading-orbit b");
-  if (kicker) kicker.textContent = "ANALYSIS COMPLETE";
-  if (title) title.textContent = "All checks completed";
-  if (copy) copy.textContent = "Preparing your report…";
-  if (mark) mark.textContent = "✓";
-  return durationMs;
-}
-
-function pause(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
-}
-
 // Mirrors the Streamlit `_auth_from_eml_header` fallback order exactly.
 function authFromEmlHeader(report: AnalysisReport, protocol: "SPF" | "DKIM" | "DMARC"): AuthResult & Required<Pick<AuthResult, "status" | "identity" | "raw" | "source">> & { all_results: AuthResult[] } {
   if (report.selected_target_authentication_scope === "embedded_unavailable") {
@@ -1273,6 +1254,54 @@ function incompleteAnalysisReason(report: AnalysisReport): string | null {
   return reasons.length ? reasons.join(" ") : null;
 }
 
+function writtenVerdictSummary(report: AnalysisReport, fallback: string): string {
+  const analysis = report.phi4_analysis?.analysis;
+  const labels = aiThreatLabels(report);
+  const evidence: string[] = [];
+  const staticReason = highSeverityStaticReason(report);
+  if (staticReason) evidence.push(staticReason);
+  const identityChecks = report.identity_analysis?.impersonation;
+  if (identityChecks?.decision === "review" && identityChecks.status !== "inconsistent") {
+    const anomaly = identityChecks.signals?.find(item => item.polarity === "suspicion");
+    if (anomaly) evidence.push(anomaly.evidence);
+  }
+  for (const label of labels) {
+    if (label === "Impersonation") {
+      const identity = report.identity_analysis?.impersonation;
+      evidence.push(identity?.status === "inconsistent"
+        ? `Identity checks detected possible impersonation${identity.claimed_identity ? ` of ${identity.claimed_identity}` : ""}.`
+        : `The local AI detected possible impersonation${analysis?.claimed_brand ? ` of ${analysis.claimed_brand}` : ""}.`);
+    } else if (label === "AI risk signal") {
+      evidence.push("The local AI detected potentially malicious behaviour in the message content.");
+    } else {
+      evidence.push(`The local AI detected indicators of ${label.toLowerCase()}.`);
+    }
+  }
+  const actionDescriptions: Record<string, string> = {
+    visit_link: "follow a link",
+    open_attachment: "open an attachment",
+    provide_credentials: "provide login credentials",
+    provide_information: "provide information",
+    pay_or_transfer: "make a payment or transfer money",
+    verify_account: "verify an account",
+    change_account_settings: "change account settings",
+    bypass_procedure: "bypass the normal procedure",
+    reply: "reply to the email",
+    claim_reward: "claim a reward",
+  };
+  const action = actionDescriptions[(analysis?.requested_action || "").toLowerCase()];
+  if (action) {
+    const viaLink = analysis?.action_channel === "supplied_link" && analysis?.requested_action !== "visit_link";
+    evidence.push(`The local AI identified a request to ${action}${viaLink ? " through a link in the email" : ""}.`);
+  }
+  const incomplete = incompleteAnalysisReason(report);
+  if (incomplete) evidence.push(incomplete);
+  const generated = report.ai_summary?.status === "ok" ? safeGeneratedSummary(report.ai_summary.summary) : "";
+  // Written evidence must not disappear behind a generated or static-only summary.
+  if (!staticReason && !labels.length) evidence.unshift(generated || fallback);
+  return [...new Set(evidence.filter(Boolean))].join(" ");
+}
+
 function assessment(report: AnalysisReport): { tone: "safe" | "review" | "danger"; label: string; detail: string } {
   const semantic = report.phi4_analysis?.analysis;
   const phi = (semantic?.final_verdict || "").toLowerCase();
@@ -1292,15 +1321,14 @@ function assessment(report: AnalysisReport): { tone: "safe" | "review" | "danger
   );
   const identityMismatch = Boolean(report.reply_to_mismatch || returnPathMismatchForVerdict(report) || report.display_name_spoofing && !["none", "false", "no"].includes(String(report.display_name_spoofing).toLowerCase()));
   const aiClearsInformationalMessage = phi === "legitimate" && benignContent && noExternalOrSensitiveAction && isolatedMissingDkim && !identityMismatch;
-  const generatedSummary = report.ai_summary?.status === "ok" ? safeGeneratedSummary(report.ai_summary.summary) : "";
-  const result = (tone: "safe" | "review" | "danger", label: string, fallback: string) => ({ tone, label, detail: generatedSummary || fallback });
+  const result = (tone: "safe" | "review" | "danger", label: string, fallback: string) => ({ tone, label, detail: writtenVerdictSummary(report, fallback) });
   // The Ollama policy receives static, reputation and identity evidence: when available,
   // it is the final synthesis. Confirmed external detections and strong static
   // findings can never be downgraded by an unavailable or disagreeing model.
   if (staticReason) return result("danger", "HIGH RISK", staticReason);
   if (phi === "phishing") return result("danger", "HIGH RISK", conciseAiVerdict(report, "Risk indicators were found. Do not interact with this message."));
   const incomplete = incompleteAnalysisReason(report);
-  if (incomplete) return { tone: "review", label: "ANALYSIS INCOMPLETE", detail: incomplete };
+  if (incomplete) return result("review", "ANALYSIS INCOMPLETE", incomplete);
   if (unverifiedRequestedResource) return result("review", "REVIEW REQUIRED", unverifiedRequestedResource);
   if (high) return result("danger", "HIGH RISK", "A high-severity static check failed. Do not interact with this message.");
   // A first-party account notice is not suspicious merely because it contains
@@ -1313,7 +1341,7 @@ function assessment(report: AnalysisReport): { tone: "safe" | "review" | "danger
   if (aiClearsInformationalMessage) return result("safe", "LIKELY LEGITIMATE", conciseAiVerdict(report, "The message is informational and no meaningful risk indicator was found."));
   if (phi === "review" || medium) return result("review", "REVIEW REQUIRED", authenticationReview || conciseAiVerdict(report, "Anomalies were found. Verify the message before taking any action."));
   if (phi === "legitimate") return result("safe", "LIKELY LEGITIMATE", conciseAiVerdict(report, "No relevant technical or content indicators were found."));
-  return { tone: "review", label: "ANALYSIS INCOMPLETE", detail: "A complete assessment is not available. Review the message before taking action." };
+  return result("review", "ANALYSIS INCOMPLETE", "A complete assessment is not available. Review the message before taking action.");
 }
 
 function verdictRationale(report: AnalysisReport): string {
@@ -1324,29 +1352,15 @@ function verdictRationale(report: AnalysisReport): string {
     return priority(right) - priority(left);
   }).slice(0, 3);
   const corroboration = semantic?.corroboration?.details || [];
-  const emailText = `${report.subject || ""}\n${report.body_ai || report.body_clean || ""}`.toLowerCase();
-  const genericLinkInvite = Boolean((report.links || []).length) && /\b(apri|clicca|click|visita|accedi|vai|segu[i]?|open|visit|access)\b/.test(emailText);
-  const hasPreviousConversation = report.body_context === "reply" || report.body_context === "forwarded";
-  const actionableWebLinks = (report.links || []).filter((link) => link.actionable !== false && (link.scheme || "").toLowerCase() !== "mailto");
-  const callToActionLinks = actionableWebLinks.filter((link) => link.html_call_to_action);
-  const requestedWebLinks = callToActionLinks.length ? callToActionLinks : actionableWebLinks;
-  const authenticatedFirstPartyRequest = requestedWebLinks.length > 0
-    && requestedWebLinks.every((link) => isAuthenticatedFirstPartyLink(report, link));
-  const intent = semantic?.requested_action && semantic.requested_action !== "none" && semantic.requested_action !== "informational"
-    ? `Detected action: ${semanticLabel(semantic.requested_action)}${semantic.action_channel ? ` · ${semanticLabel(semantic.action_channel)}` : ""}.`
-    : "Content analysis did not detect an explicit risky request.";
-  const linkContextSummary = genericLinkInvite
-    ? `The message asks you to open a link${hasPreviousConversation ? ", but its purpose should be verified in the conversation context." : ", without a previous conversation in the message that clarifies its purpose."}`
-    : "";
-  const authenticatedLinkSummary = verdict.tone === "safe" && authenticatedFirstPartyRequest
-    ? "The requested link belongs to the strongly authenticated sender domain, and no malicious link or identity mismatch was detected."
-    : "";
-  const aiSummary = highSeverityStaticReason(report) || incompleteAnalysisReason(report) || unverifiedRequestedResourceReason(report) || authenticationReviewReason(report) || authenticatedLinkSummary || linkContextSummary || semantic?.content_summary || semantic?.explanation || intent;
-  const technical = findings.length
-    ? findings.map((flag) => `<li><b>${escapeHtml(flag.level)}</b><span>${escapeHtml(flag.field)} · ${escapeHtml(flag.message)}</span></li>`).join("")
-    : corroboration.length
-      ? corroboration.slice(0, 3).map((item) => `<li><b>CHECK</b><span>${escapeHtml(item)}</span></li>`).join("")
-      : "<li class=\"clear\"><b>CHECK</b><span>No high-priority technical indicators were found.</span></li>";
+  const aiSummary = verdict.detail;
+  const indicators = [
+    ...confirmedMaliciousIndicators(report).map((indicator) => ({ level: "HIGH", message: `VirusTotal: ${indicator} detected as malicious.` })),
+    ...findings.map((flag) => ({ level: flag.level, message: `${flag.field} · ${flag.message}` })),
+    ...corroboration.map((message) => ({ level: "CHECK", message })),
+  ].filter((item, index, items) => items.findIndex((other) => other.message === item.message) === index).slice(0, 6);
+  const technical = indicators.length
+    ? indicators.map((item) => `<li><b>${escapeHtml(item.level)}</b><span>${escapeHtml(item.message)}</span></li>`).join("")
+    : "<li class=\"clear\"><b>CHECK</b><span>No high-priority technical indicators were found.</span></li>";
   return `<section class="verdict-rationale"><div><p class="page-kicker">WHY THIS RESULT</p><p>${escapeHtml(aiSummary)}</p></div><div class="rationale-indicators"><span>INDICATORS CONSIDERED</span><ul>${technical}</ul></div></section>`;
 }
 
@@ -1788,7 +1802,7 @@ const HTML_PREVIEW_CSP = [
   "img-src 'none'",
   "media-src 'none'",
   "font-src 'none'",
-  "style-src 'none'",
+  "style-src 'unsafe-inline'",
   "script-src 'none'",
   "object-src 'none'",
   "manifest-src 'none'",
@@ -1796,7 +1810,7 @@ const HTML_PREVIEW_CSP = [
 ].join("; ");
 
 function safeHtmlPreviewDocument(fragment: string): string {
-  return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${escapeHtml(HTML_PREVIEW_CSP)}"><meta name="referrer" content="no-referrer"></head><body>${fragment}</body></html>`;
+  return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${escapeHtml(HTML_PREVIEW_CSP)}"><meta name="referrer" content="no-referrer"></head><body style="margin:0;padding:16px;background-color:white;color:#111827;font-family:Arial,sans-serif;overflow-wrap:anywhere">${fragment}</body></html>`;
 }
 
 function addReputationPanel(report: AnalysisReport): void {
@@ -2052,9 +2066,13 @@ function renderEmailGlobe(report: AnalysisReport): void {
   });
   const draw = (timestamp: number) => {
     if (!canvas.isConnected) { observer.disconnect(); return; }
+    if (reportPanel.offsetParent === null || document.hidden || !globeInViewport(canvas.getBoundingClientRect(), window.innerWidth, window.innerHeight)) {
+      lastFrame = null;
+      requestAnimationFrame(draw);
+      return;
+    }
     const delta = lastFrame === null ? 0 : Math.min(64, timestamp - lastFrame);
     lastFrame = timestamp;
-    if (reportPanel.offsetParent === null || document.hidden) { requestAnimationFrame(draw); return; }
     if (rotating && !dragging) {
       elapsed += delta;
       const frame = routeFrame(elapsed, travelTimes);
@@ -2216,7 +2234,7 @@ function integrateReputation(report: AnalysisReport): void {
   const rawHtml = report.body_html_safe || safeHtmlPreview(report.body_html || "");
   if (rawHtml) {
     const previewDocument = safeHtmlPreviewDocument(rawHtml);
-    content?.insertAdjacentHTML("beforeend", `<section class="safe-html-preview"><h3>Safe HTML preview</h3><p>Scripts, forms, CSS, active links and every remote resource are blocked.</p><iframe sandbox="" allow="" csp="${escapeHtml(HTML_PREVIEW_CSP)}" referrerpolicy="no-referrer" loading="lazy" srcdoc="${escapeHtml(previewDocument)}" title="Safe email HTML preview"></iframe></section>`);
+    content?.insertAdjacentHTML("beforeend", `<section class="safe-html-preview"><h3>Safe HTML preview</h3><p>Basic layout, colours and text formatting are preserved. Images, scripts, forms, active links and remote resources are blocked.</p><iframe sandbox="" allow="" csp="${escapeHtml(HTML_PREVIEW_CSP)}" referrerpolicy="no-referrer" loading="lazy" srcdoc="${escapeHtml(previewDocument)}" title="Safe email HTML preview"></iframe></section>`);
   }
 }
 
@@ -2289,7 +2307,7 @@ function bindReportInteractions(user: AuthUser, report: AnalysisReport): void {
 function renderAiPanels(container: HTMLElement): void {
   const contentPanel = container.querySelector<HTMLElement>('[data-report-panel="content"]');
   if (!contentPanel) return;
-  contentPanel.insertAdjacentHTML("afterbegin", `<section class="ai-panels"><article data-ai-panel="identity"><p class="page-kicker">LOCAL AI</p><h3>Declared identity</h3><p>Reading who the message claims to represent…</p></article><article data-ai-panel="phi4"><p class="page-kicker">LOCAL AI</p><h3>Semantic analysis</h3><p>Preparing the model…</p></article></section>`);
+  contentPanel.insertAdjacentHTML("afterbegin", `<section class="ai-panels"><article data-ai-panel="identity"><h3>Sender identity</h3><p>Verifying the claimed company…</p></article><article data-ai-panel="phi4"><p class="page-kicker">LOCAL AI</p><h3>Semantic analysis</h3><p>Preparing the model…</p></article></section>`);
 }
 
 function setAiPanel(container: HTMLElement, engine: "identity" | "phi4", title: string, message: string, state: "loading" | "ok" | "error"): void {
@@ -2300,26 +2318,21 @@ function setAiPanel(container: HTMLElement, engine: "identity" | "phi4", title: 
 function setIdentityPanel(container: HTMLElement, analysis: NonNullable<AnalysisReport["identity_analysis"]>): void {
   const panel = container.querySelector<HTMLElement>('[data-ai-panel="identity"]');
   if (!panel) return;
-  const entities = analysis.entities || [];
-  const organisations = entities.filter((entity) => {
-    const types = new Set((entity.entity_types || [entity.entity_type]).filter(Boolean).map((value) => String(value).toUpperCase()));
-    return types.has("ORG") && !types.has("LOC") && !types.has("PER");
-  });
-  const chain = organisations.length
-    ? `<ul class="identity-chain">${organisations.slice(0, 4).map((entity) => `<li><strong>${escapeHtml(entity.name || "Organisation")}</strong><span>${escapeHtml((entity.occurrences || []).map((item) => item.source || "email").filter((value, index, all) => all.indexOf(value) === index).join(" · ") || "email text")}</span></li>`).join("")}</ul>`
-    : "<p class=\"identity-empty\">No unambiguous organisation was found in visible sender, subject, or body text.</p>";
-  const coherence = (analysis.coherence || []).filter((item) => item.official_domain);
-  const coherenceMarkup = coherence.length ? `<div class="identity-coherence">${coherence.map((item) => {
-    const verifiedDomains = Array.from(new Set([...(item.official_domains || [item.official_domain || ""]), ...(item.associated_domains || [])].filter(Boolean)));
-    const domainSummary = verifiedDomains.length ? `<p>Verified domains: ${escapeHtml(verifiedDomains.join(", "))}.</p>` : `<p>${escapeHtml(item.message || "Official-domain lookup is unavailable.")}</p>`;
-    const mismatchSummary = item.mismatches?.length ? `<p>Mismatch: ${escapeHtml(item.mismatches.map((mismatch) => `${mismatch.source}: ${mismatch.domain}`).join(" · "))}</p>` : "";
-    const replySummary = item.external_reply_domains?.length ? `<p class="identity-external-reply">External reply destination: ${escapeHtml(item.external_reply_domains.join(", "))}. Assessed separately from the sender identity.</p>` : "";
-    return `<div class="identity-coherence-item identity-${escapeHtml(item.status || "unverified")}"><div><strong>${escapeHtml(item.brand || "Claimed organisation")}</strong><span>Institutional: ${escapeHtml(item.official_domain || "unresolved")}</span></div>${domainSummary}${mismatchSummary}${replySummary}</div>`;
-  }).join("")}</div>` : "<small class=\"semantic-meta\">Official-domain lookup is unavailable or no brand could be resolved.</small>";
-  const summary = organisations.length === 1
-    ? "1 organisation candidate extracted locally."
-    : `${organisations.length} organisation candidates extracted locally.`;
-  panel.innerHTML = `<p class="page-kicker">LOCAL AI</p><h3>Declared identity</h3><p class="identity-summary">${escapeHtml(summary)}</p>${chain}${coherenceMarkup}`;
+  const assessment = analysis.impersonation;
+  const verified = assessment?.status === "consistent" && assessment?.decision === "none";
+  const suspicious = assessment?.status === "inconsistent";
+  const tone = verified ? "verified" : suspicious ? "suspicious" : "unavailable";
+  const label = verified ? "Identity verified" : suspicious ? "Possible impersonation" : "Verification unavailable";
+  const brand = assessment?.claimed_identity || analysis.entities?.find(item => item.name)?.name || "";
+  const message = verified ? `${brand || "The sender"} matches the documented company identity.`
+    : suspicious ? `${brand || "The claimed company"} does not match the sender or requested destination.`
+    : brand ? `${brand} identified. The sender could not be confirmed.` : "The claimed company could not be identified reliably.";
+  const reference = analysis.coherence?.find(item => item.brand === brand);
+  const domains = reference?.official_domains || [];
+  const findings = assessment?.signals?.filter(item => item.polarity === "suspicion").slice(0, 3) || [];
+  const details = brand || domains.length || findings.length
+    ? `<details class="identity-result-details"><summary>Details</summary>${domains.length ? `<p>Company domains: ${escapeHtml(domains.slice(0, 3).join(", "))}</p>` : ""}${brand ? `<p>Sender authentication: ${reference?.sender_authentication === "verified" ? "verified" : "not independently verified"}.</p>` : ""}${findings.length ? `<ul>${findings.map(item => `<li>${escapeHtml(item.evidence)}</li>`).join("")}</ul>` : ""}</details>` : "";
+  panel.innerHTML = `<h3>Sender identity</h3><div class="identity-result identity-result-${tone}"><span class="identity-result-icon" aria-hidden="true">${verified ? "✓" : suspicious ? "!" : "—"}</span><div><strong>${label}</strong><p>${escapeHtml(message)}</p></div></div>${details}`;
 }
 
 function semanticLabel(value: string | undefined): string {
@@ -2363,7 +2376,8 @@ function aiThreatLabels(report: AnalysisReport): string[] {
     || extraction?.identity_deception
     || (analysis.intent_signals || []).some((signal) => ["impersonation", "deception"].includes(signal.toLowerCase())),
   );
-  if (impersonation && verdict !== "legitimate") labels.add("Impersonation");
+  const checkedIdentity = report.identity_analysis?.impersonation;
+  if (checkedIdentity ? checkedIdentity.status === "inconsistent" : impersonation && verdict !== "legitimate") labels.add("Impersonation");
 
   const aiFoundThreat = verdict === "phishing" || contentRisk === "malicious";
   if (aiFoundThreat && !labels.size) {
@@ -2397,8 +2411,9 @@ function setPhiSemanticPanel(container: HTMLElement, analysis: NonNullable<NonNu
 }
 
 async function runAiAnalysis(user: AuthUser, report: AnalysisReport, recordId: string | null, container: HTMLElement, startedAt: number, analysisId: string, isCurrent: () => boolean, onSettled?: (engine: "identity" | "phi4" | "content-summary" | "summary") => void, onRuntime?: (runtime: OllamaRuntimeStatus | null) => void): Promise<void> {
-  const runtime = await invoke<OllamaRuntimeStatus>("ollama_runtime_status").catch(() => ollamaRuntimeSnapshot);
-  if (runtime) ollamaRuntimeSnapshot = runtime;
+  // Runtime inspection is presentation metadata. The native analysis command
+  // chooses and prepares the model itself; do not make it wait for another probe.
+  const runtime = ollamaRuntimeSnapshot;
   onRuntime?.(runtime || null);
   const model = runtime?.model || DEFAULT_OLLAMA_MODEL;
   renderAiPanels(container);
@@ -2758,6 +2773,8 @@ function contentFor(section: Section, user: AuthUser): string {
             <ul class="credential-list">${keyRow("virustotal", "VirusTotal API key", keys.virustotal)}${keyRow("abuseipdb", "AbuseIPDB API key", keys.abuseipdb)}${keyRow("otx", "AlienVault OTX API key", keys.otx)}</ul>
             <form id="reputation-settings"><div class="credential-edit-actions"><button class="primary-action" type="submit">Save changes</button><button class="cancel-credentials" id="cancel-reputation-edit" type="button">Cancel</button></div><span id="settings-status" aria-live="polite"></span></form>
           </section>
+          <section class="settings-card"><p class="page-kicker">IDENTITY PROTECTION</p><h2>Automatic identity checks</h2><p class="settings-note">FishStop automatically compares the claimed company with documented domains, sender authentication and sensitive action destinations. Public lookups use company names and domains; email content and attachments stay on this device. No partner setup is required.</p></section>
+          <details class="identity-admin-tools"><summary>Advanced administrator tools</summary>${identityRegistryMarkup()}</details>
           <section class="settings-card settings-preferences">
             <p class="page-kicker">YOUR EXPERIENCE</p><h2>Preferences</h2>
             <div class="settings-preference-list">
@@ -3022,6 +3039,8 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       if (status) status.textContent = "Could not save the preference. Please try again.";
     }
   });
+  const identityRegistry = document.querySelector<HTMLElement>(".identity-registry");
+  if (identityRegistry) bindIdentityRegistry(identityRegistry, request => invoke("identity_registry", { request }), escapeHtml);
   const machineProfile = document.querySelector<HTMLElement>("#machine-profile");
   if (machineProfile) machineProfile.innerHTML = `<dl><div><dt>System</dt><dd id="machine-system">Reading…</dd></div><div><dt>Processor</dt><dd id="machine-processor">Reading…</dd></div><div><dt>Memory</dt><dd id="machine-memory">Reading…</dd></div><div><dt>Execution</dt><dd id="machine-execution">Reading…</dd></div><div class="machine-model-row" id="machine-model-row"><dt>Selected model</dt><dd><div class="machine-model-heading"><strong id="machine-model-name">Checking…</strong><span class="model-status-badge" id="model-status-badge" hidden></span><button class="model-remove-action" id="remove-managed-qwen" type="button" aria-haspopup="dialog" aria-controls="remove-model-dialog" hidden>Remove</button></div><small id="managed-model-status">Checking the bundled AI runtime…</small><div class="managed-model-progress" id="managed-model-progress" hidden><div><span id="managed-model-progress-label">Preparing download…</span><strong id="managed-model-progress-value">0%</strong></div><div class="managed-model-progress-track" id="managed-model-progress-track" role="progressbar" aria-label="AI model download progress" aria-valuemin="0" aria-valuemax="100"><i id="managed-model-progress-fill"></i></div></div><div class="machine-model-actions"><button class="primary-action" id="install-managed-qwen" type="button" disabled>Checking…</button></div></dd></div></dl><p class="fine-tuned-model-status" id="fine-tuned-model-status" aria-live="polite"></p><div class="execution-guidance" id="execution-guidance"><p id="execution-guidance-message">Reading the local acceleration profile…</p><section class="cpu-optimization" id="cpu-optimization" hidden><div class="cpu-optimization-heading"><span class="cpu-optimization-mark" aria-hidden="true"><i></i><i></i><i></i></span><div><p class="page-kicker">CPU PERFORMANCE</p><h4>Optimize this computer</h4></div></div><p>FishStop will benchmark the local model with a short sample text and save the fastest CPU setting for future analyses. The text and results never leave this device.</p><div class="cpu-optimization-progress" id="cpu-optimization-progress" hidden><span id="cpu-optimization-progress-label">Preparing the local benchmark…</span><div role="progressbar" aria-label="CPU optimization progress" aria-valuemin="0" aria-valuemax="100" id="cpu-optimization-progress-track"><i id="cpu-optimization-progress-fill"></i></div></div><p class="cpu-optimization-result" id="cpu-optimization-result"></p><button class="soft-action" id="optimize-cpu-performance" type="button">Optimize CPU performance</button></section></div>`;
   const machineSystem = document.querySelector<HTMLElement>("#machine-system");
@@ -3325,8 +3344,6 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
     if (result) result.innerHTML = analysisLoadingMarkup(fileName, session.completedChecks);
     uploadStatus.textContent = session.progressMessage || `Local analysis of ${fileName} in progress…`;
     dropZone?.setAttribute("disabled", "true");
-    let lastProgressPaint = 0;
-    let progressTail = Promise.resolve();
     let heuristicTimer: number | undefined;
     const timingProfile = (runtime: OllamaRuntimeStatus | null) =>
       `${runtime?.model || "fishstop-v5"}|${runtime?.accelerator || "unknown"}|${runtime?.cpu || "unknown"}`;
@@ -3364,13 +3381,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
         }
       }
       if (check === undefined || session.completedChecks?.includes(check)) return;
-      progressTail = progressTail.then(async () => {
-        const elapsed = performance.now() - lastProgressPaint;
-        if (lastProgressPaint && elapsed < 260) await pause(260 - elapsed);
-        if (activeAnalysis !== session) return;
-        updateAnalysisProgress(session, check, message);
-        lastProgressPaint = performance.now();
-      });
+      if (activeAnalysis === session) updateAnalysisProgress(session, check, message);
     };
     const unlistenAnalysisProgress = await listen<AnalysisProgress>("analysis-progress", (event) => {
       if (event.payload.analysis_id !== analysisId || activeAnalysis !== session) return;
@@ -3384,6 +3395,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
     try {
       const report = await request(analysisId);
       if (activeAnalysis !== session) return;
+      const technicalDuration = performance.now() - startedAt;
       session.report = report;
       progress.enter("loading", performance.now());
       paintHeuristicProgress();
@@ -3395,25 +3407,25 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
         }
       }, startHeuristicProgress);
       if (activeAnalysis !== session) return;
-      session.recordId = await saveAnalysis(user, report, Math.round(performance.now() - startedAt));
-      await progressTail;
-      if (activeAnalysis !== session) return;
+      const resultDuration = performance.now() - startedAt;
+      console.info("FishStop analysis timing (ms)", {
+        technical: Math.round(technicalDuration),
+        aiPipeline: Math.round(resultDuration - technicalDuration),
+        modelCalls: report.phi4_analysis?.performance?.wall_duration_ms,
+        modelLoad: report.phi4_analysis?.performance?.load_duration_ms,
+        resultReady: Math.round(resultDuration),
+      });
+      if (heuristicTimer !== undefined) window.clearInterval(heuristicTimer);
       updateAnalysisProgress(session, 4);
       session.status = "complete";
+      session.progressPercent = 100;
       if (report.phi4_analysis?.status === "ok") {
-        try { recordAnalysisDuration(localStorage, durationProfile, performance.now() - startedAt); } catch { /* Optional timing history. */ }
+        try { recordAnalysisDuration(localStorage, durationProfile, resultDuration); } catch { /* Optional timing history. */ }
       }
-      const completedResult = analysisIsVisible(session) ? document.querySelector<HTMLDivElement>("#analysis-result") : null;
-      if (completedResult?.isConnected && completedResult.querySelector(".analysis-loading")) {
-        const completionDuration = completeAnalysisLoading(completedResult);
-        session.progressPercent = 100;
-        await pause(completionDuration + 80);
-        if (activeAnalysis !== session || !analysisIsVisible(session) || !completedResult.isConnected) return;
-        completedResult.querySelector<HTMLElement>(".analysis-loading")?.classList.add("is-leaving");
-        await pause(260);
-        if (activeAnalysis !== session || !analysisIsVisible(session) || !completedResult.isConnected) return;
-      }
+      // Display completion immediately, regardless of the estimated percentage.
+      // Persisting history must not hold the finished report behind the splash.
       if (activeAnalysis === session && analysisIsVisible(session)) renderDashboard(user, analysisSection(session));
+      session.recordId = await saveAnalysis(user, report, Math.round(resultDuration));
     } catch (error) {
       if (activeAnalysis === session) {
         console.error("Analysis failed", error);

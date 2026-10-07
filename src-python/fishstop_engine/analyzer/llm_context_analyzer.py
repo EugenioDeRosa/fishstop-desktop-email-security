@@ -170,7 +170,7 @@ Important distinctions:
 
 Signals are secondary context: financial_pretext for a debt/invoice/charge or diversion pretext; incentive for a prize/bonus/refund; threat for suspension, penalty, loss, exposure, reputational or physical harm; urgency for deadline/scarcity pressure; impersonation for a claimed person, role, organization, or brand. Include only signals explicitly supported by the email; never populate signals as a generic checklist. If signals is non-empty, copy the strongest signal's shortest exact phrase into signal_evidence. If no exact supporting phrase exists, return signals=[] and signal_evidence="".
 
-When relevant, populate credential_type, payment_method, payment_asset, amount, payment destination change, coercion, threat_type, scam_type, and claimed_brand. claimed_brand is the primary organisation, company, institution, product, or service that the message explicitly presents itself as representing. Copy its shortest exact name from the visible sender display name, subject, or body. Do not use an email address, a technical domain extracted from headers or links, or a generic department/role such as a security team, support team, administration, or customer service. Return an empty claimed_brand when no specific identity is explicitly named. Omit optional detail fields when they are not supported. Set ambiguity=high only when the requested outcome remains genuinely unclear after applying these rules. Summary is one concise factual English sentence with no risk verdict.
+When relevant, populate credential_type, payment_method, payment_asset, amount, payment destination change, coercion, threat_type, scam_type, and claimed_brand. When providing claimed_brand, also provide claimed_role: representative when the sender presents itself as acting for that identity, mention for a simple citation, third_party for a customer/reseller discussing it, or unclear when unsupported. claimed_brand is the primary organisation, company, institution, product, or service that the message explicitly presents itself as representing. Copy its shortest exact name from the visible sender display name, subject, or body. Do not use an email address, a technical domain extracted from headers or links, or a generic department/role such as a security team, support team, administration, or customer service. Return an empty claimed_brand when no specific identity is explicitly named. Omit optional detail fields when they are not supported. Set ambiguity=high only when the requested outcome remains genuinely unclear after applying these rules. Summary is one concise factual English sentence with no risk verdict.
 
 Before returning, verify that action, channel, and evidence agree; every quotation occurs in the email; and no field was inferred from isolated words. Return only the schema-conforming object.
 """
@@ -266,6 +266,7 @@ PHI4_OUTPUT_SCHEMA = {
             ],
         },
         "claimed_brand": {"type": "string", "maxLength": 80},
+        "claimed_role": {"type": "string", "enum": ["representative", "mention", "third_party", "unclear"]},
         "ambiguity": {
             "type": "string",
             "enum": ["none", "low", "high"],
@@ -505,6 +506,11 @@ def _auth_status(soc: dict, name: str) -> str:
 
 def _strongly_authenticated_sender(soc: dict) -> bool:
     """Return whether the final receiver authenticated the visible sender."""
+    if "domain_authentication" in soc:
+        proof = soc["domain_authentication"] or {}
+        return proof.get("status") == "verified" and any(
+            registered_domain(domain) == registered_domain(_sender_domain(soc))
+            for domain in proof.get("verified_domains", []))
     spf = _auth_status(soc, "SPF")
     dkim = _auth_status(soc, "DKIM")
     dmarc = _auth_status(soc, "DMARC")
@@ -518,6 +524,8 @@ def _strongly_authenticated_sender(soc: dict) -> bool:
 
 def _qualified_aligned_spf_sender(soc: dict) -> bool:
     """Accept SPF-only identity only when both its domain and SMTP IP are proven."""
+    if "domain_authentication" in soc:
+        return False
     spf = _auth_status(soc, "SPF")
     dkim = _auth_status(soc, "DKIM")
     dmarc = _auth_status(soc, "DMARC")
@@ -533,7 +541,7 @@ def _qualified_aligned_spf_sender(soc: dict) -> bool:
     )
 
 
-def _requested_links_match_verified_organisation(soc: dict) -> bool:
+def _requested_links_match_verified_organisation(soc: dict, semantic: dict | None = None) -> bool:
     """Use Brand Intelligence evidence without embedding provider domains."""
     if not _strongly_authenticated_sender(soc):
         return False
@@ -551,12 +559,21 @@ def _requested_links_match_verified_organisation(soc: dict) -> bool:
             )
             if registered_domain(domain)
         }
-        if coherence.get("official_domain"):
-            accepted.add(registered_domain(coherence.get("official_domain")))
+        if "authorized_action_relations" in coherence:
+            action = (semantic or {}).get("requested_action", "visit_link")
+            from fishstop_engine.identity_store import action_authorized
+            if (coherence.get("status") == "aligned" and coherence.get("sender_authentication") == "verified"
+                    and all(any(action_authorized(link, relation, action) for relation in coherence["authorized_action_relations"]) for link in links)):
+                return True
+            continue
+        else:
+            sender_allowed = accepted
+            if coherence.get("official_domain"):
+                accepted.add(registered_domain(coherence.get("official_domain")))
         if (
             str(coherence.get("status") or "").lower() != "aligned"
             or not sender_domain
-            or sender_domain not in accepted
+            or sender_domain not in sender_allowed
         ):
             continue
         link_domains = {
@@ -1059,6 +1076,34 @@ def _claimed_brand_occurrences(soc: dict, value: object) -> list[dict]:
     ]
 
 
+def _visible_identity_fallback(soc: dict) -> tuple[str, str]:
+    """Recover an explicit brand heading when the model omits the optional field.
+
+    A mention or a substring of another company is never a representative claim.
+    This discovers a claim, not a trusted sender, and requires no AI/network call.
+    """
+    from fishstop_engine.identity_store import known_identity_names
+    display = _normalize_obfuscated_text(parseaddr(str(soc.get("from_") or ""))[0]).strip()
+    body = re.sub(r"\s+", " ", _normalize_obfuscated_text(_body_context_for_llm(soc))).strip()
+    role = r"(?:account|security|support|billing|payments|team|assistenza|sicurezza|customer\s+service)"
+    candidates = set()
+    for name in known_identity_names():
+        brand = re.escape(name)
+        sender_claim = bool(re.fullmatch(brand + r"(?:\s+" + role + r")?", display, re.I))
+        heading_claim = bool(re.match(r"^" + brand + r"\s+" + role + r"\b", body[:240], re.I))
+        # Branded account/security headings must be followed by the organisation
+        # addressing the reader, rather than a customer's description or citation.
+        direct_notice = bool(re.search(r"\b(?:we\s+(?:detected|noticed|received)|your\s+account|abbiamo\s+(?:rilevato|ricevuto)|il\s+tuo\s+account)\b", body[:700], re.I))
+        if sender_claim or heading_claim and direct_notice:
+            candidates.add(name)
+    # Prefer the longest exact alias only when it describes the same entity.
+    from fishstop_engine.identity_store import resolve_partner
+    identities = {((resolve_partner(name) or {}).get("brand") or name).casefold() for name in candidates}
+    if len(identities) != 1:
+        return "", "unclear"
+    return max(candidates, key=len), "representative"
+
+
 def _identity_analysis_from_semantic(soc: dict, semantic: dict) -> dict:
     """Turn the grounded Qwen identity claim into the existing identity report."""
     brand = _clip_exact_span(
@@ -1066,6 +1111,20 @@ def _identity_analysis_from_semantic(soc: dict, semantic: dict) -> dict:
         80,
     )
     occurrences = _claimed_brand_occurrences(soc, brand)
+    if not occurrences:
+        brand, role = _visible_identity_fallback(soc)
+        occurrences = _claimed_brand_occurrences(soc, brand)
+        if occurrences:
+            semantic["claimed_brand"] = brand
+            semantic["claimed_role"] = role
+    elif semantic.get("claimed_role") in {None, "", "unclear"}:
+        fallback_brand, role = _visible_identity_fallback(soc)
+        if fallback_brand:
+            from fishstop_engine.identity_store import resolve_partner
+            claimed = resolve_partner(brand)
+            fallback = resolve_partner(fallback_brand)
+            if claimed and fallback and claimed["brand"] == fallback["brand"]:
+                semantic["claimed_role"] = role
     entities = []
     if occurrences:
         entities.append({
@@ -1080,14 +1139,18 @@ def _identity_analysis_from_semantic(soc: dict, semantic: dict) -> dict:
         semantic["claimed_brand"] = ""
 
     from fishstop_engine.brand_intelligence import assess_brand_coherence
-
+    from fishstop_engine.impersonation import assess_impersonation
+    coherence = assess_brand_coherence(soc, entities) if entities else []
+    impersonation = assess_impersonation(soc, entities, normalize_semantic_extraction(semantic, soc=soc), coherence)
+    soc["impersonation"] = impersonation
     return {
         "status": "ok",
         "model": OLLAMA_MODEL,
         "backend": "ollama-semantic",
         "segments_analyzed": 3,
         "entities": entities,
-        "coherence": assess_brand_coherence(soc, entities),
+        "coherence": coherence,
+        "impersonation": impersonation,
     }
 
 
@@ -1977,6 +2040,7 @@ def normalize_semantic_extraction(raw: dict, soc: dict | None = None) -> dict:
         "scam_type": scam_type,
         "structured_extortion": structured_extortion,
         "claimed_brand": claimed_brand,
+        "claimed_role": _enum(raw.get("claimed_role"), {"representative", "mention", "third_party", "unclear"}, "unclear"),
         "model_content_risk": model_content_risk,
         "model_risk_evidence": model_risk_evidence,
         "confidence": _confidence(raw.get("confidence")),
@@ -2303,7 +2367,7 @@ def _correlate_semantic_with_message_structure(soc: dict, semantic: dict) -> dic
 
 def _content_risk(soc: dict, semantic: dict) -> tuple[str, list[str]]:
     reasons = []
-    verified_organisation_action = _requested_links_match_verified_organisation(soc)
+    verified_organisation_action = _requested_links_match_verified_organisation(soc, semantic)
     risky_channel = semantic["action_channel"] in {
         "supplied_link", "external_form", "supplied_attachment", "email_reply",
     } or semantic["asks_to_click_link"] or semantic["asks_to_open_attachment"]
@@ -2439,6 +2503,14 @@ def _identity_risk(
     semantic: dict | None = None,
 ) -> tuple[str, list[str]]:
     reasons = []
+    impersonation = soc.get("impersonation") or (soc.get("identity_analysis") or {}).get("impersonation") or {}
+    if impersonation.get("claimed_identity"):
+        reasons = [item["evidence"] for item in impersonation.get("signals", [])][:6]
+        if impersonation.get("decision") == "phishing" and impersonation.get("confidence") == "high":
+            return "spoofing_evidence", reasons
+        if impersonation.get("status") == "consistent":
+            return "verified", reasons
+        return "uncertain", reasons or ["The claimed company identity could not be independently confirmed."]
     forwarded_identity = soc.get("forwarded_identity") or {}
     supplied_forwarded_action = bool(
         forwarded_identity.get("from")
@@ -2464,6 +2536,8 @@ def _identity_risk(
         for coherence in ((soc.get("identity_analysis") or {}).get("coherence") or []):
             if coherence.get("status") != "mismatch" or not coherence.get("official_domain"):
                 continue
+            if coherence.get("reference_status") == "public_reference":
+                continue  # Public website lists need not enumerate every authorized sender.
             mismatch_sources = {
                 str(item.get("source") or "").strip().lower()
                 for item in (coherence.get("mismatches") or [])
@@ -2483,6 +2557,9 @@ def _identity_risk(
             f"the message claims the identity '{brand}', but the authenticated sender domain is unrelated"
         ]
 
+    if risky_brand_action and any(item.get("status") == "mismatch" and item.get("reference_status") == "public_reference"
+                                  for item in ((soc.get("identity_analysis") or {}).get("coherence") or [])):
+        return "uncertain", ["the sender differs from the public company-domain reference; its authorization could not be independently confirmed"]
     statuses = {name: _auth_status(soc, name) for name in ("SPF", "DKIM", "DMARC")}
     spf_result = (soc.get("effective_auth_results") or {}).get("SPF") or {}
     spf_path_conflict = bool(spf_result.get("path_conflict"))
@@ -2495,6 +2572,8 @@ def _identity_risk(
     ) or (
         statuses["SPF"] == "pass" and statuses["DKIM"] == "pass"
     )
+    if "domain_authentication" in soc:
+        authentication_passed = _strongly_authenticated_sender(soc)
     qualified_spf_only = _qualified_aligned_spf_sender(soc)
     if supplied_forwarded_action:
         return "uncertain", [
@@ -2570,15 +2649,6 @@ def _sender_domain(soc: dict) -> str:
     return (match.group(1) if match else "").lower().rstrip(".")
 
 
-_AUTHORITATIVE_BRAND_DOMAINS = {
-    "iCloud": {"apple.com", "icloud.com"},
-    "Trust Wallet": {"trustwallet.com"},
-    "Microsoft": {"microsoft.com"},
-    "PayPal": {"paypal.com"},
-    "Netflix": {"netflix.com"},
-}
-
-
 def _sender_display_name(soc: dict) -> str:
     value = _normalize_obfuscated_text(str(soc.get("from_") or "")).strip()
     if "<" not in value:
@@ -2587,6 +2657,9 @@ def _sender_display_name(soc: dict) -> str:
 
 
 def _claimed_brand_domain_mismatch(soc: dict, semantic: dict) -> bool:
+    assessment = soc.get("impersonation") or (soc.get("identity_analysis") or {}).get("impersonation")
+    if assessment is not None:
+        return assessment.get("decision") == "phishing" and assessment.get("confidence") == "high"
     if semantic.get("requested_action") not in {
         "provide_credentials", "provide_information", "pay_or_transfer",
         "verify_account", "change_account_settings", "claim_reward",
@@ -2598,13 +2671,19 @@ def _claimed_brand_domain_mismatch(soc: dict, semantic: dict) -> bool:
     sender_domain = _sender_domain(soc)
     if not sender_domain:
         return False
-    for known_brand, allowed_domains in _AUTHORITATIVE_BRAND_DOMAINS.items():
-        if known_brand.casefold() == brand.casefold():
-            return not any(
-                sender_domain == allowed
-                or sender_domain.endswith("." + allowed)
-                for allowed in allowed_domains
-            )
+    from fishstop_engine.identity_store import resolve_partner, relationship_matches
+    from email.utils import parseaddr
+    partner = resolve_partner(brand)
+    if partner:
+        return not any(relationship_matches(parseaddr(str(soc.get("from_") or ""))[1].rsplit("@", 1)[-1], item)
+                       and "sender" in item["scopes"] for item in partner["relations"])
+    for coherence in ((soc.get("identity_analysis") or {}).get("coherence") or []):
+        if str(coherence.get("brand") or "").casefold() == brand.casefold() and coherence.get("official_domains"):
+            return coherence.get("status") == "mismatch" and coherence.get("reference_status") != "public_reference"
+    if "domain_authentication" in soc:
+        # New reports require current, attributable company evidence. The legacy
+        # static list must not revive expired or unresolved identity assertions.
+        return False
     # Unknown brand/domain relationships require an external authoritative
     # registry. Do not guess from language-dependent brand tokens.
     return False
@@ -2635,10 +2714,7 @@ def _sensitive_link_domain_mismatch(soc: dict, semantic: dict) -> bool:
     spf = _auth_status(soc, "SPF")
     dkim = _auth_status(soc, "DKIM")
     dmarc = _auth_status(soc, "DMARC")
-    if (
-        dmarc in {"pass", "bestguesspass"}
-        or (spf == "pass" and dkim == "pass")
-    ) and not _claimed_brand_domain_mismatch(soc, semantic):
+    if _strongly_authenticated_sender(soc) and not _claimed_brand_domain_mismatch(soc, semantic):
         return False
 
     sender_domain = registered_domain(_sender_domain(soc))
@@ -2776,6 +2852,9 @@ def _technical_risk(soc: dict, semantic: dict | None = None) -> tuple[str, list[
             suspicious.append("a claimed invoice attachment is instead hosted on an unrelated external domain")
     if semantic and _sensitive_link_domain_mismatch(soc, semantic):
         suspicious.append("a requested-action link uses a domain unrelated to the sender")
+    if semantic and semantic.get("requested_action") in {"pay_or_transfer", "provide_credentials", "change_account_settings"}:
+        for item in ((soc.get("identity_analysis") or {}).get("coherence") or []):
+            suspicious.extend(item.get("anomalies") or [])
     malicious = list(dict.fromkeys(malicious))
     suspicious = list(dict.fromkeys(suspicious))
     if malicious:
@@ -2945,6 +3024,9 @@ def apply_email_risk_policy(soc: dict, semantic: dict) -> dict:
         # Authentication failures alone describe uncertain identity, not malicious content.
         verdict = "legitimate"
 
+    impersonation = soc.get("impersonation") or {}
+    if verdict == "legitimate" and impersonation.get("decision") == "review":
+        verdict = "review"
     if verdict == "phishing":
         explanation = "Strong or corroborated phishing evidence was detected."
     elif verdict == "review":
@@ -3951,6 +4033,7 @@ def _merge_semantic_candidates(candidates: list[dict], soc: dict) -> dict:
             brand = candidate.get("claimed_brand") or normalized.get("claimed_brand")
             if brand:
                 merged["claimed_brand"] = brand
+                merged["claimed_role"] = candidate.get("claimed_role") or normalized.get("claimed_role") or "unclear"
                 break
 
     if winner_normalized["requested_action"] == "provide_credentials":

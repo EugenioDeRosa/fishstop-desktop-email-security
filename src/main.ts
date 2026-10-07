@@ -3063,7 +3063,17 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
     if (removeManagedQwen) removeManagedQwen.disabled = true;
   };
   const renderManagedOperation = (): boolean => {
-    if (!managedModelOperation || !managedModelStatus || !installManagedQwen || !removeManagedQwen) return false;
+    if (!managedModelOperation) {
+      if (managedProgress) {
+        managedProgress.hidden = true;
+        managedProgress.classList.remove("is-indeterminate");
+      }
+      managedProgressTrack?.removeAttribute("aria-valuenow");
+      if (managedProgressFill) managedProgressFill.style.width = "0%";
+      if (managedProgressValue) managedProgressValue.textContent = "0%";
+      return false;
+    }
+    if (!managedModelStatus || !installManagedQwen || !removeManagedQwen) return false;
     managedModelStatus.hidden = false;
     const installing = managedModelOperation.phase === "installing";
     installManagedQwen.hidden = !installing;
@@ -3211,6 +3221,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
     let installationError: unknown = null;
     try {
       unlisten = await listen<OllamaModelProgress>("ollama-model-progress", (event) => {
+        if (managedModelOperation?.phase !== "installing") return;
         managedModelOperation = { phase: "installing", ...event.payload };
         renderManagedOperation();
       });
@@ -3220,6 +3231,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
     } finally {
       unlisten?.();
       managedModelOperation = null;
+      renderManagedOperation();
       await refreshManagedModel(true);
     }
     if (installationError) { console.error("AI model installation failed", installationError); managedModelStatus.hidden = false; managedModelStatus.textContent = typeof installationError === "string" ? installationError : "FishSTOP AI v5 could not be installed. Please try again."; }

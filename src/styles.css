@@ -390,3 +390,5 @@ footer { display: flex; justify-content: space-between; gap: 18px; color: var(--
 .globe-point-facts{display:grid;gap:8px;margin:12px 0 0;font-size:10px;line-height:1.5}.globe-point-facts>div{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.15fr);gap:10px}.globe-point-facts dt{color:var(--night-muted, #73897f)}.globe-point-facts dd{margin:0;color:var(--night-text, #294c47);overflow-wrap:anywhere;font-weight:600}.globe-point-details .otx-inline-evidence{margin-top:12px}
 .globe-location-indicator{flex:none;display:flex;align-items:center;justify-content:center;gap:9px;min-height:26px;border-top:1px solid var(--night-border, #dce9e3);color:var(--night-muted, #71877d);font:9px "DM Mono",monospace}
 .globe-location-indicator[hidden]{display:none}.globe-location-dots{display:flex;align-items:center;gap:5px}.globe-location-dots i{width:4px;height:4px;border-radius:50%;background:var(--night-raised, #c6d8d0);transition:background .2s,transform .2s}.globe-location-dots i.is-active{background:#287567;transform:scale(1.3)}
+
+.loading-estimate{display:block;margin-top:8px;color:var(--night-secondary,#59756e);font-size:11px;line-height:1.5}

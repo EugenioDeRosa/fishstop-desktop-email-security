@@ -3,6 +3,7 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 import { createStatusCache } from "./status-cache";
+import { analysisDurationEstimate, recordAnalysisDuration, createAnalysisProgress } from "./analysis-progress";
 import { currentTheme, initializeTheme, setTheme } from "./theme";
 import { geoDistance, geoGraticule, geoInterpolate, geoOrthographic, geoPath } from "d3-geo";
 import { feature, mesh } from "topojson-client";
@@ -137,7 +138,7 @@ type SiemReport = {
 type SpamhausResult = { status?: string; message?: string; provider?: "spamhaus"; classification?: "not_listed" | "threat" | "policy" | "unknown"; codes?: string[]; threat_codes?: string[]; policy_codes?: string[]; categories?: string[] };
 type ReputationResult = { status?: string; message?: string; detection_ratio?: string; malicious?: number; suspicious?: number; total_engines?: number; threat_label?: string; file_type?: string; file_name?: string; last_analysis?: string | number; permalink?: string; abuseConfidenceScore?: number; totalReports?: number; spamhaus?: SpamhausResult; country?: string; country_code?: string; city?: string; region?: string; isp?: string; org?: string; asn?: string | number; timezone?: string; lat?: number; lon?: number; is_proxy?: boolean; is_hosting?: boolean; resolved_ip?: string; resolved_domain?: string; used_parent_fallback?: string; url?: string; title?: string; crowdsourced_context_summary?: string };
 type AnalysisRecord = { id: string; analyzedAt: string; report: AnalysisReport; analysisDurationMs?: number };
-type ActiveAnalysis = { userSub: string; fileName: string; source?: "file" | "inbox"; status: "processing" | "complete" | "error"; analysisId?: string; report?: AnalysisReport; recordId?: string | null; error?: string; completedChecks?: number[]; progressMessage?: string; progressPercent?: number };
+type ActiveAnalysis = { userSub: string; fileName: string; source?: "file" | "inbox"; status: "processing" | "complete" | "error"; analysisId?: string; report?: AnalysisReport; recordId?: string | null; error?: string; completedChecks?: number[]; progressMessage?: string; progressPercent?: number; progressHint?: string };
 type StatisticsPeriod = "today" | "week" | "month" | "3m" | "6m" | "9m" | "12m" | "all";
 type CopyEvent = { copiedAt: string };
 
@@ -836,11 +837,11 @@ function homeIconMarkup(): string {
 }
 
 function analysisLoadingMarkup(fileName: string, completedChecks: number[] = [], progressMessage = "Each signal is processed on this device.", heuristicProgress = 0): string {
-  const checks = ["Reading the message", "Preparing local analysis", "Understanding content and intent", "Preparing the safety assessment"];
+  const checks = ["Reading the message and checking technical signals", "Preparing local analysis", "Understanding content and intent", "Preparing the safety assessment"];
   const completed = new Set(completedChecks);
   const completedCount = checks.filter((_, index) => completed.has(index)).length;
   const percentage = Math.max(0, Math.min(100, heuristicProgress));
-  return `<section class="analysis-loading" aria-live="polite" role="progressbar" aria-label="Analysis progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percentage}" style="--analysis-progress:${percentage}%"><div class="analysis-progress-surface" aria-hidden="true"><div class="analysis-progress-glow"></div></div><div class="loading-orbit"><i></i><b aria-hidden="true">${searchIconMarkup()}</b></div><div><p class="page-kicker">LOCAL ANALYSIS IN PROGRESS</p><h2>Checking ${escapeHtml(fileName)}</h2><p class="loading-copy">${escapeHtml(progressMessage)}</p></div><ol>${checks.map((label, index) => `<li data-loading-check="${index}" class="${completed.has(index) ? "done" : index === completedCount ? "active" : ""}"><span>✓</span>${label}</li>`).join("")}</ol></section>`;
+  return `<section class="analysis-loading" aria-live="polite" role="progressbar" aria-label="Analysis progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percentage}" style="--analysis-progress:${percentage}%"><div class="analysis-progress-surface" aria-hidden="true"><div class="analysis-progress-glow"></div></div><div class="loading-orbit"><i></i><b aria-hidden="true">${searchIconMarkup()}</b></div><div><p class="page-kicker">LOCAL ANALYSIS IN PROGRESS</p><h2>Checking ${escapeHtml(fileName)}</h2><p class="loading-copy">${escapeHtml(progressMessage)}</p><small class="loading-estimate">${escapeHtml(activeAnalysis?.progressHint || "Usually takes about 1-2 minutes on this computer.")}</small></div><ol>${checks.map((label, index) => `<li data-loading-check="${index}" class="${completed.has(index) ? "done" : index === completedCount ? "active" : ""}"><span>✓</span>${label}</li>`).join("")}</ol></section>`;
 }
 
 function conversationInspectionMarkup(fileName: string): string {
@@ -3327,29 +3328,31 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
     let lastProgressPaint = 0;
     let progressTail = Promise.resolve();
     let heuristicTimer: number | undefined;
-    const startHeuristicProgress = (runtime: OllamaRuntimeStatus | null) => {
-      if (heuristicTimer !== undefined) window.clearInterval(heuristicTimer);
-      const platform = (runtime?.platform || "").toLowerCase();
-      const architecture = (runtime?.architecture || "").toLowerCase();
-      const isAppleSilicon = /darwin|mac/.test(platform) && /arm|aarch64/.test(architecture);
-      const accelerated = Boolean(runtime?.loaded_on_gpu) || isAppleSilicon;
-      const expectedDurationMs = accelerated ? 30_000 : 120_000;
-      const heuristicStartedAt = performance.now();
-      // Changing the runtime estimate continues from the current value.
-      const initialProgress = session.progressPercent || 0;
-      const paintHeuristicProgress = () => {
-        if (activeAnalysis !== session || session.status !== "processing") return;
-        const elapsedRatio = (performance.now() - heuristicStartedAt) / expectedDurationMs;
-        const estimated = elapsedRatio <= 1
-          ? 90 * (1 - Math.pow(1 - Math.max(0, elapsedRatio), 1.7))
-          : 90 + 9 * (1 - Math.exp(-1.4 * (elapsedRatio - 1)));
-        setAnalysisProgressVisual(session, initialProgress + (99 - initialProgress) * Math.min(99, estimated) / 99);
-      };
-      paintHeuristicProgress();
-      heuristicTimer = window.setInterval(paintHeuristicProgress, 250);
+    const timingProfile = (runtime: OllamaRuntimeStatus | null) =>
+      `${runtime?.model || "fishstop-v5"}|${runtime?.accelerator || "unknown"}|${runtime?.cpu || "unknown"}`;
+    let durationProfile = timingProfile(ollamaRuntimeSnapshot);
+    const readEstimate = () => {
+      try { return analysisDurationEstimate(localStorage, durationProfile); }
+      catch { return 80_000; }
     };
-    // Start at zero during message preparation, before the AI runtime is ready.
-    startHeuristicProgress(ollamaRuntimeSnapshot);
+    const progress = createAnalysisProgress(startedAt, readEstimate());
+    const paintHeuristicProgress = () => {
+      if (activeAnalysis !== session || session.status !== "processing") return;
+      const sample = progress.sample(performance.now());
+      session.progressHint = sample.hint;
+      setAnalysisProgressVisual(session, sample.percentage);
+      if (analysisIsVisible(session)) {
+        const hint = document.querySelector<HTMLElement>("#analysis-result .loading-estimate");
+        if (hint && hint.textContent !== sample.hint) hint.textContent = sample.hint;
+      }
+    };
+    const startHeuristicProgress = (runtime: OllamaRuntimeStatus | null) => {
+      durationProfile = timingProfile(runtime);
+      progress.setEstimate(readEstimate());
+      paintHeuristicProgress();
+    };
+    paintHeuristicProgress();
+    heuristicTimer = window.setInterval(paintHeuristicProgress, 250);
     const queueProgress = (check: number | undefined, message?: string) => {
       if (message) {
         session.progressMessage = message;
@@ -3371,15 +3374,25 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
     };
     const unlistenAnalysisProgress = await listen<AnalysisProgress>("analysis-progress", (event) => {
       if (event.payload.analysis_id !== analysisId || activeAnalysis !== session) return;
+      const stage = event.payload.stage;
+      if (stage === "model-loading") progress.enter("loading", performance.now());
+      else if (["model-ready", "content", "retry", "primary-complete", "verification"].includes(stage)) progress.enter("ai", performance.now());
+      else if (stage === "merge") progress.enter("finishing", performance.now());
+      paintHeuristicProgress();
       queueProgress(event.payload.completed_check, event.payload.message);
     }).catch(() => null);
     try {
       const report = await request(analysisId);
       if (activeAnalysis !== session) return;
       session.report = report;
+      progress.enter("loading", performance.now());
+      paintHeuristicProgress();
       queueProgress(0, "Message checks complete. Preparing local analysis…");
       await runAiAnalysis(user, report, null, document.createElement("div"), startedAt, analysisId, () => activeAnalysis === session, (engine) => {
-        if (activeAnalysis === session) queueProgress(engine === "phi4" ? 3 : undefined);
+        if (activeAnalysis === session) {
+          if (engine === "phi4") { progress.enter("finishing", performance.now()); paintHeuristicProgress(); }
+          queueProgress(engine === "phi4" ? 2 : engine === "summary" ? 3 : undefined);
+        }
       }, startHeuristicProgress);
       if (activeAnalysis !== session) return;
       session.recordId = await saveAnalysis(user, report, Math.round(performance.now() - startedAt));
@@ -3387,6 +3400,9 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       if (activeAnalysis !== session) return;
       updateAnalysisProgress(session, 4);
       session.status = "complete";
+      if (report.phi4_analysis?.status === "ok") {
+        try { recordAnalysisDuration(localStorage, durationProfile, performance.now() - startedAt); } catch { /* Optional timing history. */ }
+      }
       const completedResult = analysisIsVisible(session) ? document.querySelector<HTMLDivElement>("#analysis-result") : null;
       if (completedResult?.isConnected && completedResult.querySelector(".analysis-loading")) {
         const completionDuration = completeAnalysisLoading(completedResult);

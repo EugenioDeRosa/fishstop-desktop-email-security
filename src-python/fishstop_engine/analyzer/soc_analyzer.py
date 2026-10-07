@@ -30,6 +30,7 @@ from fishstop_engine.analysis_limits import (
 )
 from fishstop_engine.domain_utils import registered_domain, same_registered_domain
 from .archive_analysis import ArchiveAnalysisBudget
+from fishstop_engine.office_analysis import OfficeAnalysisBudget
 from .attachment      import analyze_attachment
 from .body_context    import extract_forwarded_identity, select_body_for_ai
 from .html_deception  import analyze_html_copy_deception
@@ -220,15 +221,9 @@ def _reply_to_mismatch_looks_legitimate(msg, from_addr: str | None, reply_addr: 
     if same_registered_domain(from_domain, reply_domain):
         return True
 
-    from_local = _local_part(from_addr)
-    reply_local = _local_part(reply_addr)
-    if not _has_bulk_or_crm_headers(msg):
-        return False
-
-    return (
-        from_local in NO_REPLY_LOCAL_PARTS
-        and reply_local in GENERIC_REPLY_LOCAL_PARTS
-    )
+    # Newsletter headers and generic mailbox names are sender-controlled.
+    # They cannot establish a relationship between different reply domains.
+    return False
 
 
 def _pdf_indicator_flag_level(severity: str) -> str:
@@ -599,6 +594,7 @@ class EmlSOCAnalyzer:
         html_parts       = []
         attachments_info = []
         archive_budget = ArchiveAnalysisBudget()
+        office_budget = OfficeAnalysisBudget()
         plain_noise_removed_lines = 0
         plain_noise_removed_chars = 0
         decoded_text_chars = 0
@@ -622,6 +618,7 @@ class EmlSOCAnalyzer:
                     encoding=encoding,
                     raw_payload=raw_payload,
                     archive_budget=archive_budget,
+                    office_budget=office_budget,
                 )
                 disposition_type = str(part.get_content_disposition() or "").lower()
                 content_id = str(part.get("Content-ID") or "").strip().strip("<>")
@@ -1059,6 +1056,18 @@ class EmlSOCAnalyzer:
                      f"'{att['filename']}': {attachment_anomaly}")
             pdf_security = att.get("pdf_security") or {}
             archive_security = att.get("archive_security") or {}
+            office_security = att.get("office_security") or {}
+            for label, scan in (("PDF", pdf_security), ("Archive", archive_security)):
+                if scan.get("analysis_complete") is False:
+                    flag("MEDIUM", f"{label} inspection incomplete",
+                         f"'{att['filename']}': {scan.get('summary')}")
+            for finding in (office_security.get("findings") or [])[:8]:
+                risk = str(finding.get("severity") or "low").lower()
+                flag("HIGH" if risk == "high" else "MEDIUM" if risk == "medium" else "INFO",
+                     "Office content", f"'{att['filename']}': {finding.get('label')} - {finding.get('evidence') or ''}")
+            if office_security and not office_security.get("analysis_complete"):
+                flag("MEDIUM", "Office inspection incomplete",
+                     f"'{att['filename']}': {office_security.get('summary')}")
             for behavior in (pdf_security.get("behaviors") or [])[:8]:
                 flag(
                     _pdf_indicator_flag_level(behavior.get("severity")),

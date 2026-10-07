@@ -2,12 +2,16 @@ import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
+import { createStatusCache } from "./status-cache";
+import { currentTheme, initializeTheme, setTheme } from "./theme";
 import { geoDistance, geoGraticule, geoInterpolate, geoOrthographic, geoPath } from "d3-geo";
 import { feature, mesh } from "topojson-client";
+import { focusZoom, maintainedRouteZoom, travelDuration, smoothZoom, routeFrame, nearestMarker, MAX_ROUTE_ZOOM } from "./globe-route";
 import worldAtlas from "world-atlas/countries-110m.json";
 import { animate } from "motion/mini";
 import fishstopMailCheckUrl from "./fishstop-mail-check.svg";
 import "./styles.css";
+import "./night.css";
 
 type AuthUser = { sub: string; name?: string; email: string; picture?: string; provider?: "google" | "microsoft" };
 type MailboxStatus = { connected: boolean; provider: "google" | "microsoft"; email: string };
@@ -82,8 +86,10 @@ type AnalysisReport = {
       summary?: string;
       findings?: Array<{ key?: string; label?: string; severity?: string; evidence?: string }>;
     };
-    pdf_security?: { risk_level?: string; summary?: string };
-    archive_security?: { risk_level?: string; summary?: string; entry_count?: number; total_uncompressed_bytes?: number; encrypted_entry_count?: number; nested_archive_count?: number; findings?: Array<{ label?: string; severity?: string; count?: number; samples?: string[] }> };
+    inspection?: { status?: string; analysis_complete?: boolean; summary?: string };
+    pdf_security?: { risk_level?: string; summary?: string; status?: string; analysis_complete?: boolean };
+    office_security?: { engine?: string; status?: string; analysis_complete?: boolean; risk_level?: string; summary?: string; vba_macros?: boolean; xlm_macros?: boolean; autoexec?: string[]; suspicious_keywords?: string[]; iocs?: string[]; urls?: string[]; findings?: Array<{ key?: string; label?: string; severity?: string; evidence?: string }> };
+    archive_security?: { risk_level?: string; summary?: string; status?: string; analysis_complete?: boolean; members?: unknown[]; entry_count?: number; total_uncompressed_bytes?: number; encrypted_entry_count?: number; nested_archive_count?: number; findings?: Array<{ label?: string; severity?: string; count?: number; samples?: string[] }> };
     file_reputation?: ReputationResult;
   }>;
   lookalike_alerts?: Array<{ url?: string; host?: string; registered_domain?: string; matched_brand?: string; technique?: string; detail?: string; edit_distance?: number; level?: "HIGH" | "MEDIUM" | "LOW" | "INFO" }>;
@@ -129,7 +135,7 @@ type SiemReport = {
   analysis?: Record<string, unknown>;
 };
 type SpamhausResult = { status?: string; message?: string; provider?: "spamhaus"; classification?: "not_listed" | "threat" | "policy" | "unknown"; codes?: string[]; threat_codes?: string[]; policy_codes?: string[]; categories?: string[] };
-type ReputationResult = { status?: string; message?: string; detection_ratio?: string; malicious?: number; suspicious?: number; total_engines?: number; threat_label?: string; file_type?: string; file_name?: string; last_analysis?: string | number; permalink?: string; abuseConfidenceScore?: number; totalReports?: number; spamhaus?: SpamhausResult; country?: string; country_code?: string; city?: string; region?: string; isp?: string; org?: string; asn?: string; timezone?: string; lat?: number; lon?: number; is_proxy?: boolean; is_hosting?: boolean; resolved_ip?: string; resolved_domain?: string; used_parent_fallback?: string; url?: string; title?: string; crowdsourced_context_summary?: string };
+type ReputationResult = { status?: string; message?: string; detection_ratio?: string; malicious?: number; suspicious?: number; total_engines?: number; threat_label?: string; file_type?: string; file_name?: string; last_analysis?: string | number; permalink?: string; abuseConfidenceScore?: number; totalReports?: number; spamhaus?: SpamhausResult; country?: string; country_code?: string; city?: string; region?: string; isp?: string; org?: string; asn?: string | number; timezone?: string; lat?: number; lon?: number; is_proxy?: boolean; is_hosting?: boolean; resolved_ip?: string; resolved_domain?: string; used_parent_fallback?: string; url?: string; title?: string; crowdsourced_context_summary?: string };
 type AnalysisRecord = { id: string; analyzedAt: string; report: AnalysisReport; analysisDurationMs?: number };
 type ActiveAnalysis = { userSub: string; fileName: string; source?: "file" | "inbox"; status: "processing" | "complete" | "error"; analysisId?: string; report?: AnalysisReport; recordId?: string | null; error?: string; completedChecks?: number[]; progressMessage?: string; progressPercent?: number };
 type StatisticsPeriod = "today" | "week" | "month" | "3m" | "6m" | "9m" | "12m" | "all";
@@ -167,6 +173,8 @@ type OllamaRuntimeStatus = {
   platform: string; architecture: string; cpu: string; memory_bytes?: number;
   accelerator: string; selection_reason: string; loaded_model?: string; loaded_on_gpu: boolean;
   cpu_only: boolean; cpu_optimization?: CpuOptimizationSummary;
+  fine_tuned_available: boolean; fine_tuned_enabled: boolean; fine_tuned_model: string;
+  fine_tuned_version?: string | null;
 };
 type OllamaModelProgress = { status: string; total?: number; completed?: number };
 type ManagedModelOperation = { phase: "installing" | "removing"; status: string; total?: number; completed?: number };
@@ -180,12 +188,27 @@ type ConversationSelection = { target_ids: string[]; context_ids: string[]; prio
 let managedModelOperation: ManagedModelOperation | null = null;
 let cpuOptimizationOperation: CpuOptimizationProgress | null = null;
 let ollamaRuntimeSnapshot: OllamaRuntimeStatus | null = null;
+const runtimeStatusCache = createStatusCache(() => invoke<OllamaRuntimeStatus>("ollama_runtime_status"), 15_000);
+const reputationStatusCaches = new Map<string, ReturnType<typeof createStatusCache<ReputationKeyStatus>>>();
+function reputationStatusCache(user: AuthUser) {
+  let cache = reputationStatusCaches.get(user.sub);
+  if (!cache) {
+    cache = createStatusCache(() => invoke<ReputationKeyStatus>("reputation_key_status", { userSub: user.sub }), 60_000);
+    reputationStatusCaches.set(user.sub, cache);
+  }
+  return cache;
+}
 const mailboxInboxCache = new Map<string, MailboxInboxSnapshot>();
 const mailboxInboxRequests = new Map<string, Promise<MailboxMessage[]>>();
 const mailboxInboxEpochs = new Map<string, number>();
 
 function escapeHtml(value: string): string {
   return value.replace(/[&<>'"]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[character] || character));
+}
+
+function globeAutoplayDisabled(user = storedUser()): boolean {
+  try { return localStorage.getItem(`fishstop:globe-autoplay-disabled:${user?.sub || "local"}`) === "true"; }
+  catch { return false; }
 }
 
 function historyStorageKey(user: AuthUser): string { return `${HISTORY_STORAGE_PREFIX}${user.sub}`; }
@@ -197,7 +220,7 @@ function legacyReputationKeys(user: AuthUser): { virustotal: string; abuseipdb: 
 }
 // The settings shell is rendered before the asynchronous native-keychain lookup.
 // `refreshReputationSettings` fills in availability without exposing secret values.
-function reputationKeys(_user: AuthUser): { virustotal: string; abuseipdb: string; otx: string } { return { virustotal: "", abuseipdb: "", otx: "" }; }
+function reputationKeys(user: AuthUser): ReputationKeyStatus { return reputationStatusCache(user).peek() ?? { virustotal: false, abuseipdb: false, otx: false }; }
 function maskedSecret(value: string): string {
   return value.length <= 8 ? "••••••••" : `${value.slice(0, 4)}••••••${value.slice(-4)}`;
 }
@@ -209,18 +232,20 @@ async function migrateLegacyReputationKeys(user: AuthUser): Promise<void> {
   if (!legacy.virustotal && !legacy.abuseipdb) return;
   const request = (async () => {
     await invoke("save_reputation_keys", { userSub: user.sub, ...legacy });
+    reputationStatusCache(user).invalidate();
     localStorage.removeItem(`${REPUTATION_KEYS_PREFIX}${user.sub}`);
   })().finally(() => reputationMigrationRequests.delete(user.sub));
   reputationMigrationRequests.set(user.sub, request);
   return request;
 }
 
-async function refreshReputationSettings(user: AuthUser): Promise<void> {
+async function refreshReputationSettings(user: AuthUser, force = false): Promise<void> {
   const card = document.querySelector<HTMLElement>(".settings-reputation");
   if (!card) return;
   try {
-    const keys = await invoke<ReputationKeyStatus>("reputation_key_status", { userSub: user.sub });
-    if (!card.isConnected) return;
+    const cache = reputationStatusCache(user);
+    const keys = await cache.load(force);
+    if (!card.isConnected || cache.peek() !== keys) return;
     const configured = Number(keys.virustotal) + Number(keys.abuseipdb) + Number(keys.otx);
     (["virustotal", "abuseipdb", "otx"] as const).forEach((provider) => {
       const ready = keys[provider];
@@ -257,8 +282,8 @@ async function resolveProtectionStatus(user: AuthUser): Promise<ProtectionStatus
   try {
     const [engine, runtime, keys] = await Promise.all([
       invoke<LocalEngineStatus>("local_engine_status"),
-      invoke<OllamaRuntimeStatus>("ollama_runtime_status"),
-      invoke<ReputationKeyStatus>("reputation_key_status", { userSub: user.sub }),
+      runtimeStatusCache.load(),
+      reputationStatusCache(user).load(),
     ]);
     ollamaRuntimeSnapshot = runtime;
     if (!engine.static_engine || !engine.python_runtime) return { userSub: user.sub, tone: "error", message: "Analysis engine unavailable" };
@@ -752,9 +777,13 @@ function structuredReportData(report: AnalysisReport): SiemReport {
       filename: attachment.filename, content_type: attachment.content_type,
       size_bytes: attachment.size_bytes ?? attachment.size, sha256: attachment.hash_sha256,
       role: attachment.mime_role, actionable: attachment.actionable, detected_format: attachment.magic_detected_format,
-      risk: attachment.attachment_security?.risk_level || attachment.pdf_security?.risk_level || attachment.archive_security?.risk_level || attachment.file_reputation?.status,
+      risk: ["critical", "high", "malicious", "medium", "suspicious", "unknown", "low", "clean"].find((risk) => [attachment.attachment_security?.risk_level, attachment.pdf_security?.risk_level, attachment.archive_security?.risk_level, attachment.office_security?.risk_level, attachment.file_reputation?.status].includes(risk)),
       anomaly: attachment.anomaly,
-      findings: attachment.attachment_security?.findings,
+      findings: [...(attachment.attachment_security?.findings || []), ...(attachment.office_security?.findings || [])],
+      office_security: attachment.office_security,
+      inspection: attachment.inspection,
+      pdf_security: attachment.pdf_security,
+      archive_security: attachment.archive_security,
       reputation: publicReputation(attachment.file_reputation),
     })),
     findings,
@@ -769,6 +798,8 @@ function structuredReportData(report: AnalysisReport): SiemReport {
       ai_model: report.phi4_analysis?.model, ai_backend: report.identity_analysis?.backend,
       duration_ms: report.phi4_analysis?.duration_ms,
       authentication_scope: report.selected_target_authentication_scope || report.authentication_scope,
+      coverage: incompleteAnalysisReason(report) ? "incomplete" : "complete",
+      incomplete_reason: incompleteAnalysisReason(report) || undefined,
     },
   };
   return compactObject(result);
@@ -808,10 +839,8 @@ function analysisLoadingMarkup(fileName: string, completedChecks: number[] = [],
   const checks = ["Reading the message", "Preparing local analysis", "Understanding content and intent", "Preparing the safety assessment"];
   const completed = new Set(completedChecks);
   const completedCount = checks.filter((_, index) => completed.has(index)).length;
-  const progressMilestones = [5, 40, 90, 97];
-  const milestoneProgress = completedCount ? progressMilestones[completedCount - 1] : 0;
-  const percentage = Math.max(milestoneProgress, Math.min(100, heuristicProgress));
-  return `<section class="analysis-loading" aria-live="polite" role="progressbar" aria-label="Analysis progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percentage}" style="--analysis-progress:${percentage}%"><div class="loading-orbit"><i></i><b aria-hidden="true">${searchIconMarkup()}</b></div><div><p class="page-kicker">LOCAL ANALYSIS IN PROGRESS</p><h2>Checking ${escapeHtml(fileName)}</h2><p class="loading-copy">${escapeHtml(progressMessage)}</p></div><ol>${checks.map((label, index) => `<li data-loading-check="${index}" class="${completed.has(index) ? "done" : index === completedCount ? "active" : ""}"><span>✓</span>${label}</li>`).join("")}</ol></section>`;
+  const percentage = Math.max(0, Math.min(100, heuristicProgress));
+  return `<section class="analysis-loading" aria-live="polite" role="progressbar" aria-label="Analysis progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percentage}" style="--analysis-progress:${percentage}%"><div class="analysis-progress-surface" aria-hidden="true"><div class="analysis-progress-glow"></div></div><div class="loading-orbit"><i></i><b aria-hidden="true">${searchIconMarkup()}</b></div><div><p class="page-kicker">LOCAL ANALYSIS IN PROGRESS</p><h2>Checking ${escapeHtml(fileName)}</h2><p class="loading-copy">${escapeHtml(progressMessage)}</p></div><ol>${checks.map((label, index) => `<li data-loading-check="${index}" class="${completed.has(index) ? "done" : index === completedCount ? "active" : ""}"><span>✓</span>${label}</li>`).join("")}</ol></section>`;
 }
 
 function conversationInspectionMarkup(fileName: string): string {
@@ -857,20 +886,18 @@ function markLoadingCheck(container: HTMLElement, index: number): void {
   });
   const completedCount = items.filter((item) => item.classList.contains("done")).length;
   items.forEach((item, itemIndex) => item.classList.toggle("active", itemIndex === completedCount));
-  const progressMilestones = [5, 40, 90, 97];
-  const loading = container.querySelector<HTMLElement>(".analysis-loading");
-  if (loading) {
-    const milestone = completedCount ? progressMilestones[Math.min(completedCount, progressMilestones.length) - 1] : 0;
-    const percentage = Math.max(milestone, Number(loading.getAttribute("aria-valuenow") || 0));
-    loading.setAttribute("aria-valuenow", String(percentage));
-    loading.style.setProperty("--analysis-progress", `${percentage}%`);
-  }
 }
 
-function completeAnalysisLoading(container: HTMLElement): void {
+function completeAnalysisLoading(container: HTMLElement): number {
   container.querySelectorAll<HTMLElement>("[data-loading-check]").forEach((_, index) => markLoadingCheck(container, index));
   const loading = container.querySelector<HTMLElement>(".analysis-loading");
-  if (!loading) return;
+  if (!loading) return 0;
+  // Even a very quick analysis must visibly travel through the remaining fill.
+  const remaining = 100 - Number(loading.getAttribute("aria-valuenow") || 0);
+  const durationMs = Math.max(800, remaining * 25);
+  loading.style.setProperty("--analysis-completion-duration", `${durationMs}ms`);
+  loading.style.setProperty("--analysis-progress", "100%");
+  loading.setAttribute("aria-valuenow", "100");
   loading.classList.add("is-complete");
   const kicker = loading.querySelector<HTMLElement>(".page-kicker");
   const title = loading.querySelector<HTMLElement>("h2");
@@ -880,6 +907,7 @@ function completeAnalysisLoading(container: HTMLElement): void {
   if (title) title.textContent = "All checks completed";
   if (copy) copy.textContent = "Preparing your report…";
   if (mark) mark.textContent = "✓";
+  return durationMs;
 }
 
 function pause(milliseconds: number): Promise<void> {
@@ -1188,7 +1216,10 @@ function unverifiedRequestedResourceReason(report: AnalysisReport): string | nul
     const attachmentRisk = (attachment.attachment_security?.risk_level || "clean").toLowerCase();
     const pdfRisk = (attachment.pdf_security?.risk_level || "clean").toLowerCase();
     const archiveRisk = (attachment.archive_security?.risk_level || "clean").toLowerCase();
+    const office = attachment.office_security;
     return !attachment.anomaly
+      && !attachmentInspectionIncomplete(attachment)
+      && (!office || (office.analysis_complete === true && !["high", "critical", "medium"].includes(office.risk_level || "unknown")))
       && !["high", "critical", "medium"].includes(attachmentRisk)
       && !["high", "critical", "medium"].includes(pdfRisk)
       && !["high", "critical", "medium"].includes(archiveRisk);
@@ -1224,6 +1255,23 @@ function conciseAiVerdict(report: AnalysisReport, fallback: string): string {
   return combined || fallback;
 }
 
+function attachmentInspectionIncomplete(attachment: NonNullable<AnalysisReport["attachments"]>[number]): boolean {
+  return [attachment.inspection, attachment.pdf_security, attachment.archive_security, attachment.office_security]
+    .some((scan) => scan?.analysis_complete === false);
+}
+
+function incompleteAnalysisReason(report: AnalysisReport): string | null {
+  const reasons: string[] = [];
+  if (report.phi4_analysis?.status !== "ok"
+    || !["legitimate", "review", "phishing"].includes((report.phi4_analysis?.analysis?.final_verdict || "").toLowerCase())) {
+    reasons.push("The local AI analysis did not complete, so the message content could not be fully assessed.");
+  }
+  if ((report.attachments || []).some(attachmentInspectionIncomplete)) {
+    reasons.push("One or more attachments could not be fully inspected. Check the attachment details before taking action.");
+  }
+  return reasons.length ? reasons.join(" ") : null;
+}
+
 function assessment(report: AnalysisReport): { tone: "safe" | "review" | "danger"; label: string; detail: string } {
   const semantic = report.phi4_analysis?.analysis;
   const phi = (semantic?.final_verdict || "").toLowerCase();
@@ -1250,6 +1298,8 @@ function assessment(report: AnalysisReport): { tone: "safe" | "review" | "danger
   // findings can never be downgraded by an unavailable or disagreeing model.
   if (staticReason) return result("danger", "HIGH RISK", staticReason);
   if (phi === "phishing") return result("danger", "HIGH RISK", conciseAiVerdict(report, "Risk indicators were found. Do not interact with this message."));
+  const incomplete = incompleteAnalysisReason(report);
+  if (incomplete) return { tone: "review", label: "ANALYSIS INCOMPLETE", detail: incomplete };
   if (unverifiedRequestedResource) return result("review", "REVIEW REQUIRED", unverifiedRequestedResource);
   if (high) return result("danger", "HIGH RISK", "A high-severity static check failed. Do not interact with this message.");
   // A first-party account notice is not suspicious merely because it contains
@@ -1262,7 +1312,7 @@ function assessment(report: AnalysisReport): { tone: "safe" | "review" | "danger
   if (aiClearsInformationalMessage) return result("safe", "LIKELY LEGITIMATE", conciseAiVerdict(report, "The message is informational and no meaningful risk indicator was found."));
   if (phi === "review" || medium) return result("review", "REVIEW REQUIRED", authenticationReview || conciseAiVerdict(report, "Anomalies were found. Verify the message before taking any action."));
   if (phi === "legitimate") return result("safe", "LIKELY LEGITIMATE", conciseAiVerdict(report, "No relevant technical or content indicators were found."));
-  return result("safe", "LIKELY LEGITIMATE", "No relevant technical or semantic signals were found.");
+  return { tone: "review", label: "ANALYSIS INCOMPLETE", detail: "A complete assessment is not available. Review the message before taking action." };
 }
 
 function verdictRationale(report: AnalysisReport): string {
@@ -1290,7 +1340,7 @@ function verdictRationale(report: AnalysisReport): string {
   const authenticatedLinkSummary = verdict.tone === "safe" && authenticatedFirstPartyRequest
     ? "The requested link belongs to the strongly authenticated sender domain, and no malicious link or identity mismatch was detected."
     : "";
-  const aiSummary = highSeverityStaticReason(report) || unverifiedRequestedResourceReason(report) || authenticationReviewReason(report) || authenticatedLinkSummary || linkContextSummary || semantic?.content_summary || semantic?.explanation || intent;
+  const aiSummary = highSeverityStaticReason(report) || incompleteAnalysisReason(report) || unverifiedRequestedResourceReason(report) || authenticationReviewReason(report) || authenticatedLinkSummary || linkContextSummary || semantic?.content_summary || semantic?.explanation || intent;
   const technical = findings.length
     ? findings.map((flag) => `<li><b>${escapeHtml(flag.level)}</b><span>${escapeHtml(flag.field)} · ${escapeHtml(flag.message)}</span></li>`).join("")
     : corroboration.length
@@ -1627,9 +1677,14 @@ function reportMarkup(report: AnalysisReport): string {
     const attachmentRisk = (attachment.attachment_security?.risk_level || "").toLowerCase();
     const pdfRisk = (attachment.pdf_security?.risk_level || "").toLowerCase();
     const archiveRisk = (attachment.archive_security?.risk_level || "").toLowerCase();
+    const office = attachment.office_security;
+    const officeRisk = (office?.risk_level || "").toLowerCase();
+    const officeIncomplete = Boolean(office && office.analysis_complete !== true);
     const dangerousType = ["high", "critical"].includes(attachmentRisk);
-    const risky = Boolean(dangerousType || attachment.anomaly || ["high", "critical"].includes(pdfRisk) || ["high", "critical"].includes(archiveRisk));
-    const caution = ["medium", "warning"].includes(attachmentRisk) || ["medium", "warning"].includes(pdfRisk) || ["medium", "warning"].includes(archiveRisk);
+    const risky = Boolean(dangerousType || attachment.anomaly || ["high", "critical"].includes(pdfRisk) || ["high", "critical"].includes(archiveRisk) || ["high", "critical"].includes(officeRisk));
+    const incomplete = attachmentInspectionIncomplete(attachment);
+    const typeOnly = attachment.inspection?.status === "type_only";
+    const caution = incomplete || officeIncomplete || officeRisk === "medium" || ["medium", "warning"].includes(attachmentRisk) || ["medium", "warning"].includes(pdfRisk) || ["medium", "warning"].includes(archiveRisk);
     const reputationResult = attachment.file_reputation;
     const reputation = reputationCheckTone(reputationResult);
     const otxMatches = otxMatchesForAttachment(report, attachment.hash_sha256);
@@ -1637,13 +1692,14 @@ function reportMarkup(report: AnalysisReport): string {
     const attachmentSize = attachment.size_bytes ?? attachment.size;
     const detail = `${attachment.content_type || "unknown type"} · ${formatAttachmentSize(attachmentSize)} · ${attachment.magic_detected_format || "unrecognised format"}`;
     const archiveMeta = attachment.archive_security ? `${attachment.archive_security.entry_count || 0} entries${attachment.archive_security.nested_archive_count ? ` · ${attachment.archive_security.nested_archive_count} nested` : ""}${attachment.archive_security.encrypted_entry_count ? ` · ${attachment.archive_security.encrypted_entry_count} encrypted` : ""}` : "";
-    const note = (dangerousType ? attachment.attachment_security?.summary : "") || attachment.anomaly || attachment.pdf_security?.summary || attachment.archive_security?.summary || (caution ? "Archive or PDF requires review" : "Local structure valid");
+    const note = (dangerousType ? attachment.attachment_security?.summary : "") || attachment.anomaly || (incomplete || typeOnly ? attachment.inspection?.summary : "") || office?.summary || attachment.pdf_security?.summary || attachment.archive_security?.summary || "File type checks only; content not inspected";
+    const officeDetails = office ? `<em>Office inspection (oletools): ${escapeHtml(office.status || "unknown")} · ${officeIncomplete ? "Incomplete — requires review" : "Completed"}</em>${(office.findings || []).slice(0, 8).map((finding) => `<em>${escapeHtml(`${finding.label || finding.key || "Office finding"}${finding.evidence ? ` · ${finding.evidence}` : ""}`)}</em>`).join("")}` : "";
     const tone = risky || reputation === "fail" || otxMatch ? "fail" : caution || reputation === "warn" ? "warn" : reputation || "pass";
-    const status = dangerousType ? "High-risk file type" : risky ? "Anomaly detected" : reputation === "fail" ? "Detected by VirusTotal" : otxMatch ? "SHA-256 matched in OTX threat intelligence" : caution || reputation === "warn" ? "Review required" : reputation === "pass" ? "VirusTotal clean" : "Passed";
+    const status = dangerousType ? "High-risk file type" : risky ? "Anomaly detected" : reputation === "fail" ? "Detected by VirusTotal" : otxMatch ? "SHA-256 matched in OTX threat intelligence" : incomplete ? "Not fully inspected" : caution || reputation === "warn" ? "Review required" : reputation === "pass" ? "VirusTotal clean" : typeOnly ? "Type checks only" : "Supported checks completed";
     const intelligence = [reputationResult?.detection_ratio && `VirusTotal: ${reputationResult.detection_ratio}`, reputationResult?.last_analysis && `Last analysis: ${reputationResult.last_analysis}`].filter(Boolean).join(" · ");
     const reportLink = reputationResult?.permalink ? `<p><a href="${escapeHtml(reputationResult.permalink)}" target="_blank" rel="noopener noreferrer">VirusTotal report ↗</a></p>` : "";
     const copyAction = tone === "fail" && attachment.hash_sha256 ? `<button class="copy-evidence" type="button" data-copy-ioc="${escapeHtml(attachment.hash_sha256)}">Copy SHA-256</button>` : "";
-    return `<li class="static-check static-check-${tone}"><strong>${escapeHtml(attachment.filename || "Unnamed attachment")}</strong><small>${escapeHtml(`${status} · ${detail} · ${note}`)}</small>${archiveMeta ? `<em>Archive inspection: ${escapeHtml(archiveMeta)}</em>` : ""}${intelligence ? `<em>${escapeHtml(intelligence)}</em>` : ""}${otxInlineEvidence(otxMatches)}${copyAction}${reportLink}</li>`;
+    return `<li class="static-check static-check-${tone}"><strong>${escapeHtml(attachment.filename || "Unnamed attachment")}</strong><small>${escapeHtml(`${status} · ${detail} · ${note}`)}</small>${officeDetails}${archiveMeta ? `<em>Archive inspection: ${escapeHtml(archiveMeta)}</em>` : ""}${intelligence ? `<em>${escapeHtml(intelligence)}</em>` : ""}${otxInlineEvidence(otxMatches)}${copyAction}${reportLink}</li>`;
   }).join("") || staticCheckItem("neutral", "No attachments detected", "No MIME files are available to check.", "Not applicable");
   const lookalikes = (report.lookalike_alerts || []).map((alert) => {
     const risky = isRiskyLookalikeAlert(alert);
@@ -1677,7 +1733,7 @@ function reportMarkup(report: AnalysisReport): string {
   const authenticationDescription = targetAuthUnavailable
     ? "This embedded message has no independent transport or authentication headers."
     : "Routing context and header checks in one view.";
-  return `<section class="analysis-report verdict-${verdict.tone}"><div class="report-summary"><p class="page-kicker">ANALYSIS RESULT</p><h2>${risk}</h2><p class="verdict-detail">${escapeHtml(verdict.detail)}</p>${rationale}<p><strong>${escapeHtml(report.subject || "No subject")}</strong> · ${escapeHtml(report.from_ || "Sender unavailable")}</p><div class="report-stats"><span>${high} high</span><span>${medium} medium</span>${aiThreatBadges}<span>${(report.links || []).filter((link) => (link.scheme || "").toLowerCase() !== "mailto").length} web links</span><span>${(report.attachments || []).length} attachments</span></div></div><nav class="report-tabs" aria-label="Report sections"><span class="report-tab-indicator" aria-hidden="true"></span>${tabs}</nav>${panel("summary", `<div class="report-grid"><section><h3>Message</h3>${fields([["From", report.from_], ["To", report.to], ["Subject", report.subject], ["Date", report.date]])}</section><section><h3>Trust checks</h3><ul class="auth-grid">${auth}</ul><p class="quiet">${lookalikeSummary}</p></section></div><div class="report-flags"><h3>All signals</h3><ul>${details}</ul></div>`, true)}${panel("sender", `<div class="report-grid"><section><h3>${senderPanelTitle}</h3>${fields([["From", report.from_], ["Delivered-To", report.delivered_to], ["Return-Path", report.return_path], ["Reply-To", report.reply_to], ["Errors-To", report.errors_to], ["Importance", report.importance]])}</section>${forwardedIdentity}<section class="sender-consistency"><h3>Identity consistency</h3><ul class="auth-grid">${senderInconsistencies}</ul></section></div>`)}${panel("auth", `${conversationAuthBoundary}<section class="authentication-card"><div class="authentication-heading"><div><p class="page-kicker">MESSAGE AUTHENTICATION</p><h3>${authenticationTitle}</h3><p>${authenticationDescription}</p></div><div class="routing-summary" aria-label="Routing summary">${routingSummary}</div></div><div class="auth-evidence-grid">${authDetails}</div></section>`)}${panel("links", `<div class="report-grid"><section class="evidence-card"><h3>Web links</h3><ul>${links}</ul></section><section class="evidence-card"><h3>Email actions</h3><ul>${emailActions}</ul></section><section class="evidence-card"><h3>Lookalike / Typosquatting</h3><ul>${lookalikes}</ul></section></div>`)}${panel("files", `<section class="evidence-card"><h3>Attachments</h3><ul>${attachments}</ul></section>`)}${panel("content", `<div class="report-grid"><section><h3>Context</h3>${fields([["Source", report.body_source], ["Selection", report.body_context]])}</section><section><h3>Extracted body</h3><pre>${escapeHtml((report.body_ai || report.body_clean || "No extractable text.").slice(0, 12000))}</pre></section></div>`)}${panel("technical", `<section class="technical-report raw-eml-report"><div><h3>Raw EML</h3><p>Read-only source view. Attachment payloads are omitted to keep MIME evidence readable.</p></div><pre tabindex="0" aria-label="Raw EML source with attachment payloads omitted">${escapeHtml(report.raw_eml_preview || report.raw_eml_preview_error || "Raw EML preview unavailable for this saved report. Reanalyse the email to generate it.")}</pre></section><section class="technical-report"><div><h3>Structured report</h3><p>Export technical evidence as JSON, without the raw EML preview or original binary content.</p></div><button id="download-report" type="button">Download JSON</button><pre>${escapeHtml(JSON.stringify(structuredReport, null, 2))}</pre></section>`)}</section>`;
+  return `<section class="analysis-report verdict-${verdict.tone}"><div class="report-summary"><p class="page-kicker">ANALYSIS RESULT</p><h2>${risk}</h2><p class="verdict-detail">${escapeHtml(verdict.detail)}</p>${rationale}<p><strong>${escapeHtml(report.subject || "No subject")}</strong> · ${escapeHtml(report.from_ || "Sender unavailable")}</p><div class="report-stats">${aiThreatBadges}<span>${high} high</span><span>${medium} medium</span><span>${(report.links || []).filter((link) => (link.scheme || "").toLowerCase() !== "mailto").length} web links</span><span>${(report.attachments || []).length} attachments</span></div></div><nav class="report-tabs" aria-label="Report sections"><span class="report-tab-indicator" aria-hidden="true"></span>${tabs}</nav>${panel("summary", `<div class="report-grid"><section><h3>Message</h3>${fields([["From", report.from_], ["To", report.to], ["Subject", report.subject], ["Date", report.date]])}</section><section><h3>Trust checks</h3><ul class="auth-grid">${auth}</ul><p class="quiet">${lookalikeSummary}</p></section></div><div class="report-flags"><h3>All signals</h3><ul>${details}</ul></div>`, true)}${panel("sender", `<div class="report-grid"><section><h3>${senderPanelTitle}</h3>${fields([["From", report.from_], ["Delivered-To", report.delivered_to], ["Return-Path", report.return_path], ["Reply-To", report.reply_to], ["Errors-To", report.errors_to], ["Importance", report.importance]])}</section>${forwardedIdentity}<section class="sender-consistency"><h3>Identity consistency</h3><ul class="auth-grid">${senderInconsistencies}</ul></section></div>`)}${panel("auth", `${conversationAuthBoundary}<section class="authentication-card"><div class="authentication-heading"><div><p class="page-kicker">MESSAGE AUTHENTICATION</p><h3>${authenticationTitle}</h3><p>${authenticationDescription}</p></div><div class="routing-summary" aria-label="Routing summary">${routingSummary}</div></div><div class="auth-evidence-grid">${authDetails}</div></section>`)}${panel("links", `<div class="report-grid"><section class="evidence-card"><h3>Web links</h3><ul>${links}</ul></section><section class="evidence-card"><h3>Email actions</h3><ul>${emailActions}</ul></section><section class="evidence-card"><h3>Lookalike / Typosquatting</h3><ul>${lookalikes}</ul></section></div>`)}${panel("files", `<section class="evidence-card"><h3>Attachments</h3><ul>${attachments}</ul></section>`)}${panel("content", `<div class="report-grid"><section><h3>Context</h3>${fields([["Source", report.body_source], ["Selection", report.body_context]])}</section><section><h3>Extracted body</h3><pre>${escapeHtml((report.body_ai || report.body_clean || "No extractable text.").slice(0, 12000))}</pre></section></div>`)}${panel("technical", `<section class="technical-report raw-eml-report"><div><h3>Raw EML</h3><p>Read-only source view. Attachment payloads are omitted to keep MIME evidence readable.</p></div><pre tabindex="0" aria-label="Raw EML source with attachment payloads omitted">${escapeHtml(report.raw_eml_preview || report.raw_eml_preview_error || "Raw EML preview unavailable for this saved report. Reanalyse the email to generate it.")}</pre></section><section class="technical-report"><div><h3>Structured report</h3><p>Export technical evidence as JSON, without the raw EML preview or original binary content.</p></div><button id="download-report" type="button">Download JSON</button><pre>${escapeHtml(JSON.stringify(structuredReport, null, 2))}</pre></section>`)}</section>`;
 }
 
 function reputationRows(items: Array<{ title: string; detail: string; result?: ReputationResult; copyValue?: string }>): string {
@@ -1805,6 +1861,8 @@ function renderEmailGlobe(report: AnalysisReport): void {
   }
   if (!hops.length) {
     wrapper.innerHTML = `<div class="globe-empty"><b>Globe unavailable for this report</b><span>The hops have no geographic coordinates. Reanalyse the email to update geolocation.</span></div>`;
+    tooltip.innerHTML = `<p>No geographic locations are available. The complete hop details are listed below.</p>`;
+    tooltip.hidden = false;
     return;
   }
   const coincidentGroups = new Map<string, GlobeHop[]>();
@@ -1848,215 +1906,272 @@ function renderEmailGlobe(report: AnalysisReport): void {
     const latitude = Math.atan2(vector.z, Math.hypot(vector.x, vector.y)) / radians;
     return [-longitude, -latitude];
   };
-  let width = 0, height = 0, radius = 0;
-  let lambda = -locations[0].lon, phi = -locations[0].lat;
-  let routeStartedAt: number | null = null;
-  let activeRouteLocation = 0;
-  let rotating = locations.length > 1, dragging = false, pointerX = 0, pointerY = 0, dragX = 0, dragY = 0, dragLambda = lambda, dragPhi = phi, hoveredIndex = -1;
-  let routeDwelling = rotating, routeDwellProgress = 0, dragMoved = false, pinnedIndex = -1, renderedTooltipIndex = -1;
+  // Locations are only drawing groups; the tour retains every chronological hop.
+  const hopLocations = hops.map((hop) => locations.findIndex((location) => location.hops.includes(hop)));
+  const coordinates = (hop: GlobeHop): [number, number] => [hop.lon, hop.lat];
+  const distances = hops.map((hop, index) => index + 1 < hops.length ? geoDistance(coordinates(hop), coordinates(hops[index + 1])) : 0);
+  const travelTimes = distances.map((distance, index) => index === hops.length - 1 ? 0 : travelDuration(distance));
+  const hopStarts = travelTimes.map((_, index) => travelTimes.slice(0, index).reduce((sum, travel) => sum + 2400 + travel, 0));
+  let width = 0, height = 0, radius = 0, zoom = 1, targetZoom = 1;
+  let routeZoom = 1;
+  let lambda = -hops[0].lon, phi = -hops[0].lat;
+  let cameraTarget: [number, number] = coordinates(hops[0]);
+  let activeHop = 0, elapsed = 0, lastFrame: number | null = null, finished = false;
+  let rotating = hops.length > 1 && !globeAutoplayDisabled(), dragging = false, dragMoved = false;
+  let pointerX = -100, pointerY = -100, dragX = 0, dragY = 0, dragLambda = lambda, dragPhi = phi;
+  let renderedOrder = -1, renderedTooltip = "";
+  let selectedOrder = hops[0].order, routeDwelling = true;
+  let pinnedTooltip = -1, lastTooltipIndex = -1;
+  let scrolledHop = -1;
+  const locationIndicator = document.createElement("div");
+  locationIndicator.className = "globe-location-indicator";
+  locationIndicator.hidden = true;
+  tooltip.parentElement?.append(locationIndicator);
+  const updateLocationIndicator = () => {
+    locationIndicator.hidden = received.length < 2;
+    if (received.length < 2) return;
+    const shown = locations[lastTooltipIndex];
+    const current = shown && !shown.hops.some(hop => hop.order === selectedOrder)
+      ? shown.hops[0].order : selectedOrder;
+    const key = `${received.length}:${current}`;
+    if (locationIndicator.dataset.position === key) return;
+    locationIndicator.dataset.position = key;
+    locationIndicator.setAttribute("aria-label", `Hop ${current} of ${received.length} in the email route`);
+    locationIndicator.innerHTML = `<span class="globe-location-dots" aria-hidden="true">${received.map((_, index) => `<i class="${index + 1 === current ? "is-active" : ""}"></i>`).join("")}</span><span aria-hidden="true">${current} / ${received.length}</span>`;
+  };
   const projection = geoOrthographic().clipAngle(90);
   const path = geoPath(projection, context);
-  const riskColor = (hasReputation: boolean, score?: number, strongOtxIpMatch = false) => !hasReputation ? "#888780" : strongOtxIpMatch ? "#e24b4a" : score !== undefined && score >= 50 ? "#e24b4a" : score !== undefined && score >= 25 ? "#ef9f27" : "#1d9e75";
+  const riskColor = (hop: Pick<GlobeHop, "hasReputation" | "score" | "strongOtxIpMatch">) => !hop.hasReputation ? "#888780" : hop.strongOtxIpMatch ? "#e24b4a" : (hop.score ?? 0) >= 50 ? "#e24b4a" : (hop.score ?? 0) >= 25 ? "#ef9f27" : "#1d9e75";
   const authenticationColor = (status?: string) => {
     const tone = authCheckTone(status || "unknown");
     return tone === "pass" ? "#42c99b" : tone === "fail" ? "#ff6b60" : tone === "warn" ? "#f6b94a" : "#718983";
   };
-  const protocolOrder: AuthenticationCheckpoint["protocol"][] = ["SPF", "DKIM", "DMARC"];
-  const checkpointForProtocol = (hop: GlobeHop, protocol: AuthenticationCheckpoint["protocol"]) => {
-    const matches = hop.checkpoints.filter((checkpoint) => checkpoint.protocol === protocol);
+  const protocols: AuthenticationCheckpoint["protocol"][] = ["SPF", "DKIM", "DMARC"];
+  const checkpointFor = (entries: GlobeHop[], protocol: AuthenticationCheckpoint["protocol"]) => {
     const priority: Record<CheckTone, number> = { fail: 3, warn: 2, neutral: 1, pass: 0 };
-    return matches.sort((left, right) => priority[authCheckTone(right.status)] - priority[authCheckTone(left.status)])[0];
-  };
-  const checkpointForLocation = (location: GlobeLocation, protocol: AuthenticationCheckpoint["protocol"]) => {
-    const matches = location.hops.flatMap((hop) => hop.checkpoints).filter((checkpoint) => checkpoint.protocol === protocol);
-    const priority: Record<CheckTone, number> = { fail: 3, warn: 2, neutral: 1, pass: 0 };
-    return matches.sort((left, right) => priority[authCheckTone(right.status)] - priority[authCheckTone(left.status)])[0];
-  };
-  const checkpointStatus = (checkpoint?: AuthenticationCheckpoint) => checkpoint?.status || "not_observed";
-  const checkpointLabel = (checkpoint?: AuthenticationCheckpoint) => checkpoint
-    ? String(checkpoint.status || "unknown").toUpperCase()
-    : "NOT OBSERVED";
-  const markerPoint = (location: GlobeLocation): [number, number] | null => {
-    return projection([location.lon, location.lat]);
+    return entries.flatMap((hop) => hop.checkpoints).filter((checkpoint) => checkpoint.protocol === protocol)
+      .sort((left, right) => priority[authCheckTone(right.status)] - priority[authCheckTone(left.status)])[0];
   };
   const roleLabel: Record<GlobeHop["role"], string> = { sender: "Earliest observed hop", injection: "Observed relay", relay: "Intermediate relay", recipient: "Latest public hop" };
-  const isVisible = (longitude: number, latitude: number) => {
-    const rotation = projection.rotate();
-    return geoDistance(
-      [longitude, latitude],
-      [-rotation[0], -rotation[1]],
-    ) <= Math.PI / 2 + 1e-7;
+  const hopFacts = (hop: GlobeHop) => {
+    const reputation = report.hop_reputation?.[hop.ip];
+    const geo = report.geolocation_results?.[hop.ip];
+    const fact = (label: string, value: string | number) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(String(value))}</dd></div>`;
+    const abuseAvailable = abuseIpDbAvailable(reputation);
+    const spamhaus = reputation?.spamhaus;
+    const otxMatches = otxMatchesForIp(report, hop.ip);
+    const tone = hop.strongOtxIpMatch || (hop.score ?? 0) >= 50 ? "fail" : (hop.score ?? 0) >= 25 || spamhaus?.classification === "threat" ? "warn" : hop.hasReputation ? "pass" : "neutral";
+    const facts = [
+      ["clean", "listed"].includes(spamhaus?.status || "") ? fact("Spamhaus ZEN", spamhaus?.status === "clean" ? "Not listed" : `Listed · ${spamhaus?.categories?.join(", ") || spamhaus?.classification || "unknown"}`) : "",
+      geo?.asn ? fact("ASN", geo.asn) : "",
+      geo?.is_hosting === true ? fact("Hosting provider", "Yes") : "",
+      geo?.is_proxy === true ? fact("Proxy", "Yes") : "",
+    ].join("");
+    return `<div class="globe-reputation-summary globe-reputation-${tone}"><strong>IP reputation</strong><span>${escapeHtml(abuseAvailable ? hop.abuseSummary : hop.hasReputation ? "See reputation findings below" : "Reputation unavailable")}</span></div>${facts ? `<dl class="globe-point-facts">${facts}</dl>` : ""}${otxMatches.length ? otxInlineEvidence(otxMatches) : ""}`;
+  };
+  const isVisible = (location: GlobeLocation) => geoDistance([location.lon, location.lat], [-lambda, -phi]) <= Math.PI / 2;
+  const visiblePoints = () => locations.map((location): [number, number] | null => {
+    if (!isVisible(location)) return null;
+    const point = projection([location.lon, location.lat]);
+    return point && point[0] >= 0 && point[0] <= width && point[1] >= 0 && point[1] <= height ? point : null;
+  });
+  const zoomForHop = (index: number) => {
+    const ownLocation = hopLocations[index];
+    // A shared geolocation cannot be separated by magnification. Only distinct
+    // nearby markers trigger the automatic camera zoom.
+    return focusZoom(locations.filter((_, other) => other !== ownLocation)
+      .map((location) => geoDistance(coordinates(hops[index]), [location.lon, location.lat])), radius);
+  };
+  const completeHopCards = Array.from(reportPanel.querySelectorAll<HTMLElement>(".globe-complete-hops [data-hop-order]"));
+  const renderActiveHop = () => {
+    if (renderedOrder === selectedOrder) return;
+    completeHopCards.forEach((card) => card.classList.toggle("is-current-hop", Number(card.dataset.hopOrder) === selectedOrder));
+    renderedOrder = selectedOrder;
+  };
+  wrapper.querySelector(".globe-zoom-controls")?.remove();
+  const zoomControls = document.createElement("div");
+  zoomControls.className = "globe-zoom-controls";
+  zoomControls.setAttribute("role", "group");
+  zoomControls.setAttribute("aria-label", "Globe zoom");
+  zoomControls.innerHTML = `<button type="button" data-zoom-in aria-label="Zoom in" title="Zoom in">+</button><button type="button" data-zoom-out aria-label="Zoom out" title="Zoom out">−</button>`;
+  wrapper.append(zoomControls);
+  const zoomIn = zoomControls.querySelector<HTMLButtonElement>("[data-zoom-in]")!;
+  const zoomOut = zoomControls.querySelector<HTMLButtonElement>("[data-zoom-out]")!;
+  const updateZoomControls = () => {
+    zoomIn.disabled = targetZoom >= MAX_ROUTE_ZOOM;
+    zoomOut.disabled = targetZoom <= 1;
+  };
+  const updateControls = () => {
+    toggle.textContent = rotating ? "Pause route" : finished ? "Replay route" : "Start route";
+    toggle.setAttribute("aria-pressed", String(rotating));
+    updateZoomControls();
+  };
+  const changeZoom = (factor: number) => {
+    const base = rotating ? zoom : targetZoom;
+    rotating = false; routeDwelling = false;
+    cameraTarget = [-lambda, -phi];
+    targetZoom = Math.max(1, Math.min(MAX_ROUTE_ZOOM, base * factor));
+    routeZoom = targetZoom;
+    pinnedTooltip = -1; pointerX = pointerY = -100; tooltip.hidden = true;
+    updateControls();
+  };
+  zoomIn.addEventListener("click", () => changeZoom(1.3));
+  zoomOut.addEventListener("click", () => changeZoom(1 / 1.3));
+  const selectHop = (index: number) => {
+    rotating = false; routeDwelling = false; finished = false;
+    activeHop = index; selectedOrder = hops[index].order; elapsed = hopStarts[index];
+    cameraTarget = [-lambda, -phi]; targetZoom = zoom;
+    pointerX = pointerY = -100; pinnedTooltip = -1; tooltip.hidden = true;
+    renderActiveHop(); updateControls();
   };
   const centerRoute = () => {
-    [lambda, phi] = routeCenter();
-    routeStartedAt = null;
-    rotating = false;
-    toggle.textContent = "Start route";
-    projection.rotate([lambda, phi]);
+    const center = routeCenter();
+    cameraTarget = [-center[0], -center[1]];
+    routeZoom = 1;
+    targetZoom = 1; rotating = false; routeDwelling = false; pointerX = pointerY = -100; pinnedTooltip = -1; tooltip.hidden = true;
+    updateControls();
   };
-  const routeTour = locations.length > 2
-    ? [...locations, ...locations.slice(1, -1).reverse()]
-    : locations;
-  const routeDwellMs = (location: GlobeLocation) => location.hops.length > 2
-    ? 2400 + (location.hops.length - 2) * 1800
-    : 2400;
-  const routeTravelMs = 4500;
-  const routeLegDurations = routeTour.map((location) => routeDwellMs(location) + routeTravelMs);
-  const routeCycleMs = routeLegDurations.reduce((total, duration) => total + duration, 0);
   const resize = () => {
-    const rect = wrapper.getBoundingClientRect();
+    const rect = canvas.getBoundingClientRect();
     if (rect.width < 10 || rect.height < 10) return;
-    const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+    const ratio = Math.min(window.devicePixelRatio || 1, 2);
     width = Math.round(rect.width); height = Math.round(rect.height); radius = Math.min(width, height) / 2 - 20;
-    canvas.width = width * pixelRatio; canvas.height = height * pixelRatio; context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
-    projection.scale(radius).translate([width / 2, height / 2]).rotate([lambda, phi]);
+    canvas.width = width * ratio; canvas.height = height * ratio; context.setTransform(ratio, 0, 0, ratio, 0, 0);
+    projection.scale(radius * zoom).translate([width / 2, height / 2]).rotate([lambda, phi]);
   };
+  const observer = new ResizeObserver(resize);
+  // Geometry is constant; avoid resampling every arc on every animation frame.
+  const segments = hops.slice(0, -1).map((hop, index) => {
+    const interpolate = geoInterpolate(coordinates(hop), coordinates(hops[index + 1]));
+    return { type: "LineString" as const, coordinates: Array.from({ length: 61 }, (_, sample) => interpolate(sample / 60)) };
+  });
   const draw = (timestamp: number) => {
-    if (!canvas.isConnected) return;
-    if (reportPanel.offsetParent === null) { requestAnimationFrame(draw); return; }
+    if (!canvas.isConnected) { observer.disconnect(); return; }
+    const delta = lastFrame === null ? 0 : Math.min(64, timestamp - lastFrame);
+    lastFrame = timestamp;
+    if (reportPanel.offsetParent === null || document.hidden) { requestAnimationFrame(draw); return; }
     if (rotating && !dragging) {
-      if (routeStartedAt === null) routeStartedAt = timestamp;
-      const elapsed = (timestamp - routeStartedAt) % routeCycleMs;
-      let legIndex = 0;
-      let legStartedAt = 0;
-      while (legIndex < routeLegDurations.length - 1 && elapsed >= legStartedAt + routeLegDurations[legIndex]) {
-        legStartedAt += routeLegDurations[legIndex];
-        legIndex += 1;
-      }
-      const legElapsed = elapsed - legStartedAt;
-      const origin = routeTour[legIndex];
-      const destination = routeTour[(legIndex + 1) % routeTour.length];
-      const dwellDuration = routeDwellMs(origin);
-      const rawProgress = Math.max(0, Math.min(1, (legElapsed - dwellDuration) / routeTravelMs));
-      routeDwelling = legElapsed < dwellDuration;
-      routeDwellProgress = routeDwelling ? legElapsed / dwellDuration : 1;
-      const easedProgress = rawProgress * rawProgress * (3 - 2 * rawProgress);
-      const position = geoInterpolate([origin.lon, origin.lat], [destination.lon, destination.lat])(easedProgress);
-      lambda = -position[0];
-      phi = -position[1];
-      activeRouteLocation = locations.indexOf(rawProgress < .5 ? origin : destination);
-      projection.rotate([lambda, phi]);
+      elapsed += delta;
+      const frame = routeFrame(elapsed, travelTimes);
+      routeDwelling = frame.dwelling;
+      const nextIndex = Math.min(frame.index + 1, hops.length - 1);
+      const eased = frame.progress * frame.progress * (3 - 2 * frame.progress);
+      cameraTarget = geoInterpolate(coordinates(hops[frame.index]), coordinates(hops[nextIndex]))(eased);
+      activeHop = frame.progress < .5 ? frame.index : nextIndex;
+      selectedOrder = hops[activeHop].order;
+      routeZoom = maintainedRouteZoom(routeZoom, zoomForHop(activeHop));
+      targetZoom = routeZoom;
+      if (frame.finished) { activeHop = hops.length - 1; selectedOrder = hops[activeHop].order; rotating = false; finished = true; updateControls(); }
     }
+    if (!dragging) {
+      const smoothing = 1 - Math.exp(-delta / 180);
+      const center = geoInterpolate([-lambda, -phi], cameraTarget)(smoothing);
+      lambda = -center[0]; phi = -center[1];
+      zoom = smoothZoom(zoom, targetZoom, delta);
+    }
+    projection.scale(radius * zoom).rotate([lambda, phi]);
+    updateZoomControls();
     context.clearRect(0, 0, width, height);
     context.beginPath(); path({ type: "Sphere" }); context.fillStyle = "#1a2332"; context.fill();
     context.beginPath(); path({ type: "Sphere" }); context.strokeStyle = "rgba(255,255,255,.10)"; context.lineWidth = .8; context.stroke();
     context.beginPath(); path(land); context.fillStyle = "#243447"; context.fill();
     context.beginPath(); path(borders); context.strokeStyle = "rgba(255,255,255,.10)"; context.lineWidth = .45; context.stroke();
     context.beginPath(); path(graticule); context.strokeStyle = "rgba(255,255,255,.05)"; context.lineWidth = .3; context.stroke();
-    for (let index = 0; index < locations.length - 1; index += 1) {
-      const origin = locations[index], destination = locations[index + 1];
-      const interpolate = geoInterpolate([origin.lon, origin.lat], [destination.lon, destination.lat]);
-      const line = { type: "LineString" as const, coordinates: Array.from({ length: 61 }, (_, point) => interpolate(point / 60)) };
-      context.beginPath(); path(line); context.strokeStyle = riskColor(origin.hasReputation, origin.score, origin.strongOtxIpMatch); context.globalAlpha = .72; context.lineWidth = 1.8; context.setLineDash([6, 10]); context.stroke(); context.setLineDash([]); context.globalAlpha = 1;
-    }
-    hoveredIndex = -1;
-    locations.forEach((location, index) => {
-      const point = markerPoint(location);
-      if (!point || !isVisible(location.lon, location.lat)) return;
-      const hover = !dragging && Math.hypot(point[0] - pointerX, point[1] - pointerY) < 16;
-      const routeActive = rotating && index === activeRouteLocation;
-      if (hover) hoveredIndex = index;
-      const multipleHops = location.hops.length > 1;
-      const color = riskColor(location.hasReputation, location.score, location.strongOtxIpMatch), markerRadius = hover ? 12 : routeActive ? 11 : multipleHops ? 10 : 8;
-      context.beginPath(); context.arc(point[0], point[1], markerRadius + 3, 0, Math.PI * 2); context.fillStyle = `${color}30`; context.fill();
-      context.beginPath(); context.arc(point[0], point[1], markerRadius, 0, Math.PI * 2); context.fillStyle = color; context.fill(); context.strokeStyle = "rgba(255,255,255,.8)"; context.lineWidth = hover ? 2 : 1.5; context.stroke();
-      const ringRadius = markerRadius + 5;
-      const hasFailure = location.hops.some((hop) => hop.checkpoints.some((checkpoint) => authCheckTone(checkpoint.status) === "fail"));
-      context.beginPath(); context.arc(point[0], point[1], ringRadius, 0, Math.PI * 2); context.strokeStyle = hasFailure ? "rgba(255,107,96,.28)" : "rgba(113,137,131,.22)"; context.lineWidth = hasFailure ? 6 : 3; context.stroke();
-      protocolOrder.forEach((protocol, protocolIndex) => {
-        const checkpoint = checkpointForLocation(location, protocol);
-        const status = checkpointStatus(checkpoint);
-        const segment = (Math.PI * 2) / protocolOrder.length;
-        const start = -Math.PI / 2 + protocolIndex * segment + .09;
-        const end = -Math.PI / 2 + (protocolIndex + 1) * segment - .09;
-        const tone = authCheckTone(status);
-        context.beginPath(); context.arc(point[0], point[1], ringRadius, start, end); context.strokeStyle = authenticationColor(status); context.lineWidth = tone === "fail" ? 4.2 : 2.6; context.stroke();
-      });
-      const markerLabel = String(location.hops[0].order);
-      context.fillStyle = "#fff"; context.font = `800 ${multipleHops ? hover ? 9 : 8 : hover ? 11 : 10}px "DM Mono", ui-monospace, monospace`; context.textAlign = "center"; context.textBaseline = "middle"; context.fillText(markerLabel, point[0], point[1]);
-      if (hover && location.city) { context.font = "11px ui-sans-serif, system-ui"; context.fillStyle = "#e6edf3"; context.fillText([location.city, location.country].filter(Boolean).join(", "), point[0], point[1] - markerRadius - 9); }
+    segments.forEach((segment, index) => {
+      if (distances[index] < 1e-6) return;
+      context.beginPath(); path(segment); context.strokeStyle = riskColor(hops[index]); context.globalAlpha = index === activeHop ? 1 : .55; context.lineWidth = index === activeHop ? 2.4 : 1.5; context.setLineDash([6, 10]); context.stroke();
     });
-    const tooltipIndex = pinnedIndex >= 0
-      ? pinnedIndex
-      : hoveredIndex >= 0
-        ? hoveredIndex
-        : rotating && routeDwelling ? activeRouteLocation : -1;
-    const hovered = locations[tooltipIndex];
-    if (hovered && !dragging) {
+    context.setLineDash([]); context.globalAlpha = 1;
+    const points = visiblePoints();
+    const hovered = !dragging ? nearestMarker(points, pointerX, pointerY) : -1;
+    const activeLocation = hopLocations[activeHop];
+    // Draw the selected location last so it remains visible within a tight cluster.
+    const drawOrder = locations.map((_, index) => index).filter((index) => index !== activeLocation).concat(activeLocation);
+    drawOrder.forEach((index) => {
+      const location = locations[index], point = points[index];
+      if (!point) return;
+      const selected = index === activeLocation && selectedOrder === hops[activeHop].order, hover = index === hovered;
+      const entries = selected ? [hops[activeHop]] : location.hops;
+      const color = riskColor(selected ? hops[activeHop] : location);
+      const markerRadius = hover ? 12 : selected ? 11 : location.hops.length > 1 ? 10 : 8, ringRadius = markerRadius + 5;
+      context.beginPath(); context.arc(point[0], point[1], markerRadius + 3, 0, Math.PI * 2); context.fillStyle = `${color}30`; context.fill();
+      context.beginPath(); context.arc(point[0], point[1], markerRadius, 0, Math.PI * 2); context.fillStyle = color; context.fill(); context.strokeStyle = "#fff"; context.lineWidth = selected ? 2 : 1; context.stroke();
+      const hasFailure = entries.some((hop) => hop.checkpoints.some((checkpoint) => authCheckTone(checkpoint.status) === "fail"));
+      context.beginPath(); context.arc(point[0], point[1], ringRadius, 0, Math.PI * 2); context.strokeStyle = hasFailure ? "rgba(255,107,96,.28)" : "rgba(113,137,131,.22)"; context.lineWidth = hasFailure ? 6 : 3; context.stroke();
+      protocols.forEach((protocol, protocolIndex) => {
+        const checkpoint = checkpointFor(entries, protocol), segment = Math.PI * 2 / 3;
+        context.beginPath(); context.arc(point[0], point[1], ringRadius, -Math.PI / 2 + protocolIndex * segment + .09, -Math.PI / 2 + (protocolIndex + 1) * segment - .09); context.strokeStyle = authenticationColor(checkpoint?.status); context.lineWidth = 3; context.stroke();
+      });
+      context.fillStyle = "#fff"; context.font = '800 10px "DM Mono", monospace'; context.textAlign = "center"; context.textBaseline = "middle";
+      context.fillText(String(selected ? hops[activeHop].order : location.hops[0].order), point[0], point[1]);
+      if (hover && location.city) {
+        context.font = "11px ui-sans-serif, system-ui"; context.fillStyle = "#e6edf3";
+        context.fillText([location.city, location.country].filter(Boolean).join(", "), point[0], point[1] - markerRadius - 9);
+      }
+    });
+    renderActiveHop();
+    const tooltipIndex = hovered >= 0 ? hovered : pinnedTooltip >= 0 ? pinnedTooltip : rotating && routeDwelling ? activeLocation : lastTooltipIndex >= 0 ? lastTooltipIndex : activeLocation;
+    const location = locations[tooltipIndex];
+    if (location) {
+      lastTooltipIndex = tooltipIndex;
       tooltip.hidden = false;
-      tooltip.classList.toggle("is-pinned", pinnedIndex >= 0);
-      if (renderedTooltipIndex !== tooltipIndex) {
-        const hopCards = hovered.hops.map((hop) => {
-          const authResults = protocolOrder.map((protocol) => {
-            const checkpoint = checkpointForProtocol(hop, protocol);
-            const status = checkpointStatus(checkpoint);
-            return `<i class="auth-${authCheckTone(status)}">${protocol} ${escapeHtml(checkpointLabel(checkpoint))}</i>`;
-          }).join("");
-          const otxStatus = hop.strongOtxIpMatch ? " · OTX exact IP match" : "";
-          return `<section class="globe-hop-detail"><b>Hop ${hop.order} · ${escapeHtml(roleLabel[hop.role])}</b><span>${escapeHtml(hop.ip)}</span><small>${escapeHtml(hop.fromHost)} → ${escapeHtml(hop.byHost)}</small><small>${escapeHtml(hop.isp || "ISP unavailable")} · ${escapeHtml(hop.abuseSummary)}${escapeHtml(otxStatus)}</small><div class="globe-auth-results">${authResults}</div></section>`;
-        }).join("");
-        const locationName = [hovered.city, hovered.country].filter(Boolean).join(", ") || "Approximate location available";
-        tooltip.innerHTML = `<header><b>Hop ${hovered.hops[0].order} on the globe · ${hovered.hops.length} route ${hovered.hops.length === 1 ? "entry" : "entries"}</b><span>${escapeHtml(locationName)}</span></header>${hopCards}`;
-        tooltip.classList.add("is-scrollable");
-        tooltip.scrollTop = 0;
-        renderedTooltipIndex = tooltipIndex;
+      tooltip.classList.add("is-scrollable");
+      const key = String(tooltipIndex);
+      if (renderedTooltip !== key) {
+        tooltip.innerHTML = `<header><b>Hop ${location.hops.map((hop) => hop.order).join(", ")}</b><span>${escapeHtml([location.city, location.country].filter(Boolean).join(", ") || "Approximate location")}</span>${location.hops.length > 1 ? `<small>${location.hops.length} hops at this location · scroll to explore</small>` : ""}</header>${location.hops.map((hop) => `<section class="globe-hop-detail" data-detail-hop="${hop.order}"><b>Hop ${hop.order} · ${escapeHtml(roleLabel[hop.role])}</b><span>${escapeHtml(hop.ip)}</span><small>${escapeHtml(hop.fromHost)} → ${escapeHtml(hop.byHost)}</small><small>${escapeHtml(hop.isp || "ISP unavailable")}</small><div class="globe-auth-results">${protocols.map((protocol) => { const checkpoint = checkpointFor([hop], protocol); if (!checkpoint || ["unknown", "none", "not_observed"].includes(checkpoint.status.toLowerCase())) return ""; return `<i class="auth-${authCheckTone(checkpoint.status)}">${protocol} ${escapeHtml(checkpoint ? String(checkpoint.status).toUpperCase() : "NOT OBSERVED")}</i>`; }).join("")}</div>${hopFacts(hop)}</section>`).join("")}`;
+        tooltip.scrollTop = 0; renderedTooltip = key; scrolledHop = -1;
+        updateLocationIndicator();
       }
-      const marker = markerPoint(hovered);
-      const anchorX = hoveredIndex >= 0 && pinnedIndex < 0 ? pointerX : marker?.[0] ?? width / 2;
-      const anchorY = hoveredIndex >= 0 && pinnedIndex < 0 ? pointerY : marker?.[1] ?? height / 2;
-      tooltip.style.left = `${Math.max(12, Math.min(width - 332, anchorX + 14))}px`; tooltip.style.top = `${Math.max(12, Math.min(height - Math.min(300, 95 + hovered.hops.length * 105), anchorY + 14))}px`;
-      if (pinnedIndex < 0 && hoveredIndex < 0 && routeDwelling && hovered.hops.length > 2) {
-        const scrollProgress = Math.max(0, Math.min(1, (routeDwellProgress - .18) / .64));
-        const easedScroll = scrollProgress * scrollProgress * (3 - 2 * scrollProgress);
-        tooltip.scrollTop = (tooltip.scrollHeight - tooltip.clientHeight) * easedScroll;
+      if (rotating && routeDwelling && location.hops.length > 1 && tooltipIndex === activeLocation && scrolledHop !== selectedOrder) {
+        const currentDetail = tooltip.querySelector<HTMLElement>(`[data-detail-hop="${selectedOrder}"]`);
+        if (currentDetail) {
+          tooltip.scrollTo({ top: Math.max(0, currentDetail.getBoundingClientRect().top - tooltip.getBoundingClientRect().top + tooltip.scrollTop - 12), behavior: "smooth" });
+          scrolledHop = selectedOrder;
+        }
       }
-    } else {
-      tooltip.hidden = true;
-      renderedTooltipIndex = -1;
-    }
+    } else { tooltip.hidden = true; renderedTooltip = ""; }
+    updateLocationIndicator();
     requestAnimationFrame(draw);
   };
-  resize(); new ResizeObserver(resize).observe(wrapper); requestAnimationFrame(draw);
-  canvas.addEventListener("pointerdown", (event) => { dragging = true; dragMoved = false; rotating = false; routeDwelling = false; toggle.textContent = "Start route"; canvas.setPointerCapture(event.pointerId); dragX = pointerX = event.offsetX; dragY = pointerY = event.offsetY; dragLambda = lambda; dragPhi = phi; });
-  canvas.addEventListener("pointermove", (event) => { pointerX = event.offsetX; pointerY = event.offsetY; if (dragging) { dragMoved ||= Math.hypot(event.offsetX - dragX, event.offsetY - dragY) > 4; lambda = dragLambda + (event.offsetX - dragX) * .3; phi = Math.max(-60, Math.min(60, dragPhi - (event.offsetY - dragY) * .3)); projection.rotate([lambda, phi]); } });
-  canvas.addEventListener("pointerup", () => { dragging = false; });
+  canvas.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    dragging = true; dragMoved = false; rotating = false; routeDwelling = false; targetZoom = zoom;
+    cameraTarget = [-lambda, -phi]; updateControls(); canvas.setPointerCapture(event.pointerId);
+    dragX = pointerX = event.offsetX; dragY = pointerY = event.offsetY; dragLambda = lambda; dragPhi = phi;
+  });
+  canvas.addEventListener("pointermove", (event) => {
+    pointerX = event.offsetX; pointerY = event.offsetY;
+    if (!dragging) return;
+    dragMoved ||= Math.hypot(event.offsetX - dragX, event.offsetY - dragY) > 4;
+    lambda = dragLambda + (event.offsetX - dragX) * .3 / zoom;
+    phi = Math.max(-89, Math.min(89, dragPhi - (event.offsetY - dragY) * .3 / zoom));
+    cameraTarget = [-lambda, -phi];
+  });
+  const endDrag = () => { dragging = false; };
+  canvas.addEventListener("pointerup", endDrag);
+  canvas.addEventListener("pointercancel", () => { dragMoved = true; endDrag(); });
+  canvas.addEventListener("lostpointercapture", endDrag);
+  canvas.addEventListener("pointerleave", () => {
+    pointerX = pointerY = -100;
+  });
   canvas.addEventListener("click", (event) => {
     if (dragMoved) return;
-    pinnedIndex = locations.findIndex((location) => {
-      const point = markerPoint(location);
-      return Boolean(point && isVisible(location.lon, location.lat) && Math.hypot(point[0] - event.offsetX, point[1] - event.offsetY) < 18);
-    });
-    renderedTooltipIndex = -1;
+    const index = nearestMarker(visiblePoints(), event.offsetX, event.offsetY);
+    pinnedTooltip = -1;
+    if (index < 0) return;
+    selectHop(hopLocations[activeHop] === index ? activeHop : hopLocations.indexOf(index));
+    pinnedTooltip = index;
   });
-  canvas.addEventListener("pointerleave", (event) => {
-    const enteredTooltip = event.relatedTarget instanceof Node && tooltip.contains(event.relatedTarget);
-    if (!dragging && pinnedIndex < 0 && !enteredTooltip) {
-      tooltip.hidden = true;
-      renderedTooltipIndex = -1;
-    }
-  });
-  tooltip.addEventListener("pointerleave", () => {
-    if (pinnedIndex >= 0) return;
-    tooltip.hidden = true;
-    renderedTooltipIndex = -1;
-    pointerX = -100;
-    pointerY = -100;
-  });
-  toggle.textContent = rotating ? "Pause route" : "Start route";
   toggle.addEventListener("click", () => {
+    if (finished) { elapsed = 0; activeHop = 0; finished = false; }
     rotating = !rotating;
-    if (rotating) {
-      routeStartedAt = null;
-      activeRouteLocation = 0;
-      routeDwelling = true;
-      pinnedIndex = -1;
-      lambda = -locations[0].lon;
-      phi = -locations[0].lat;
-      projection.rotate([lambda, phi]);
-    }
-    toggle.textContent = rotating ? "Pause route" : "Start route";
+    pinnedTooltip = -1; pointerX = pointerY = -100;
+    if (!rotating) { cameraTarget = [-lambda, -phi]; targetZoom = zoom; routeDwelling = false; }
+    updateControls();
   });
   fit.addEventListener("click", centerRoute);
+  resize(); observer.observe(wrapper); updateControls(); requestAnimationFrame(draw);
+
 }
 
 function integrateReputation(report: AnalysisReport): void {
@@ -2089,9 +2204,9 @@ function integrateReputation(report: AnalysisReport): void {
       const copyAction = reputationCheckTone(reputation) === "fail" || otxMatches.length ? `<button class="copy-evidence" type="button" data-copy-ioc="${escapeHtml(ip)}">Copy IP</button>` : "";
       return `<div class="hop-ip-detail"><strong>IP ${escapeHtml(ip)}</strong><small>${escapeHtml(location)} · ISP ${escapeHtml(geo.isp || "—")}</small><b>${escapeHtml(abuseIpDbSummary(reputation))}</b>${otxInlineEvidence(otxMatches)}${copyAction}</div>`;
     }).join("") || `<p class="hop-empty">No public IP is available for this hop.</p>`;
-    return `<details class="hop-card hop-card-${tone}"><summary><span><strong>Hop ${index + 1} · ${escapeHtml(hop.from_host || "unknown source")}</strong><small>${escapeHtml(hop.by_host || "unknown destination")} · ${escapeHtml(hop.received_at || "date unavailable")}</small></span><span class="hop-disclosure" aria-hidden="true"></span></summary><div class="hop-details">${details}${hop.raw ? `<pre>${escapeHtml(hop.raw)}</pre>` : ""}</div></details>`;
+    return `<details class="hop-card hop-card-${tone}" data-hop-order="${index + 1}"><summary><span><strong>Hop ${index + 1} · ${escapeHtml(hop.from_host || "unknown source")}</strong><small>${escapeHtml(hop.by_host || "unknown destination")} · ${escapeHtml(hop.received_at || "date unavailable")}</small></span><span class="hop-disclosure" aria-hidden="true"></span></summary><div class="hop-details">${details}${hop.raw ? `<pre>${escapeHtml(hop.raw)}</pre>` : ""}</div></details>`;
   }).join("") || "<p>No hops available.</p>";
-  auth?.insertAdjacentHTML("beforeend", `<section class="evidence-card geographic-route"><div class="route-heading"><div><h3>Email route</h3><p>Follow the message from its first observed server onward. Select a point to keep its IP, reputation and available authentication evidence open.</p></div><div class="globe-actions"><button type="button" data-globe-toggle>Start rotation</button><button type="button" data-globe-fit>Centre route</button></div></div><div class="email-globe-wrap"><canvas data-email-globe aria-label="Chronological email route grouped by approximate location, with IP reputation and authentication results"></canvas><div class="globe-tooltip" data-globe-tooltip hidden></div><div class="globe-legend"><span><i class="risk-unknown"></i>No reputation</span><span><i class="risk-low"></i>Low IP score</span><span><i class="risk-medium"></i>IP review</span><span><i class="risk-high"></i>IP threat</span><span class="auth-pass-key"><i></i>Auth pass</span><span class="auth-fail-key"><i></i>Auth fail</span><span class="auth-review-key"><i></i>Auth none/review</span><span class="auth-unobserved-key"><i></i>Auth not observed</span></div></div>${hops}</section>`);
+  auth?.insertAdjacentHTML("beforeend", `<section class="evidence-card geographic-route"><div class="route-heading"><div><h3>Email route</h3><p>Follow the message route. The view zooms automatically for nearby points. Hover over a point to preview its details; click to pause and keep it selected.</p></div><div class="globe-actions"><button type="button" data-globe-toggle>Start rotation</button><button type="button" data-globe-fit>Centre route</button></div></div><div class="globe-route-layout"><div class="email-globe-wrap"><canvas data-email-globe aria-label="Chronological email route grouped by approximate location, with IP reputation and authentication results"></canvas><div class="globe-legend"><span><i class="risk-unknown"></i>No reputation</span><span><i class="risk-low"></i>Low IP score</span><span><i class="risk-medium"></i>IP review</span><span><i class="risk-high"></i>IP threat</span><span class="auth-pass-key"><i></i>Auth pass</span><span class="auth-fail-key"><i></i>Auth fail</span><span class="auth-review-key"><i></i>Auth none/review</span><span class="auth-unobserved-key"><i></i>Auth not observed</span></div></div><aside class="globe-point-panel" aria-label="Globe point details"><div class="globe-point-heading"><h4>Location details</h4><p>Hover to preview · click a point to select</p></div><div class="globe-tooltip globe-point-details" data-globe-tooltip><p>Move over a point to see its details.</p></div></aside></div><section class="globe-complete-hops"><h4>All message hops</h4><p>The complete route, including hops without a geographic location.</p><div class="globe-hop-list">${hops}</div></section></section>`);
   const content = panel("content");
   const rawHtml = report.body_html_safe || safeHtmlPreview(report.body_html || "");
   if (rawHtml) {
@@ -2426,6 +2541,7 @@ function riskReasons(report: AnalysisReport): string[] {
     return Boolean(anomaly && anomaly !== "none")
       || ["high", "critical"].includes((file.attachment_security?.risk_level || "").toLowerCase())
       || ["medium", "high", "critical", "warning"].includes((file.pdf_security?.risk_level || "").toLowerCase())
+      || ["medium", "high", "critical"].includes((file.office_security?.risk_level || "").toLowerCase())
       || maliciousLink(file.file_reputation);
   }) || /attachment.*(malicious|suspicious)|pdf.*risk/.test(flags)) reasons.add("Suspicious attachment");
   if (requestedAction === "provide_credentials" || /credential|password|otp|mfa|login|sign.?in/.test(intentSignals)) reasons.add("Credential request");
@@ -2460,7 +2576,6 @@ function updateAnalysisProgress(session: ActiveAnalysis, check: number, message?
   if (!analysisIsVisible(session)) return;
   const result = document.querySelector<HTMLDivElement>("#analysis-result");
   if (result) markLoadingCheck(result, check);
-  setAnalysisProgressVisual(session, [5, 40, 90, 97, 100][Math.min(check, 4)] || 0);
   const status = document.querySelector<HTMLElement>("#upload-status");
   if (status && message) status.textContent = message;
 }
@@ -2627,8 +2742,39 @@ function contentFor(section: Section, user: AuthUser): string {
   if (section === "settings") {
     const keys = reputationKeys(user);
     const reputationReady = Boolean(keys.virustotal || keys.abuseipdb || keys.otx);
-    const keyRow = (provider: "virustotal" | "abuseipdb" | "otx", name: string, value: string) => `<li class="${value ? "ready" : "missing"}" data-reputation-provider="${provider}"><i aria-hidden="true">${value ? "✓" : "—"}</i><div class="credential-static-copy"><strong>${name}</strong><small>${value ? `Stored locally · ${escapeHtml(maskedSecret(value))}` : "Key not configured"}</small></div><label class="credential-inline-field"><span>${name}</span><input form="reputation-settings" name="${provider}" type="password" autocomplete="new-password" aria-label="${name}" placeholder="${value ? "Enter a new key or leave unchanged" : `Enter the ${provider === "otx" ? "OTX" : provider === "virustotal" ? "VirusTotal" : "AbuseIPDB"} token`}" /></label><b>${value ? "Ready" : "Required"}</b><button class="remove-reputation-key" type="button" data-remove-reputation-key="${provider}" aria-label="Remove ${name}" ${value ? "" : "hidden"}>Remove</button></li>`;
-    return `<div class="page-heading"><div><p class="page-kicker">LOCAL CONFIGURATION</p><h1>Settings</h1><p>External intelligence and local analysis runtime.</p></div></div><div class="settings-grid"><section class="settings-card settings-reputation"><p class="page-kicker">EXTERNAL INTELLIGENCE</p><h2>Reputation</h2><p class="settings-note">Reputation checks reveal whether links, sender domains, public IP addresses or attachment hashes have been reported as suspicious or malicious. Add your API keys to enable the configured providers; public IPs use Spamhaus ZEN as a keyless fallback when AbuseIPDB is not configured. The email content is never sent.</p><ul class="credential-list">${keyRow("virustotal", "VirusTotal API key", keys.virustotal)}${keyRow("abuseipdb", "AbuseIPDB API key", keys.abuseipdb)}${keyRow("otx", "AlienVault OTX API key", keys.otx)}</ul><button class="soft-action edit-credentials" id="edit-reputation-keys" type="button">${reputationReady ? "Edit keys" : "Configure keys"}</button><form id="reputation-settings" ${reputationReady ? "hidden" : ""}><label>VirusTotal API key<input name="virustotal" type="password" autocomplete="new-password" placeholder="${keys.virustotal ? "Leave empty to keep the current key" : "Enter the VirusTotal token"}" /></label><label>AbuseIPDB API key<input name="abuseipdb" type="password" autocomplete="new-password" placeholder="${keys.abuseipdb ? "Leave empty to keep the current key" : "Enter the AbuseIPDB token"}" /></label><label>AlienVault OTX API key <small>Required</small><input name="otx" type="password" autocomplete="new-password" placeholder="${keys.otx ? "Leave empty to keep the current key" : "Enter the OTX token"}" /></label><div><button class="primary-action" type="submit">Save changes</button>${reputationReady ? `<button class="cancel-credentials" id="cancel-reputation-edit" type="button">Cancel</button>` : ""}<span id="settings-status" aria-live="polite"></span></div></form></section><section class="settings-card ollama-lab"><p class="page-kicker">LOCAL AI ENVIRONMENT</p><h2>Machine and automatic model</h2><p class="settings-note">FishStop uses a local AI model to understand email context and its declared identity without sending sensitive data off the device.</p><div class="machine-profile" id="machine-profile" aria-live="polite"><p>Reading machine information…</p></div></section></div>`;
+    const keyRow = (provider: "virustotal" | "abuseipdb" | "otx", name: string, value: boolean) => `<li class="${value ? "ready" : "missing"}" data-reputation-provider="${provider}"><i aria-hidden="true">${value ? "✓" : "—"}</i><div class="credential-static-copy"><strong>${name}</strong><small>${value ? "Stored in the system keychain" : "Key not configured"}</small></div><label class="credential-inline-field"><span>${name}</span><input form="reputation-settings" name="${provider}" type="password" autocomplete="new-password" aria-label="${name}" placeholder="${value ? "Enter a new key or leave unchanged" : `Enter the ${provider === "otx" ? "OTX" : provider === "virustotal" ? "VirusTotal" : "AbuseIPDB"} token`}" /></label><b>${value ? "Ready" : "Required"}</b><button class="remove-reputation-key" type="button" data-remove-reputation-key="${provider}" aria-label="Remove ${name}" ${value ? "" : "hidden"}>Remove</button></li>`;
+    return `<div class="page-heading"><div><p class="page-kicker">LOCAL CONFIGURATION</p><h1>Settings</h1><p>Manage security services, local AI and appearance preferences.</p></div></div>
+      <div class="settings-grid">
+        <div class="settings-column">
+          <section class="settings-card settings-reputation">
+            <p class="page-kicker">EXTERNAL INTELLIGENCE</p>
+            <div class="settings-card-heading"><h2>Reputation</h2><button class="soft-action edit-credentials" id="edit-reputation-keys" type="button" aria-controls="reputation-settings" aria-expanded="false">${reputationReady ? "Edit keys" : "Configure keys"}</button></div>
+            <p class="settings-note">Check links, sender domains, public IPs and attachment hashes against security intelligence. Add your API keys to enable each provider. Spamhaus ZEN is the keyless fallback for public IPs. Email content is never sent.</p>
+            <ul class="credential-list">${keyRow("virustotal", "VirusTotal API key", keys.virustotal)}${keyRow("abuseipdb", "AbuseIPDB API key", keys.abuseipdb)}${keyRow("otx", "AlienVault OTX API key", keys.otx)}</ul>
+            <form id="reputation-settings"><div class="credential-edit-actions"><button class="primary-action" type="submit">Save changes</button><button class="cancel-credentials" id="cancel-reputation-edit" type="button">Cancel</button></div><span id="settings-status" aria-live="polite"></span></form>
+          </section>
+          <section class="settings-card settings-preferences">
+            <p class="page-kicker">YOUR EXPERIENCE</p><h2>Preferences</h2>
+            <div class="settings-preference-list">
+              <label class="fine-tuned-model-toggle settings-night-toggle">
+                <span><strong>Night mode</strong><small id="night-mode-note">A darker appearance for low-light environments. Saved on this device.</small></span>
+                <input id="night-mode-enabled" type="checkbox" role="switch" aria-label="Night mode" aria-describedby="night-mode-note" ${currentTheme() === "dark" ? "checked" : ""} /><i aria-hidden="true"></i>
+              </label>
+              <label class="fine-tuned-model-toggle">
+                <span><strong>Disable automatic globe tour</strong><small>Start the email route manually. Saved for this account.</small></span>
+                <input id="globe-autoplay-disabled" type="checkbox" role="switch" ${globeAutoplayDisabled(user) ? "checked" : ""} /><i aria-hidden="true"></i>
+              </label>
+            </div>
+            <p id="globe-preference-status" class="settings-status" aria-live="polite"></p>
+            <p id="appearance-status" class="settings-status" aria-live="polite"></p>
+          </section>
+        </div>
+        <section class="settings-card ollama-lab">
+          <p class="page-kicker">LOCAL AI ENVIRONMENT</p><h2>Machine and automatic model</h2>
+          <p class="settings-note">FishStop uses a local AI model to understand email context and its declared identity. Sensitive data stays on this device.</p>
+          <div class="machine-profile" id="machine-profile" aria-live="polite"><p>Reading machine information…</p></div>
+        </section>
+      </div>`;
   }
   const dashboardHighRiskCount = history.filter((record) => assessment(record.report).tone === "danger").length;
   const dashboardReviewCount = history.filter((record) => assessment(record.report).tone === "review").length;
@@ -2690,6 +2836,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
     badge.textContent = verdict.tone === "danger" ? "RISK" : verdict.tone === "review" ? "REVIEW" : "TRUSTED";
   });
   if (section === "history" && readAnalysisHistory(user).length) root.insertAdjacentHTML("beforeend", `<dialog class="confirm-dialog" id="clear-history-dialog" aria-labelledby="clear-history-title"><div class="dialog-mark">!</div><p class="page-kicker">IRREVERSIBLE ACTION</p><h2 id="clear-history-title">Clear history?</h2><p>This will delete every saved analysis for <strong>${safeEmail}</strong> on this device.</p><div class="dialog-actions"><button id="cancel-clear-history" type="button">Cancel</button><button id="confirm-clear-history" type="button">Clear history</button></div></dialog>`);
+  root.insertAdjacentHTML("beforeend", `<dialog class="confirm-dialog sign-out-dialog" id="sign-out-dialog" aria-labelledby="sign-out-title" aria-describedby="sign-out-description"><h2 id="sign-out-title">Sign out?</h2><p id="sign-out-description">Are you sure you want to sign out of FishStop?</p><div class="dialog-actions"><button id="cancel-sign-out" type="button" autofocus>Cancel</button><button id="confirm-sign-out" type="button">Sign out</button></div></dialog>`);
   animateSectionEntry(section);
   document.querySelectorAll<HTMLButtonElement>("[data-section]").forEach((button) => button.addEventListener("click", () => renderDashboard(user, button.dataset.section as Section)));
   document.querySelectorAll<HTMLButtonElement>("[data-go]").forEach((button) => button.addEventListener("click", () => renderDashboard(user, button.dataset.go as Section)));
@@ -2768,7 +2915,22 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       renderDashboard(user, "history");
     }).catch(() => { /* Keep existing history visible when secure deletion fails. */ });
   });
-  document.querySelector<HTMLButtonElement>("#logout")?.addEventListener("click", () => { activeAnalysis = null; clearMailboxInboxCache(user); localStorage.removeItem(USER_STORAGE_KEY); renderLogin(); });
+  const signOutDialog = document.querySelector<HTMLDialogElement>("#sign-out-dialog");
+  document.querySelector<HTMLButtonElement>("#logout")?.addEventListener("click", () => {
+    if (!signOutDialog || signOutDialog.open) return;
+    signOutDialog.showModal();
+    animateDialogEntrance(signOutDialog);
+  });
+  document.querySelector<HTMLButtonElement>("#cancel-sign-out")?.addEventListener("click", () => {
+    signOutDialog?.close();
+  });
+  document.querySelector<HTMLButtonElement>("#confirm-sign-out")?.addEventListener("click", () => {
+    signOutDialog?.close();
+    activeAnalysis = null;
+    clearMailboxInboxCache(user);
+    localStorage.removeItem(USER_STORAGE_KEY);
+    renderLogin();
+  });
   const inlineCredentialForm = document.querySelector<HTMLFormElement>("#reputation-settings");
   if (inlineCredentialForm) {
     inlineCredentialForm.removeAttribute("hidden");
@@ -2812,7 +2974,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       formElement.classList.remove("is-editing");
       document.querySelector<HTMLElement>(".settings-reputation")?.classList.remove("is-editing-credentials");
       document.querySelector<HTMLButtonElement>("#edit-reputation-keys")?.setAttribute("aria-expanded", "false");
-      await refreshReputationSettings(user);
+      await refreshReputationSettings(user, true);
       void refreshProtectionStatus(user, true);
     }).catch((error) => { console.error("Could not save credentials", error); if (status) status.textContent = "Could not save the settings. Please try again."; });
   });
@@ -2826,7 +2988,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       if (status) status.textContent = "Removing the key from the system keychain…";
       void invoke("remove_reputation_key", { userSub: user.sub, provider }).then(async () => {
         if (status) status.textContent = "API key removed.";
-        await refreshReputationSettings(user);
+        await refreshReputationSettings(user, true);
         void refreshProtectionStatus(user, true);
       }).catch((error) => {
         console.error("Could not remove credential", error);
@@ -2836,8 +2998,27 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       });
     });
   });
+  document.querySelector<HTMLInputElement>("#night-mode-enabled")?.addEventListener("change", (event) => {
+    const control = event.currentTarget as HTMLInputElement;
+    const saved = setTheme(control.checked ? "dark" : "light");
+    const status = document.querySelector<HTMLElement>("#appearance-status");
+    if (status) status.textContent = saved
+      ? `${control.checked ? "Night" : "Day"} mode enabled. Preference saved.`
+      : "Appearance updated. The preference could not be saved on this device.";
+  });
+  document.querySelector<HTMLInputElement>("#globe-autoplay-disabled")?.addEventListener("change", (event) => {
+    const control = event.currentTarget as HTMLInputElement;
+    const status = document.querySelector<HTMLElement>("#globe-preference-status");
+    try {
+      localStorage.setItem(`fishstop:globe-autoplay-disabled:${user.sub}`, String(control.checked));
+      if (status) status.textContent = "Preference saved.";
+    } catch {
+      control.checked = globeAutoplayDisabled(user);
+      if (status) status.textContent = "Could not save the preference. Please try again.";
+    }
+  });
   const machineProfile = document.querySelector<HTMLElement>("#machine-profile");
-  if (machineProfile) machineProfile.innerHTML = `<dl><div><dt>System</dt><dd id="machine-system">Reading…</dd></div><div><dt>Processor</dt><dd id="machine-processor">Reading…</dd></div><div><dt>Memory</dt><dd id="machine-memory">Reading…</dd></div><div><dt>Execution</dt><dd id="machine-execution">Reading…</dd></div><div class="machine-model-row" id="machine-model-row"><dt>Selected model</dt><dd><div class="machine-model-heading"><strong id="machine-model-name">Checking…</strong><span class="model-status-badge" id="model-status-badge" hidden></span></div><small id="managed-model-status">Checking the bundled AI runtime…</small><div class="managed-model-progress" id="managed-model-progress" hidden><div><span id="managed-model-progress-label">Preparing download…</span><strong id="managed-model-progress-value">0%</strong></div><div class="managed-model-progress-track" id="managed-model-progress-track" role="progressbar" aria-label="AI model download progress" aria-valuemin="0" aria-valuemax="100"><i id="managed-model-progress-fill"></i></div></div><div class="machine-model-actions"><button class="primary-action" id="install-managed-qwen" type="button" disabled>Checking…</button><button class="model-remove-action" id="remove-managed-qwen" type="button" hidden>Remove model</button></div></dd></div></dl><div class="execution-guidance" id="execution-guidance"><p id="execution-guidance-message">Reading the local acceleration profile…</p><section class="cpu-optimization" id="cpu-optimization" hidden><div class="cpu-optimization-heading"><span class="cpu-optimization-mark" aria-hidden="true"><i></i><i></i><i></i></span><div><p class="page-kicker">CPU PERFORMANCE</p><h4>Optimize this computer</h4></div></div><p>FishStop will benchmark the local model with a short sample text and save the fastest CPU setting for future analyses. The text and results never leave this device.</p><div class="cpu-optimization-progress" id="cpu-optimization-progress" hidden><span id="cpu-optimization-progress-label">Preparing the local benchmark…</span><div role="progressbar" aria-label="CPU optimization progress" aria-valuemin="0" aria-valuemax="100" id="cpu-optimization-progress-track"><i id="cpu-optimization-progress-fill"></i></div></div><p class="cpu-optimization-result" id="cpu-optimization-result"></p><button class="soft-action" id="optimize-cpu-performance" type="button">Optimize CPU performance</button></section></div>`;
+  if (machineProfile) machineProfile.innerHTML = `<dl><div><dt>System</dt><dd id="machine-system">Reading…</dd></div><div><dt>Processor</dt><dd id="machine-processor">Reading…</dd></div><div><dt>Memory</dt><dd id="machine-memory">Reading…</dd></div><div><dt>Execution</dt><dd id="machine-execution">Reading…</dd></div><div class="machine-model-row" id="machine-model-row"><dt>Selected model</dt><dd><div class="machine-model-heading"><strong id="machine-model-name">Checking…</strong><span class="model-status-badge" id="model-status-badge" hidden></span><button class="model-remove-action" id="remove-managed-qwen" type="button" aria-haspopup="dialog" aria-controls="remove-model-dialog" hidden>Remove</button></div><small id="managed-model-status">Checking the bundled AI runtime…</small><div class="managed-model-progress" id="managed-model-progress" hidden><div><span id="managed-model-progress-label">Preparing download…</span><strong id="managed-model-progress-value">0%</strong></div><div class="managed-model-progress-track" id="managed-model-progress-track" role="progressbar" aria-label="AI model download progress" aria-valuemin="0" aria-valuemax="100"><i id="managed-model-progress-fill"></i></div></div><div class="machine-model-actions"><button class="primary-action" id="install-managed-qwen" type="button" disabled>Checking…</button></div></dd></div></dl><label class="fine-tuned-model-toggle" id="fine-tuned-model-toggle" hidden><span><strong>Use fine-tuned Qwen</strong><small>Use the FishStop adapter for email-security analysis. If it cannot be loaded, the standard model is used automatically.</small></span><input id="fine-tuned-model-enabled" type="checkbox" role="switch" /><i aria-hidden="true"></i></label><p class="fine-tuned-model-status" id="fine-tuned-model-status" aria-live="polite"></p><div class="execution-guidance" id="execution-guidance"><p id="execution-guidance-message">Reading the local acceleration profile…</p><section class="cpu-optimization" id="cpu-optimization" hidden><div class="cpu-optimization-heading"><span class="cpu-optimization-mark" aria-hidden="true"><i></i><i></i><i></i></span><div><p class="page-kicker">CPU PERFORMANCE</p><h4>Optimize this computer</h4></div></div><p>FishStop will benchmark the local model with a short sample text and save the fastest CPU setting for future analyses. The text and results never leave this device.</p><div class="cpu-optimization-progress" id="cpu-optimization-progress" hidden><span id="cpu-optimization-progress-label">Preparing the local benchmark…</span><div role="progressbar" aria-label="CPU optimization progress" aria-valuemin="0" aria-valuemax="100" id="cpu-optimization-progress-track"><i id="cpu-optimization-progress-fill"></i></div></div><p class="cpu-optimization-result" id="cpu-optimization-result"></p><button class="soft-action" id="optimize-cpu-performance" type="button">Optimize CPU performance</button></section></div>`;
   const machineSystem = document.querySelector<HTMLElement>("#machine-system");
   const machineProcessor = document.querySelector<HTMLElement>("#machine-processor");
   const machineMemory = document.querySelector<HTMLElement>("#machine-memory");
@@ -2850,6 +3031,9 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
   if (managedModelStatus) managedModelStatus.textContent = "Checking the local AI component…";
   const installManagedQwen = document.querySelector<HTMLButtonElement>("#install-managed-qwen");
   const removeManagedQwen = document.querySelector<HTMLButtonElement>("#remove-managed-qwen");
+  const fineTunedModelToggle = document.querySelector<HTMLLabelElement>("#fine-tuned-model-toggle");
+  const fineTunedModelEnabled = document.querySelector<HTMLInputElement>("#fine-tuned-model-enabled");
+  const fineTunedModelStatus = document.querySelector<HTMLElement>("#fine-tuned-model-status");
   const managedProgress = document.querySelector<HTMLElement>("#managed-model-progress");
   const managedProgressLabel = document.querySelector<HTMLElement>("#managed-model-progress-label");
   const managedProgressValue = document.querySelector<HTMLElement>("#managed-model-progress-value");
@@ -2908,23 +3092,8 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
     }
     return true;
   };
-  const refreshManagedModel = async () => {
-    if (renderManagedOperation()) return;
-    if (managedModelStatus && installManagedQwen && removeManagedQwen) {
-      managedModelStatus.hidden = false;
-      managedModelStatus.textContent = "Checking the local AI component…";
-      installManagedQwen.hidden = false;
-      installManagedQwen.disabled = true;
-      installManagedQwen.textContent = "Checking…";
-      removeManagedQwen.hidden = true;
-      removeManagedQwen.disabled = true;
-      if (managedProgress) managedProgress.hidden = true;
-    }
-    try {
-      const runtime = await invoke<OllamaRuntimeStatus>("ollama_runtime_status");
-      ollamaRuntimeSnapshot = runtime;
+  const renderRuntimeStatus = (runtime: OllamaRuntimeStatus) => {
       if (!managedModelStatus || !installManagedQwen || !removeManagedQwen) return;
-      if (renderManagedOperation()) return;
       const memory = runtime.memory_bytes ? `${(runtime.memory_bytes / 1024 ** 3).toFixed(1)} GB` : "Unavailable";
       const usesMlx = /mlx/i.test(runtime.accelerator);
       const gpuAccelerated = runtime.loaded_on_gpu || usesMlx;
@@ -2932,8 +3101,21 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       if (machineProcessor) machineProcessor.textContent = runtime.cpu;
       if (machineMemory) machineMemory.textContent = memory;
       if (machineExecution) machineExecution.textContent = runtime.accelerator + (runtime.loaded_on_gpu ? " · accelerated" : "");
+      if (renderManagedOperation()) return;
+      if (fineTunedModelToggle && fineTunedModelEnabled && fineTunedModelStatus) {
+        fineTunedModelToggle.hidden = !runtime.fine_tuned_available;
+        fineTunedModelEnabled.checked = runtime.fine_tuned_enabled;
+        fineTunedModelEnabled.disabled = false;
+        fineTunedModelStatus.textContent = runtime.fine_tuned_available
+          ? runtime.fine_tuned_enabled
+            ? `Fine-tune version: ${runtime.fine_tuned_version ?? "unknown"} · Active.`
+            : `Fine-tune version: ${runtime.fine_tuned_version ?? "unknown"} · Available. Standard Qwen is active.`
+          : "";
+      }
       if (machineModelName) {
-        machineModelName.textContent = usesMlx ? "Qwen3 4B · MLX 4-bit" : runtime.model;
+        machineModelName.textContent = runtime.fine_tuned_enabled
+          ? usesMlx ? "Qwen3 4B fine-tuned · MLX 4-bit" : "FishStop Qwen3 4B fine-tuned"
+          : usesMlx ? "Qwen3 4B · MLX 4-bit" : runtime.model;
         machineModelName.title = runtime.model;
       }
       if (executionGuidanceMessage) {
@@ -2946,14 +3128,13 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       }
       machineModelRow?.classList.remove("is-busy", "is-missing", "is-ready");
       installManagedQwen.textContent = "Install AI model";
-      removeManagedQwen.textContent = "Remove model";
+      removeManagedQwen.textContent = "Remove";
       removeManagedQwen.disabled = false;
       if (runtime.model_ready) {
         machineModelRow?.classList.add("is-ready");
         if (modelStatusBadge) {
-          modelStatusBadge.hidden = false;
-          modelStatusBadge.className = `model-status-badge ${runtime.cpu_only && runtime.cpu_optimization ? "optimized" : "ready"}`;
-          modelStatusBadge.textContent = runtime.cpu_only && runtime.cpu_optimization ? "CPU optimized" : "Installed";
+          modelStatusBadge.hidden = true;
+          modelStatusBadge.textContent = "";
         }
         managedModelStatus.hidden = true;
         installManagedQwen.hidden = true;
@@ -2992,8 +3173,27 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
           cpuOptimizationResult.textContent = "No CPU benchmark has been saved yet.";
         }
       }
+  };
+  const refreshManagedModel = async (force = false) => {
+    if (!machineProfile?.isConnected) return;
+    const cached = runtimeStatusCache.peek() ?? ollamaRuntimeSnapshot;
+    if (cached && !force) renderRuntimeStatus(cached);
+    if (renderManagedOperation()) return;
+    try {
+      const runtime = await runtimeStatusCache.load(force);
+      if (!machineProfile.isConnected || runtimeStatusCache.peek() !== runtime) return;
+      ollamaRuntimeSnapshot = runtime;
+      renderRuntimeStatus(runtime);
     } catch (error) {
       console.error("Could not read local AI information", error);
+      if (!machineProfile.isConnected) return;
+      if (cached) {
+        if (managedModelStatus) {
+          managedModelStatus.hidden = false;
+          managedModelStatus.textContent = "Could not refresh AI status. Showing the last available information.";
+        }
+        return;
+      }
       if (executionGuidanceMessage) executionGuidanceMessage.textContent = "Machine information is currently unavailable.";
       if (managedModelStatus) managedModelStatus.textContent = "The local AI component is currently unavailable.";
       machineModelRow?.classList.remove("is-busy", "is-ready");
@@ -3005,8 +3205,25 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       }
       if (installManagedQwen) { installManagedQwen.hidden = false; installManagedQwen.disabled = true; installManagedQwen.textContent = "Install unavailable"; }
       if (removeManagedQwen) removeManagedQwen.hidden = true;
+      if (fineTunedModelToggle) fineTunedModelToggle.hidden = true;
     }
   };
+  fineTunedModelEnabled?.addEventListener("change", async () => {
+    if (!fineTunedModelStatus || !fineTunedModelEnabled) return;
+    const enabled = fineTunedModelEnabled.checked;
+    fineTunedModelEnabled.disabled = true;
+    fineTunedModelStatus.textContent = "Saving AI model preference…";
+    try {
+      await invoke("set_fine_tuned_model_enabled", { enabled });
+      await refreshManagedModel(true);
+      void refreshProtectionStatus(user, true);
+    } catch (error) {
+      console.error("Could not update the fine-tuned model preference", error);
+      fineTunedModelEnabled.checked = !enabled;
+      fineTunedModelEnabled.disabled = false;
+      fineTunedModelStatus.textContent = "The preference could not be saved. Standard Qwen remains available.";
+    }
+  });
   installManagedQwen?.addEventListener("click", async () => {
     if (!managedModelStatus || !installManagedQwen || managedModelOperation) return;
     managedModelOperation = { phase: "installing", status: "Preparing AI model download…" };
@@ -3024,19 +3241,29 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
     } finally {
       unlisten?.();
       managedModelOperation = null;
-      await refreshManagedModel();
+      await refreshManagedModel(true);
     }
     if (installationError) { console.error("AI model installation failed", installationError); managedModelStatus.textContent = "The AI model could not be installed. Please try again."; }
     else void refreshProtectionStatus(user, true);
   });
-  removeManagedQwen?.addEventListener("click", async () => {
+  if (machineProfile) root.insertAdjacentHTML("beforeend", `<dialog class="confirm-dialog remove-model-dialog" id="remove-model-dialog" aria-labelledby="remove-model-title" aria-describedby="remove-model-description"><div class="dialog-mark">!</div><p class="page-kicker">LOCAL AI MODEL</p><h2 id="remove-model-title">Remove AI model?</h2><p id="remove-model-description">Removing this model will <strong>significantly reduce phishing-detection performance</strong>. FishStop will lose AI-assisted understanding of message content and intent. Only technical checks will remain until you reinstall the model.</p><div class="dialog-actions"><button id="cancel-remove-model" type="button" autofocus>Keep model</button><button id="confirm-remove-model" type="button">Remove</button></div></dialog>`);
+  const removeModelDialog = document.querySelector<HTMLDialogElement>("#remove-model-dialog");
+  removeManagedQwen?.addEventListener("click", () => {
+    if (managedModelOperation || cpuOptimizationOperation || !removeModelDialog || removeModelDialog.open) return;
+    removeModelDialog.showModal();
+    animateDialogEntrance(removeModelDialog);
+  });
+  document.querySelector<HTMLButtonElement>("#cancel-remove-model")?.addEventListener("click", () => removeModelDialog?.close());
+  document.querySelector<HTMLButtonElement>("#confirm-remove-model")?.addEventListener("click", async () => {
+    if (!removeModelDialog?.open) return;
+    removeModelDialog.close();
     if (!managedModelStatus || managedModelOperation || cpuOptimizationOperation) return;
     managedModelOperation = { phase: "removing", status: "Removing the AI model from this device…" };
     renderManagedOperation();
     let removalError: unknown = null;
     try { await invoke("remove_default_ollama_model"); }
     catch (error) { removalError = error; }
-    finally { managedModelOperation = null; await refreshManagedModel(); }
+    finally { managedModelOperation = null; await refreshManagedModel(true); }
     if (removalError) { console.error("AI model removal failed", removalError); managedModelStatus.textContent = "The AI model could not be removed. Please try again."; }
     else void refreshProtectionStatus(user, true);
   });
@@ -3058,7 +3285,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
     } finally {
       unlisten?.();
       cpuOptimizationOperation = null;
-      await refreshManagedModel();
+      await refreshManagedModel(true);
     }
     if (benchmarkError) { console.error("CPU optimization failed", benchmarkError); cpuOptimizationResult.textContent = "CPU optimization could not be completed. Please try again."; }
     else if (result) cpuOptimizationResult.textContent = "Optimization complete. FishStop saved the fastest setting for this computer.";
@@ -3117,17 +3344,21 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       const accelerated = Boolean(runtime?.loaded_on_gpu) || isAppleSilicon;
       const expectedDurationMs = accelerated ? 30_000 : 120_000;
       const heuristicStartedAt = performance.now();
+      // Changing the runtime estimate continues from the current value.
+      const initialProgress = session.progressPercent || 0;
       const paintHeuristicProgress = () => {
         if (activeAnalysis !== session || session.status !== "processing") return;
         const elapsedRatio = (performance.now() - heuristicStartedAt) / expectedDurationMs;
         const estimated = elapsedRatio <= 1
           ? 90 * (1 - Math.pow(1 - Math.max(0, elapsedRatio), 1.7))
           : 90 + 9 * (1 - Math.exp(-1.4 * (elapsedRatio - 1)));
-        setAnalysisProgressVisual(session, Math.min(99, estimated));
+        setAnalysisProgressVisual(session, initialProgress + (99 - initialProgress) * Math.min(99, estimated) / 99);
       };
       paintHeuristicProgress();
       heuristicTimer = window.setInterval(paintHeuristicProgress, 250);
     };
+    // Start at zero during message preparation, before the AI runtime is ready.
+    startHeuristicProgress(ollamaRuntimeSnapshot);
     const queueProgress = (check: number | undefined, message?: string) => {
       if (message) {
         session.progressMessage = message;
@@ -3167,8 +3398,9 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       session.status = "complete";
       const completedResult = analysisIsVisible(session) ? document.querySelector<HTMLDivElement>("#analysis-result") : null;
       if (completedResult?.isConnected && completedResult.querySelector(".analysis-loading")) {
-        completeAnalysisLoading(completedResult);
-        await pause(780);
+        const completionDuration = completeAnalysisLoading(completedResult);
+        session.progressPercent = 100;
+        await pause(completionDuration + 80);
         if (activeAnalysis !== session || !analysisIsVisible(session) || !completedResult.isConnected) return;
         completedResult.querySelector<HTMLElement>(".analysis-loading")?.classList.add("is-leaving");
         await pause(260);
@@ -3454,5 +3686,6 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
   }
 }
 
+initializeTheme();
 const user = storedUser();
 if (user) renderDashboard(user); else renderLogin();

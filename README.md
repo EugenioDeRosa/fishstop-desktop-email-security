@@ -172,7 +172,43 @@ FishStop seleziona automaticamente il backend e il modello adatti alla piattafor
 
 Il modello viene caricato soltanto durante l'analisi e viene rilasciato al termine, anche in caso di errore o annullamento. Se l'AI non conclude entro il tempo previsto, i controlli statici restano comunque disponibili.
 
+### Modello Qwen fine-tuned opzionale
+
+FishStop rileva automaticamente anche una variante fine-tuned già esportata e quantizzata. Quando è presente, in **Settings → Machine and automatic model** compare la spunta **Use fine-tuned Qwen**. La preferenza viene salvata sul dispositivo; disattivandola viene usato il Qwen standard. Se il modello personalizzato non si avvia, FishStop disabilita la preferenza e riprova automaticamente con il modello standard.
+
+Il modello personalizzato deve rispettare una di queste convenzioni:
+
+- **Ollama (Windows, macOS Intel e sviluppo non-MLX):** modello registrato con il nome `fishstop-qwen3:4b-finetuned-q4_K_M`;
+- **MLX (Apple Silicon):** modello MLX completo e unificato nella cartella dati dell'app, sotto `mlx-models/qwen3-4b-instruct-2507-finetuned-4bit`, contenente almeno `config.json` e uno o più file `model*.safetensors`.
+
+L'artefatto distribuito deve essere il modello risultante dall'unione dell'adapter con Qwen, non il solo adapter LoRA. In questo modo lo stesso controllo nelle impostazioni rimane affidabile con entrambi i backend locali.
+
 ## Privacy e dati locali
+
+### Controllo locale degli allegati Office
+
+FishStop usa `oletools` per analizzare VBA, macro Excel 4/XLM e istruzioni DDE
+negli allegati Office legacy, OOXML e RTF (per RTF viene controllato DDE).
+Il controllo è automatico durante l'analisi statica: non serve una spunta e non
+modifica il modello Qwen o il suo adapter. Le evidenze compaiono negli allegati,
+nei flag, nel contesto AI e nei report JSON/SIEM. La sola presenza di VBA è
+informativa; avvio automatico, comportamenti sospetti e DDE richiedono revisione.
+Non è un antivirus e non dimostra che un file sia innocuo o malevolo.
+
+I documenti sono analizzati in un processo separato, senza aprire Office,
+eseguire macro o emulare XLM. Nessun documento viene caricato online da questo
+controllo; gli URL estratti possono entrare nei controlli di reputazione già
+configurati. Il codice VBA completo non viene inviato al modello.
+Il limite è 8 secondi per documento e 20 secondi/5 documenti per email,
+con limite di 10 MiB per documento e limiti di decompressione OOXML.
+Cifratura, formato non supportato, errori o limiti raggiunti producono un
+controllo incompleto, mai un risultato pulito. Le macro XLM OOXML vengono
+rilevate come fogli macro, senza deoffuscare le formule; gli oggetti incorporati
+RTF e gli exploit binari non sono coperti da questo controllo.
+
+La dipendenza è inclusa in `src-python/requirements.txt` e nella build del
+sidecar. In sviluppo, dopo aver aggiornato le dipendenze, riavvia FishStop e
+rianalizza le email: i report già salvati non vengono modificati retroattivamente.
 
 Il corpo dell'email viene elaborato dal modello AI sul dispositivo. VirusTotal, AbuseIPDB e OTX ricevono soltanto gli indicatori tecnici necessari al controllo configurato; il contenuto del messaggio e il file `.eml` non vengono inviati.
 
@@ -192,6 +228,24 @@ npm run tauri dev
 ```
 
 In modalità sviluppo FishStop esegue direttamente `src-python/main.py`, quindi le modifiche Python vengono applicate senza ricreare il sidecar.
+
+### Avvio in sviluppo su Windows
+
+Installa anche gli strumenti MSVC x64/x86 e Windows SDK dal carico di lavoro **Sviluppo di applicazioni desktop con C++** di Visual Studio Installer. Windows Performance Toolkit non è necessario.
+
+Nel terminale PowerShell della cartella del progetto:
+
+```powershell
+npm.cmd install
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r src-python/requirements.txt pyinstaller
+$env:FISHSTOP_TARGET_TRIPLE = 'x86_64-pc-windows-msvc'
+.\.venv\Scripts\python.exe scripts/build_sidecar.py
+$env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
+npm.cmd run tauri -- dev
+```
+
+Il sidecar deve essere presente anche per la compilazione in sviluppo perché è dichiarato nella configurazione Tauri. Se compare l'errore `resource path binaries\fishstop-engine-x86_64-pc-windows-msvc.exe doesn't exist`, esegui il passaggio `build_sidecar.py`. Durante l'uso in sviluppo il motore continua a eseguire i sorgenti Python.
 
 ### Backend MLX in sviluppo su Apple Silicon
 

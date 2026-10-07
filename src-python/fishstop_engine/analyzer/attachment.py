@@ -18,8 +18,18 @@ from .constants import (
     MAGIC_BYTES,
 )
 from .archive_analysis import ArchiveAnalysisBudget, analyze_archive_security
+from fishstop_engine.office_analysis import (
+    OfficeAnalysisBudget, OLE_EXTENSIONS, OOXML_EXTENSIONS, analyze_office_security,
+)
 
-ZIP_CONTAINER_EXTS = {"docx", "xlsx", "pptx", "zip"}
+ZIP_CONTAINER_EXTS = OOXML_EXTENSIONS | {"zip"}
+UNSUPPORTED_ARCHIVE_EXTS = {"rar", "7z", "tar", "gz", "tgz", "bz2", "xz", "zst", "cab", "iso", "img", "dmg"}
+UNSUPPORTED_ARCHIVE_MIMES = {
+    "application/vnd.rar", "application/x-rar-compressed", "application/x-7z-compressed",
+    "application/x-tar", "application/gzip", "application/x-gzip", "application/x-bzip2",
+    "application/x-xz", "application/zstd", "application/vnd.ms-cab-compressed",
+    "application/x-iso9660-image", "application/x-apple-diskimage",
+}
 
 PDF_ANALYSIS_MAX_BYTES = 25 * 1024 * 1024
 PDF_OBJECT_WALK_LIMIT = 5000
@@ -583,11 +593,14 @@ def _safe_pdf_str(value) -> str:
 
 
 def _scan_pypdf_object(obj, counter: Counter, stats: dict, seen: set[int], depth: int = 0, object_label: str | None = None) -> None:
-    if obj is None or depth > 35 or stats["walked_nodes"] >= PDF_OBJECT_WALK_LIMIT:
+    if obj is None:
         return
 
     obj_id = id(obj)
     if obj_id in seen:
+        return
+    if depth > 35 or stats["walked_nodes"] >= PDF_OBJECT_WALK_LIMIT:
+        stats["walk_limit_reached"] = True
         return
     seen.add(obj_id)
     stats["walked_nodes"] += 1
@@ -668,6 +681,7 @@ def _pypdf_structural_scan(raw: bytes) -> tuple[Counter, dict]:
         "has_open_destination": False,
         "page_mode": None,
         "walked_nodes": 0,
+        "walk_limit_reached": False,
         "uri_evidence": _empty_uri_evidence(),
     }
 
@@ -745,7 +759,9 @@ def analyze_pdf_security(raw: bytes) -> dict:
     if not raw.startswith(b"%PDF"):
         return {
             "is_pdf": False,
-            "risk_level": "not_pdf",
+            "analysis_complete": False,
+            "status": "invalid",
+            "risk_level": "unknown",
             "suspicious": False,
             "indicators": [],
             "behaviors": [],
@@ -763,6 +779,8 @@ def analyze_pdf_security(raw: bytes) -> dict:
     if len(raw) > PDF_ANALYSIS_MAX_BYTES:
         return {
             "is_pdf": True,
+            "analysis_complete": False,
+            "status": "skipped",
             "risk_level": "medium",
             "suspicious": False,
             "indicators": [],
@@ -812,17 +830,17 @@ def analyze_pdf_security(raw: bytes) -> dict:
 
     encrypted = bool(static_stats["encrypted"] or structural_stats.get("is_encrypted"))
     parser_error = structural_stats.get("parser_error")
-    parser_error_for_risk = None
-    if structural_stats.get("parser_available") and parser_error:
-        has_static_risk_context = bool(
-            indicators
-            or encrypted
-            or static_stats["suspicious_name_escapes"]
-            or static_stats["eof_count"] > 1
-        )
-        parser_error_for_risk = parser_error if has_static_risk_context else None
+    analysis_complete = bool(
+        structural_stats.get("parser_available")
+        and not parser_error
+        and not structural_stats.get("parser_warnings")
+        and not structural_stats.get("walk_limit_reached")
+        and (not encrypted or structural_stats.get("is_decrypted_with_empty_password"))
+    )
     behaviors = _pdf_behavior_findings(indicators)
-    risk_level = _risk_level(indicators, encrypted, parser_error_for_risk, behaviors)
+    risk_level = _risk_level(indicators, encrypted, parser_error, behaviors)
+    if not analysis_complete and risk_level in {"clean", "low"}:
+        risk_level = "unknown"
     suspicious = bool(behaviors)
 
     summary_parts = [f"{item['label']} x{item['count']}" for item in indicators[:8]]
@@ -837,16 +855,17 @@ def analyze_pdf_security(raw: bytes) -> dict:
     uri_samples = uri_evidence.get("samples") or []
     if uri_samples:
         summary_parts.append("URI evidence: " + "; ".join(uri_samples[:3]))
-    if parser_error_for_risk:
-        summary_parts.append(f"structured parser error: {parser_error_for_risk}")
-    elif parser_error:
-        structural_stats["parser_warnings"] = (
-            structural_stats.get("parser_warnings", [])
-            + [f"Structured parser could not fully parse PDF: {parser_error}"]
-        )
+    if parser_error:
+        summary_parts.append(f"structured parser error: {parser_error}")
+    if structural_stats.get("walk_limit_reached"):
+        summary_parts.append("PDF object/depth inspection limit reached")
+    if not analysis_complete:
+        summary_parts.append("PDF inspection incomplete; requires review")
 
     return {
         "is_pdf": True,
+        "analysis_complete": analysis_complete,
+        "status": "ok" if analysis_complete else "partial",
         "risk_level": risk_level,
         "suspicious": suspicious,
         "indicators": indicators,
@@ -879,6 +898,8 @@ def analyze_attachment(
     encoding: str,
     raw_payload,
     archive_budget: ArchiveAnalysisBudget | None = None,
+    office_budget: OfficeAnalysisBudget | None = None,
+    archive_depth: int = 0,
 ) -> dict:
     """Analyze an attachment and flag extension/content/magic-byte mismatches."""
     entry: dict = {
@@ -897,6 +918,7 @@ def analyze_attachment(
         "attachment_security": None,
         "pdf_security": None,
         "archive_security": None,
+        "office_security": None,
         "embedded_urls": [],
     }
 
@@ -913,6 +935,8 @@ def analyze_attachment(
                 f"High-risk attachment: {entry['attachment_security']['summary']}"
             )
         entry["anomaly"] = "; ".join(anomaly_parts) if anomaly_parts else None
+        entry["inspection"] = {"status": "partial", "analysis_complete": False,
+                               "summary": "Attachment payload could not be inspected."}
         return entry
 
     entry["magic_bytes_hex"] = raw_bytes[:16].hex().upper()
@@ -933,10 +957,26 @@ def analyze_attachment(
         entry["archive_security"] = analyze_archive_security(
             raw_bytes,
             filename,
+            depth=archive_depth,
             budget=archive_budget,
+            office_budget=office_budget,
         )
 
     ct_base = content_type.split(";", 1)[0].strip().lower()
+    if entry["archive_security"] is None and (
+        entry["extension_from_filename"] in UNSUPPORTED_ARCHIVE_EXTS
+        or entry["magic_detected_format"] in UNSUPPORTED_ARCHIVE_EXTS
+        or ct_base in UNSUPPORTED_ARCHIVE_MIMES
+        or raw_bytes.startswith((b"7z\xbc\xaf\x27\x1c", b"\x1f\x8b", b"BZh", b"\xfd7zXZ\x00", b"\x28\xb5\x2f\xfd"))
+        or raw_bytes[257:262] == b"ustar"
+    ):
+        entry["archive_security"] = {
+            "is_archive": True, "status": "unsupported", "analysis_complete": False,
+            "risk_level": "unknown", "findings": [], "urls": [],
+            "summary": "Archive format not supported: contents were not inspected.",
+        }
+
+    entry["office_security"] = analyze_office_security(raw_bytes, filename, content_type, office_budget)
     expected_exts = CONTENT_TYPE_TO_EXT.get(ct_base, [])
     file_ext = entry["extension_from_filename"]
     magic_fmt = entry["magic_detected_format"]
@@ -947,12 +987,14 @@ def analyze_attachment(
             f"Content-Type '{ct_base}' expects {expected_exts} but filename has '.{file_ext}'"
         )
     if magic_fmt and file_ext and magic_fmt != file_ext:
-        if not (magic_fmt == "zip" and file_ext in ZIP_CONTAINER_EXTS):
+        if not ((magic_fmt == "zip" and file_ext in ZIP_CONTAINER_EXTS)
+                or (magic_fmt == "doc" and file_ext in OLE_EXTENSIONS)):
             mismatches.append(
                 f"Magic bytes identify format as '{magic_fmt}' but filename extension is '.{file_ext}'"
             )
     if magic_fmt and expected_exts and magic_fmt not in expected_exts:
-        if not (magic_fmt == "zip" and bool(set(expected_exts) & ZIP_CONTAINER_EXTS)):
+        if not ((magic_fmt == "zip" and bool(set(expected_exts) & ZIP_CONTAINER_EXTS))
+                or (magic_fmt == "doc" and bool(set(expected_exts) & OLE_EXTENSIONS))):
             mismatches.append(
                 f"Magic bytes identify '{magic_fmt}' but Content-Type expects {expected_exts}"
             )
@@ -970,12 +1012,22 @@ def analyze_attachment(
             f"PDF risk {str(pdf_security.get('risk_level')).upper()}: {pdf_security.get('summary')}"
         )
     archive_security = entry.get("archive_security") or {}
-    if archive_security.get("risk_level") in {"high", "medium"}:
+    if archive_security.get("risk_level") in {"high", "critical"}:
         anomaly_parts.append(
             f"Archive risk {str(archive_security.get('risk_level')).upper()}: {archive_security.get('summary')}"
         )
     pdf_urls = ((entry.get("pdf_security") or {}).get("uri_evidence") or {}).get("urls") or []
     archive_urls = archive_security.get("urls") or []
-    entry["embedded_urls"] = list(dict.fromkeys([*pdf_urls, *archive_urls]))[:25]
+    office_urls = (entry.get("office_security") or {}).get("urls") or []
+    entry["embedded_urls"] = list(dict.fromkeys([*pdf_urls, *archive_urls, *office_urls]))[:25]
     entry["anomaly"] = "; ".join(anomaly_parts) if anomaly_parts else None
+    scans = [entry[key] for key in ("pdf_security", "archive_security", "office_security") if entry[key]]
+    incomplete = [scan for scan in scans if scan.get("analysis_complete") is False]
+    entry["inspection"] = {
+        "status": "partial" if incomplete else "complete" if scans else "type_only",
+        "analysis_complete": not incomplete,
+        "summary": "; ".join(scan["summary"] for scan in incomplete)
+            if incomplete else "Supported local checks completed." if scans
+            else "File type checks only; no content scanner is available for this format.",
+    }
     return entry

@@ -1,6 +1,6 @@
 """Central safety limits for analysis of untrusted email files."""
 
-MAX_EML_BYTES = 10 * 1024 * 1024
+MAX_EML_BYTES = 40 * 1024 * 1024
 MAX_MIME_PARTS = 200
 MAX_MIME_DEPTH = 10
 MAX_DECODED_TEXT_CHARS = 240_000

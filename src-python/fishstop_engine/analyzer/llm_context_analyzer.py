@@ -68,7 +68,7 @@ OLLAMA_AVAILABILITY_TTL = max(
     0.0,
     float(os.getenv("OLLAMA_AVAILABILITY_TTL", "5")),
 )
-PROMPT_VERSION = "semantic-policy-v39-grounded-risk-hypothesis"
+PROMPT_VERSION = "semantic-policy-v40-credential-reply-grounding"
 
 _OLLAMA_AVAILABILITY_LOCK = Lock()
 _OLLAMA_AVAILABILITY_CACHE: tuple[float, tuple, bool] | None = None
@@ -779,7 +779,23 @@ def _technical_context_lines(soc: dict, body_for_llm: str = "", link_reputation:
     if soc.get("display_name_spoofing"):
         lines.append(f"Display name spoofing indicator: {soc.get('display_name_spoofing')}")
 
+    for att in [item for item in attachments if item.get("office_security")][:5]:
+        office = att.get("office_security") or {}
+        if office:
+            lines.append(
+                "Office attachment inspection: name=[ATTACHMENT_NAME] "
+                f"status={office.get('status')} complete={bool(office.get('analysis_complete'))} "
+                f"risk={office.get('risk_level')} vba={bool(office.get('vba_macros'))} "
+                f"xlm={bool(office.get('xlm_macros'))} "
+                f"findings={','.join(str(f.get('key') or '') for f in office.get('findings') or [])}. "
+                "Macro presence alone is not malware. Incomplete inspection is not proof of safety."
+            )
     for att in attachments[:5]:
+        for kind in ("pdf_security", "archive_security"):
+            scan = att.get(kind) or {}
+            if scan.get("analysis_complete") is False:
+                lines.append(f"{kind}: inspection incomplete; absence of findings is not proof of safety. "
+                             f"{scan.get('summary') or ''}")
         anomaly = _attachment_anomaly_for_llm(att)
         pdf_security = att.get("pdf_security") or {}
         pdf_risk = str(pdf_security.get("risk_level") or "").lower()
@@ -1175,6 +1191,20 @@ _CREDENTIAL_DISCLOSURE_PATTERN = re.compile(
     r"wallet\s*(?:seed|phrase))\b",
     re.IGNORECASE,
 )
+_CREDENTIAL_REPLY_PATTERN = re.compile(
+    r"\b(?:rispond(?:i|ete|a)|reply|respond|inoltr(?:a|ate|aci|arcelo|arci)|"
+    r"invi(?:a|ate|aci|ateci|arci)|mand(?:a|ate|aci)|riport(?:a|ate|ando)|"
+    r"comunic(?:a|ate|arci|acelo)|forward|send)\b"
+    r"[^.!?]{0,120}\b(?:password|credenziali|otp|pin|codice\s+(?:monouso|"
+    r"(?:di\s+)?(?:verifica|sicurezza|accesso|autenticazione))|"
+    r"(?:security|verification|authentication|one[ -]?time)\s+code|"
+    r"recovery\s+code|codice\s+di\s+recupero)\b",
+    re.IGNORECASE,
+)
+_CREDENTIAL_NEGATION_PATTERN = re.compile(
+    r"\b(?:non|mai|never|do\s+not|don't|not\s+to)\s+"
+    r"(?:(?:devi|dovete|bisogna|ever|please)\s+)?$", re.IGNORECASE,
+)
 _AUTHENTICATION_CODE_LABEL_PATTERN = re.compile(
     r"\b(?:otp|one[ -]?time\s+(?:password|code)|security\s+code|verification\s+code|"
     r"authentication\s+code|login\s+code|codice\s+(?:di\s+)?(?:sicurezza|verifica|"
@@ -1342,7 +1372,7 @@ def _explicit_extortion_threat(soc: dict, semantic: dict) -> bool:
 
 def _explicit_credential_submission(soc: dict) -> bool:
     """Distinguish delivery of an OTP from collecting an authentication secret."""
-    segments = _evidence_segments(soc)
+    segments = _credential_request_segments(soc)
     if _explicit_credential_disclosure(soc):
         return True
     supplied_collection_channel = bool(
@@ -1374,8 +1404,49 @@ def _explicit_credential_disclosure(soc: dict) -> bool:
     """Return true when the recipient is asked to reveal a secret to someone."""
     return any(
         _CREDENTIAL_DISCLOSURE_PATTERN.search(segment)
-        for segment in _evidence_segments(soc)
+        or _CREDENTIAL_REPLY_PATTERN.search(segment)
+        for segment in _credential_request_segments(soc)
     )
+
+
+def _credential_request_segments(soc: dict) -> list[str]:
+    """Join wrapped lines, retaining sentence context and excluding denied requests."""
+    text = _normalize_obfuscated_text("\n\n".join([
+        str(soc.get("subject") or ""), _body_context_for_llm(soc),
+        *_actionable_link_texts(soc),
+    ]))
+    # EML text wraps at arbitrary columns; a newline is not a sentence boundary.
+    text = re.sub(r"(?<!\n)\n(?!\n)", " ", text)
+    segments = []
+    for value in re.split(r"(?<=[.!?])\s+|\n{2,}", text):
+        value = re.sub(r"\s+", " ", value).strip()
+        matches = [match for pattern in (
+            _CREDENTIAL_SUBMISSION_PATTERN, _CREDENTIAL_DISCLOSURE_PATTERN,
+            _CREDENTIAL_REPLY_PATTERN,
+        ) for match in pattern.finditer(value)]
+        if not matches:
+            continue
+        if re.search(r"\b(?:esempio\s+di\s+(?:truffa|phishing)|"
+                     r"(?:scam|phishing)\s+example|demonstration\s+text)\b", value, re.I):
+            continue
+        # Skip a negated instruction even if another pattern starts inside it.
+        first = min(matches, key=lambda match: match.start())
+        if _CREDENTIAL_NEGATION_PATTERN.search(value[:first.start()]):
+            continue
+        if (
+            re.search(r"\b(?:inserisci|enter)\b[^.!?]{0,72}\b(?:codice|code)\b", value, re.I)
+            and re.search(r"\b(?:autonomamente|independently\s+(?:opened|initiated))\b", value, re.I)
+            and not _CREDENTIAL_DISCLOSURE_PATTERN.search(value)
+            and not _CREDENTIAL_REPLY_PATTERN.search(value)
+        ):
+            continue
+        segments.append(value)
+    # Closed/cancelled quoted requests are evidence, not current instructions.
+    if re.search(r"\b(?:la\s+richiesta\s+(?:sotto\s+)?(?:e|è)\s+annullata|"
+                 r"non\s+eseguire\s+(?:questa|la)\s+richiesta|"
+                 r"(?:this|the)\s+request\s+(?:is|has\s+been)\s+cancelled)\b", text, re.I):
+        return []
+    return segments
 
 
 def _delivers_authentication_code(soc: dict) -> bool:
@@ -1390,10 +1461,11 @@ def _delivers_authentication_code(soc: dict) -> bool:
 def _explicit_credential_evidence(soc: dict) -> str:
     """Return the original credential-submission instruction verbatim."""
     matches = [
-        segment for segment in _evidence_segments(soc)
+        segment for segment in _credential_request_segments(soc)
         if (
             _CREDENTIAL_SUBMISSION_PATTERN.search(segment)
             or _CREDENTIAL_DISCLOSURE_PATTERN.search(segment)
+            or _CREDENTIAL_REPLY_PATTERN.search(segment)
         )
     ]
     return _clip_exact_span(min(matches, key=len), 180) if matches else ""
@@ -2598,6 +2670,16 @@ def _technical_risk(soc: dict, semantic: dict | None = None) -> tuple[str, list[
             )
 
         pdf = att.get("pdf_security") or {}
+        archive = att.get("archive_security") or {}
+        if any(scan.get("analysis_complete") is False for scan in (pdf, archive)):
+            suspicious.append("an attachment could not be fully inspected")
+        if archive.get("risk_level") in {"high", "critical", "medium"}:
+            suspicious.append("an archive contains risky or uninspectable content")
+        office = att.get("office_security") or {}
+        if office.get("risk_level") in {"medium", "high", "critical"}:
+            suspicious.append("an Office attachment contains potentially unsafe active content")
+        if office and not office.get("analysis_complete"):
+            suspicious.append("an Office attachment could not be fully inspected")
         pdf_risk = str(pdf.get("risk_level") or "").lower()
         if pdf.get("suspicious") and pdf_risk in {"high", "critical"}:
             malicious.append("an attached PDF contains high-risk active features")

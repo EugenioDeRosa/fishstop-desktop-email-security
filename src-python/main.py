@@ -14,6 +14,11 @@ ENGINE_ROOT = Path(__file__).resolve().parent
 if str(ENGINE_ROOT) not in sys.path:
     sys.path.insert(0, str(ENGINE_ROOT))
 
+if __name__ == "__main__" and len(sys.argv) == 4 and sys.argv[1] == "--office-scan":
+    from fishstop_engine.office_analysis import run_office_worker
+    run_office_worker(sys.argv[2], sys.argv[3])
+    raise SystemExit(0)
+
 from fishstop_engine.analysis_limits import EmailAnalysisLimitError, MAX_EML_BYTES
 from fishstop_engine.analyzer import EmlSOCAnalyzer
 from fishstop_engine.analyzer.conversation import (
@@ -94,7 +99,7 @@ def _validated_eml_path(path_value: str) -> Path:
     if path.suffix.lower() != ".eml":
         raise ValueError("FishStop supports .eml files only.")
     if path.stat().st_size > MAX_EML_BYTES:
-        raise EmailAnalysisLimitError("The EML file exceeds the supported 10 MB limit.")
+        raise EmailAnalysisLimitError("The EML file exceeds the supported 40 MiB limit.")
     return path
 
 

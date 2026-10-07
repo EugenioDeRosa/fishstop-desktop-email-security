@@ -1,0 +1,129 @@
+/* Day colors live in styles.css as the fallback for each palette reference.
+   Night mode keeps the teal identity and the same green / amber / coral risks. */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --night-canvas: #0e1d1f;
+  --night-surface: #162a2d;
+  --night-subtle: #1b3335;
+  --night-raised: #234043;
+  --night-border: #365457;
+  --night-accent-border: #568e80;
+  --night-warning-border: #8b7043;
+  --night-danger-border: #945b56;
+  --night-text: #e5efeb;
+  --night-secondary: #c1d5ce;
+  --night-muted: #a3bdb4;
+  --night-accent: #86dfc3;
+  --night-warning: #f3cd85;
+  --night-danger: #ffa69b;
+  --night-info: #a6c5f5;
+  --night-success-surface: #20463b;
+  --night-warning-surface: #463a27;
+  --night-danger-surface: #472e31;
+  --fishstop-card-border: var(--night-border);
+  --fishstop-card-surface: linear-gradient(135deg, #182f31, #162a2d);
+  --fishstop-card-shadow: 0 1px 2px rgba(0,0,0,.16), 0 8px 24px rgba(0,0,0,.12);
+}
+
+:root[data-theme="light"] { color-scheme: light; }
+
+/* Filled buttons keep a bright mint background and dark, legible lettering. */
+:root[data-theme="dark"] :is(.primary-action, .conversation-selected-action) {
+  background: #91e0c5;
+  color: #102e28;
+}
+:root[data-theme="dark"] :is(.primary-action, .conversation-selected-action):hover:not(:disabled) {
+  background: #b8f0dc;
+  color: #102e28;
+}
+:root[data-theme="dark"] .conversation-selected-action :is(small, b) { color: #234c40; }
+:root[data-theme="dark"] .conversation-selected-action:disabled {
+  background: var(--night-raised);
+  color: var(--night-muted);
+}
+:root[data-theme="dark"] .conversation-selected-action:disabled :is(small, b) { color: var(--night-muted); }
+/* Secondary actions have a lighter teal surface and a clear outline instead
+   of blending into the card. Keep navigation and status badges independent. */
+:root[data-theme="dark"] :is(
+  .soft-action, .cancel-credentials, .model-remove-action,
+  .change-analysis, .reset-analysis, .copy-evidence, .manual-vt-action,
+  .ioc-item button, .consistency-address button, .technical-report button,
+  .route-heading button, .selected-eml button, .provider,
+  .statistics-period-trigger, .conversation-all-action,
+  .conversation-target-action, .conversation-list-actions > button,
+  .conversation-header-actions > button, .dialog-actions button
+) {
+  background: #365d59;
+  color: #eefaf5;
+  border: 1px solid #83b2a6;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.08);
+}
+:root[data-theme="dark"] :is(
+  .soft-action, .cancel-credentials, .model-remove-action,
+  .change-analysis, .reset-analysis, .copy-evidence, .manual-vt-action,
+  .ioc-item button, .consistency-address button, .technical-report button,
+  .route-heading button, .selected-eml button, .provider,
+  .statistics-period-trigger, .conversation-all-action,
+  .conversation-target-action, .conversation-list-actions > button,
+  .conversation-header-actions > button, .dialog-actions button
+):hover:not(:disabled) {
+  background: #456f68;
+  color: #fff;
+  border-color: #a6ddca;
+}
+:root[data-theme="dark"] .confirm-dialog .dialog-actions :is(
+  #cancel-clear-history, #cancel-sign-out, #cancel-remove-model
+) { background: #365d59; color: #eefaf5; border-color: #83b2a6; }
+:root[data-theme="dark"] .confirm-dialog .dialog-actions :is(
+  #cancel-clear-history, #cancel-sign-out, #cancel-remove-model
+):hover { background: #456f68; color: #fff; border-color: #a6ddca; }
+
+/* Destructive controls stay distinct, with readable coral lettering. */
+:root[data-theme="dark"] :is(
+  .remove-reputation-key, .cancel-analysis, .selected-eml .remove-file,
+  .history-actions button
+) { background: #633e40; color: #ffe7e1; border: 1px solid #d99a91; }
+:root[data-theme="dark"] :is(
+  .remove-reputation-key, .cancel-analysis, .selected-eml .remove-file,
+  .history-actions button
+):hover:not(:disabled) { background: #7b4b4b; color: #fff; border-color: #ffc2b5; }
+:root[data-theme="dark"] .confirm-dialog .dialog-actions :is(
+  #confirm-clear-history, #confirm-sign-out, #confirm-remove-model
+) { background: #efa293; color: #3c1c19; border: 1px solid #ffd0c5; }
+:root[data-theme="dark"] .confirm-dialog .dialog-actions :is(
+  #confirm-clear-history, #confirm-sign-out, #confirm-remove-model
+):hover:not(:disabled) { background: #ffc0af; color: #3c1c19; }
+:root[data-theme="dark"] .external-link-dialog .dialog-actions button[data-open-external],
+:root[data-theme="dark"] .conversation-target-action[aria-pressed="true"] {
+  background: #91e0c5;
+  color: #102e28;
+  border-color: #b8f0dc;
+}
+:root[data-theme="dark"] .conversation-target-action[aria-pressed="true"]:hover {
+  background: #b8f0dc;
+  color: #102e28;
+}
+
+/* Lower luminance keeps the shimmer quiet against the darker green fill. */
+:root[data-theme="dark"] .analysis-loading {
+  --analysis-fill-top: #245446;
+  --analysis-fill-bottom: #1b4037;
+  --analysis-light: 189, 255, 215;
+  --analysis-halo: 89, 184, 131;
+  --analysis-wave-opacity: .24;
+}
+:root[data-theme="dark"] .fine-tuned-model-toggle > i { background: #54716b; }
+:root[data-theme="dark"] .fine-tuned-model-toggle > i::after { background: #e8f4ee; }
+:root[data-theme="dark"] .fine-tuned-model-toggle input:checked + i { background: #2e9b7f; }
+:root[data-theme="dark"] :is(input, select) { accent-color: #86dfc3; }
+:root[data-theme="dark"] input::placeholder { color: #9eb6af; opacity: 1; }
+:root[data-theme="dark"] :is(button, a, input, select, summary):focus-visible {
+  outline: 2px solid #86dfc3;
+  outline-offset: 3px;
+}
+:root[data-theme="dark"] .confirm-dialog::backdrop,
+:root[data-theme="dark"] .external-link-dialog::backdrop { background: rgba(2,10,12,.75); }
+:root[data-theme="dark"] .confirm-dialog { background: var(--night-surface); }
+
+/* Email HTML retains its own colors in the isolated original-message frame. */
+:root[data-theme="dark"] .safe-html-preview iframe { background: #fff; color-scheme: light; }

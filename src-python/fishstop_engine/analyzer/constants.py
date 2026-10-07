@@ -69,6 +69,18 @@ CONTENT_TYPE_TO_EXT: dict[str, list[str]] = {
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ["xlsx"],
     "application/vnd.ms-powerpoint": ["ppt"],
     "application/vnd.openxmlformats-officedocument.presentationml.presentation": ["pptx"],
+    "application/vnd.ms-word.document.macroenabled.12": ["docm"],
+    "application/vnd.ms-word.template.macroenabled.12": ["dotm"],
+    "application/vnd.ms-excel.sheet.macroenabled.12": ["xlsm"],
+    "application/vnd.ms-excel.sheet.binary.macroenabled.12": ["xlsb"],
+    "application/vnd.ms-excel.template.macroenabled.12": ["xltm"],
+    "application/vnd.ms-powerpoint.presentation.macroenabled.12": ["pptm"],
+    "application/vnd.ms-powerpoint.slideshow.macroenabled.12": ["ppsm"],
+    "application/vnd.ms-powerpoint.template.macroenabled.12": ["potm"],
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.template": ["dotx"],
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.template": ["xltx"],
+    "application/vnd.openxmlformats-officedocument.presentationml.slideshow": ["ppsx"],
+    "application/vnd.openxmlformats-officedocument.presentationml.template": ["potx"],
     "application/x-rar-compressed": ["rar"],
     "application/x-7z-compressed":  ["7z"],
     "application/gzip":      ["gz"],
@@ -82,6 +94,7 @@ CONTENT_TYPE_TO_EXT: dict[str, list[str]] = {
     "text/html":  ["html"],
     "text/xml":   ["xml"],
     "application/rtf": ["rtf"],
+    "text/rtf": ["rtf"],
 }
 
 # File types that can directly execute code, launch another resource, or mount

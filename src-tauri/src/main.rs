@@ -1932,6 +1932,7 @@ fn analyze_ai_with_engine(
     report: serde_json::Value,
     ollama_model: &str,
     gpu_accelerated: bool,
+    use_mlx: bool,
     analysis_id: String,
     cancellation: Arc<AnalysisCancellation>,
     app: tauri::AppHandle,
@@ -1959,7 +1960,7 @@ fn analyze_ai_with_engine(
                 ollama_request_timeout_seconds(gpu_accelerated).to_string(),
             )
             .env("OLLAMA_KEEP_ALIVE", "-1m");
-        if ollama_model == ollama_runtime::EXPERIMENTAL_MLX_MODEL {
+        if use_mlx {
             engine
                 .env("FISHSTOP_LLM_PROVIDER", "mlx")
                 .env("MLX_MODEL", "default_model");
@@ -2029,6 +2030,7 @@ async fn analyze_phi4(
     let cancellation = Arc::clone(&cancellation);
     tauri::async_runtime::spawn_blocking(move || {
         let use_mlx = ollama_runtime::experimental_mlx_enabled();
+        let mut loaded_model: Option<String> = None;
         let result = (|| {
             if cancellation.is_cancelled(&analysis_id) {
                 return Err("Analysis cancelled.".to_string());
@@ -2042,34 +2044,35 @@ async fn analyze_phi4(
                     message: "Loading the local AI model…".to_string(),
                 },
             );
-            if use_mlx {
-                ollama_runtime::start_experimental_mlx(&app, &runtime)?;
+            let prepared = if use_mlx {
+                ollama_runtime::start_experimental_mlx(&app, &runtime)?
             } else {
-                ollama_runtime::warm_default_model(&app, &runtime)?;
-            }
+                ollama_runtime::warm_selected_model(&app, &runtime)?
+            };
+            loaded_model = Some(prepared.name.clone());
             if cancellation.is_cancelled(&analysis_id) {
                 return Err("Analysis cancelled.".to_string());
             }
-            let (model, gpu_accelerated) = if use_mlx {
-                (ollama_runtime::EXPERIMENTAL_MLX_MODEL, true)
-            } else {
-                let prepared = ollama_runtime::prepare_model(&app, &runtime)?;
-                (prepared.name, prepared.gpu_accelerated)
-            };
             let _ = app.emit(
                 "analysis-progress",
                 AnalysisProgress {
                     analysis_id: analysis_id.clone(),
                     stage: "model-ready".to_string(),
                     completed_check: Some(1),
-                    message: "The local AI model is ready. Analyzing content and intent…".to_string(),
+                    message: if prepared.fine_tuned {
+                        "The fine-tuned Qwen model is ready. Analyzing content and intent…"
+                    } else {
+                        "The local AI model is ready. Analyzing content and intent…"
+                    }
+                    .to_string(),
                 },
             );
             analyze_ai_with_engine(
                 "phi4",
                 report,
-                model,
-                gpu_accelerated,
+                &prepared.name,
+                prepared.gpu_accelerated,
+                use_mlx,
                 analysis_id,
                 cancellation,
                 app.clone(),
@@ -2077,8 +2080,8 @@ async fn analyze_phi4(
         })();
         if use_mlx {
             let _ = ollama_runtime::stop_experimental_mlx(&runtime);
-        } else {
-            let _ = ollama_runtime::unload_default_model();
+        } else if let Some(model) = loaded_model.as_deref() {
+            let _ = ollama_runtime::unload_model(model);
         }
         result
     })
@@ -2140,6 +2143,18 @@ async fn ollama_runtime_status(
     tauri::async_runtime::spawn_blocking(move || ollama_runtime::status(&app, &runtime))
         .await
         .map_err(|error| format!("Machine profile lookup interrupted: {error}"))
+}
+
+#[tauri::command]
+async fn set_fine_tuned_model_enabled(
+    enabled: bool,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        ollama_runtime::set_fine_tuned_model_enabled(&app, enabled)
+    })
+    .await
+    .map_err(|error| format!("AI model preference update interrupted: {error}"))?
 }
 
 #[tauri::command]
@@ -2284,6 +2299,7 @@ fn main() {
             warm_ollama_model,
             optimize_cpu_performance,
             ollama_runtime_status,
+            set_fine_tuned_model_enabled,
             install_default_ollama_model,
             remove_default_ollama_model,
             local_engine_status,

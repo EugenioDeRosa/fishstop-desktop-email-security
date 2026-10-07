@@ -219,6 +219,7 @@ def _empty() -> dict:
         "stop_reason": None,
         "budget": {},
         "findings": [],
+        "members": [],
         "urls": [],
         "summary": "No risky archive structure detected.",
     }
@@ -269,13 +270,16 @@ def _finalize(
         "dangerous_file": "high",
         "double_extension": "high",
         "rtl_override": "high",
-        "office_macro": "high",
+        "office_macro": "low",
         "dde_instruction": "high",
         "external_relationship": "high",
         "nested_risky_content": "high",
         "nested_depth_limit": "high",
         "member_read_limit": "medium",
         "unreadable_member": "medium",
+        "member_review": "medium",
+        "member_incomplete": "medium",
+        "member_information": "low",
     }
     labels = {
         "entry_limit": "too many archive entries",
@@ -295,6 +299,9 @@ def _finalize(
         "nested_depth_limit": "nested archive depth budget reached",
         "member_read_limit": "archive member exceeds the safe inspection size",
         "unreadable_member": "archive member could not be inspected",
+        "member_review": "content inside archive requires review",
+        "member_incomplete": "content inside archive was not fully inspected",
+        "member_information": "informational finding inside archive",
     }
 
     if budget.exhausted:
@@ -329,9 +336,16 @@ def _finalize(
     ]
     if any(severity[key] == "high" for key in findings):
         result["risk_level"] = "high"
-    elif findings:
+    elif any(severity[key] == "medium" for key in findings):
         result["risk_level"] = "medium"
-    result["analysis_complete"] = not budget.exhausted
+    elif findings:
+        result["risk_level"] = "low"
+    result["analysis_complete"] = not budget.exhausted and not any(
+        findings[key] for key in (
+            "encrypted_entry", "member_read_limit", "unreadable_member", "member_incomplete",
+        )
+    )
+    result["status"] = "ok" if result["analysis_complete"] else "partial"
     result["budget_exhausted"] = budget.exhausted
     result["stop_reason"] = budget.stop_reason or None
     result["budget"] = budget.snapshot()
@@ -348,9 +362,15 @@ def analyze_archive_security(
     filename: str = "",
     depth: int = 0,
     budget: ArchiveAnalysisBudget | None = None,
+    office_budget=None,
 ) -> dict:
     """Inspect an archive under one shared, fail-closed resource budget."""
     budget = budget or ArchiveAnalysisBudget()
+    # Runtime import avoids the attachment/archive module cycle. Use the same
+    # scanners and shared budgets as direct attachments, never extract to disk.
+    from .attachment import analyze_attachment
+    from fishstop_engine.office_analysis import OfficeAnalysisBudget
+    office_budget = office_budget or OfficeAnalysisBudget()
     result = _empty()
     findings: Counter[str] = Counter()
     samples: dict[str, list[str]] = {}
@@ -374,6 +394,8 @@ def analyze_archive_security(
         result.update(
             {
                 "risk_level": "medium",
+                "analysis_complete": False,
+                "status": "error",
                 "findings": [
                     {
                         "key": "invalid_archive",
@@ -428,15 +450,14 @@ def analyze_archive_security(
                 add("office_macro", name)
 
             is_nested = extension in _ARCHIVE_EXTENSIONS
-            needs_text = lowered.endswith((".xml", ".rels", ".txt"))
             member_data: bytes | None = None
-            if (needs_text or is_nested) and not (item.flag_bits & 0x1):
+            if not (item.flag_bits & 0x1):
                 if item.file_size > MAX_ARCHIVE_MEMBER_READ_BYTES:
                     add("member_read_limit", name)
                 else:
                     try:
                         member_data = _read_member(archive, item, budget)
-                    except (RuntimeError, OSError, zipfile.BadZipFile):
+                    except (RuntimeError, OSError, zipfile.BadZipFile, NotImplementedError, ValueError):
                         add("unreadable_member", name)
                     if budget.exhausted:
                         break
@@ -460,6 +481,8 @@ def analyze_archive_security(
                     if url not in result["urls"]:
                         result["urls"].append(url[:500])
 
+            if member_data is not None:
+                is_nested = is_nested or zipfile.is_zipfile(io.BytesIO(member_data))
             if is_nested:
                 result["nested_archive_count"] += 1
                 if depth >= budget.max_depth:
@@ -468,19 +491,41 @@ def analyze_archive_security(
                         f"archive nesting depth budget reached at member '{name}'"
                     )
                     break
-                if member_data is not None:
-                    nested = analyze_archive_security(
-                        member_data,
-                        name,
-                        depth + 1,
-                        budget,
-                    )
-                    if any(
-                        finding.get("severity") in {"high", "critical"}
-                        for finding in nested.get("findings") or []
-                    ):
-                        add("nested_risky_content", name)
-                    if budget.exhausted:
-                        break
+            if member_data is not None:
+                child = analyze_attachment(
+                    name, "application/octet-stream", "binary", member_data,
+                    archive_budget=budget, office_budget=office_budget, archive_depth=depth + 1,
+                )
+                scans = [child[key] for key in (
+                    "attachment_security", "pdf_security", "archive_security", "office_security",
+                ) if child.get(key)]
+                ranks = {"clean": 0, "low": 1, "unknown": 2, "medium": 3, "high": 4, "critical": 5}
+                risk = max((scan.get("risk_level", "unknown") for scan in scans),
+                           key=lambda value: ranks.get(value, 2), default="unknown")
+                complete = child.get("inspection", {}).get("analysis_complete") is not False
+                if risk in {"high", "critical"}:
+                    add("nested_risky_content", name)
+                elif risk in {"medium", "unknown"}:
+                    add("member_review", name)
+                elif risk == "low":
+                    add("member_information", name)
+                if not complete:
+                    add("member_incomplete", name)
+                if child.get("anomaly") and risk not in {"high", "critical"}:
+                    add("member_review", f"{name}: {child['anomaly']}")
+                result["members"].append({
+                    "filename": name, "risk_level": risk, "analysis_complete": complete,
+                    "summary": child.get("inspection", {}).get("summary"),
+                    "findings": [
+                        finding for scan in scans
+                        for finding in (scan.get("findings") or scan.get("behaviors") or [])
+                    ][:20],
+                    "members": (child.get("archive_security") or {}).get("members", []),
+                })
+                for url in child.get("embedded_urls") or []:
+                    if url not in result["urls"]:
+                        result["urls"].append(url)
+                if not budget.check_time():
+                    break
 
     return _finalize(result, findings, samples, budget)

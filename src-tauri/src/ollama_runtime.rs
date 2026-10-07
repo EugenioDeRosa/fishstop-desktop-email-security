@@ -3,7 +3,7 @@ use std::{
     io::{BufRead, BufReader},
     path::{Component, Path, PathBuf},
     process::{Child, Command, Stdio},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
     thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -18,7 +18,9 @@ use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
 
 pub const MANAGED_MODEL: &str = "qwen3:4b-instruct-2507-q4_K_M";
+pub const FINE_TUNED_MODEL: &str = "fishstop-qwen3:4b-finetuned-q4_K_M";
 pub const EXPERIMENTAL_MLX_MODEL: &str = "mlx-community/Qwen3-4B-Instruct-2507-4bit";
+pub const FINE_TUNED_MLX_MODEL: &str = "fishstop/Qwen3-4B-Instruct-2507-FineTuned-4bit";
 pub const CPU_REQUEST_TIMEOUT_SECONDS: u64 = 600;
 pub const CPU_RESPONSE_IDLE_TIMEOUT_SECONDS: u64 = 300;
 pub const CPU_PIPELINE_TIMEOUT_SECONDS: u64 = 1_200;
@@ -49,8 +51,9 @@ pub struct OllamaRuntime {
 }
 
 pub struct PreparedModel {
-    pub name: &'static str,
+    pub name: String,
     pub gpu_accelerated: bool,
+    pub fine_tuned: bool,
 }
 
 impl Drop for OllamaRuntime {
@@ -93,6 +96,15 @@ pub struct OllamaRuntimeStatus {
     pub loaded_on_gpu: bool,
     pub cpu_only: bool,
     pub cpu_optimization: Option<CpuOptimizationSummary>,
+    pub fine_tuned_available: bool,
+    pub fine_tuned_enabled: bool,
+    pub fine_tuned_model: String,
+    pub fine_tuned_version: Option<String>,
+}
+
+#[derive(Default, Serialize, Deserialize)]
+struct AiModelPreferences {
+    use_fine_tuned_model: bool,
 }
 
 #[derive(Deserialize)]
@@ -103,6 +115,7 @@ struct OllamaTags {
 #[derive(Deserialize)]
 struct OllamaTag {
     name: String,
+    digest: Option<String>,
 }
 
 #[derive(Default, Deserialize)]
@@ -217,7 +230,7 @@ fn ready(endpoint: &str) -> bool {
         .is_ok()
 }
 
-fn models_at(endpoint: &str) -> Result<Vec<String>, String> {
+fn model_tags_at(endpoint: &str) -> Result<Vec<OllamaTag>, String> {
     let tags: OllamaTags = Client::builder()
         .connect_timeout(Duration::from_millis(500))
         .timeout(Duration::from_secs(2))
@@ -229,12 +242,31 @@ fn models_at(endpoint: &str) -> Result<Vec<String>, String> {
         .map_err(|error| format!("Local AI runtime is unavailable: {error}"))?
         .json()
         .map_err(|error| format!("Invalid local AI response: {error}"))?;
-    Ok(tags
-        .models
-        .unwrap_or_default()
+    Ok(tags.models.unwrap_or_default())
+}
+
+fn models_at(endpoint: &str) -> Result<Vec<String>, String> {
+    Ok(model_tags_at(endpoint)?
         .into_iter()
         .map(|item| item.name)
         .collect())
+}
+
+fn fine_tuned_version_from_tags(tags: &[OllamaTag]) -> Option<String> {
+    let digest = tags.iter().find(|tag| tag.name == FINE_TUNED_MODEL)?.digest.as_deref()?;
+    if digest.is_empty() {
+        return None;
+    }
+    // Resolve the active alias by its content, so switching back to an older model
+    // also updates the version displayed in Settings.
+    let mut versions: Vec<&str> = tags.iter()
+        .filter(|tag| tag.digest.as_deref() == Some(digest))
+        .filter_map(|tag| tag.name.strip_prefix("fishstop-qwen3:4b-finetuned-v")?.strip_suffix("-q4_K_M"))
+        .filter(|version| !version.is_empty() && version.bytes().all(|byte| byte.is_ascii_digit()))
+        .collect();
+    versions.sort_unstable();
+    versions.dedup();
+    (versions.len() == 1).then(|| format!("v{}", versions[0]))
 }
 
 fn managed_model_installed(app: &AppHandle, model: &str) -> bool {
@@ -256,6 +288,72 @@ fn managed_model_installed(app: &AppHandle, model: &str) -> bool {
     ]
     .iter()
     .any(|path| path.is_file())
+}
+
+fn model_preferences_path(app: &AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_data_dir()
+        .map(|directory| directory.join("ai-model-preferences.json"))
+        .map_err(|error| format!("Could not locate FishSTOP data: {error}"))
+}
+
+fn load_model_preferences(app: &AppHandle) -> AiModelPreferences {
+    model_preferences_path(app)
+        .ok()
+        .and_then(|path| fs::read(path).ok())
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
+}
+
+fn save_model_preferences(app: &AppHandle, preferences: &AiModelPreferences) -> Result<(), String> {
+    let path = model_preferences_path(app)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("Could not prepare FishSTOP settings: {error}"))?;
+    }
+    let contents = serde_json::to_vec_pretty(preferences)
+        .map_err(|error| format!("Could not encode the AI settings: {error}"))?;
+    fs::write(path, contents)
+        .map_err(|error| format!("Could not save the AI settings: {error}"))
+}
+
+fn ollama_fine_tuned_available(app: &AppHandle) -> bool {
+    [MANAGED_ENDPOINT, "http://127.0.0.1:11434"]
+        .iter()
+        .any(|endpoint| {
+            ready(endpoint)
+                && models_at(endpoint)
+                    .is_ok_and(|models| models.iter().any(|model| model == FINE_TUNED_MODEL))
+        })
+        || (bundled_binary(app).is_some() && managed_model_installed(app, FINE_TUNED_MODEL))
+}
+
+pub fn fine_tuned_model_available(app: &AppHandle) -> bool {
+    if experimental_mlx_enabled() {
+        fine_tuned_mlx_model_installed(app)
+    } else {
+        ollama_fine_tuned_available(app)
+    }
+}
+
+pub fn fine_tuned_model_enabled(app: &AppHandle) -> bool {
+    load_model_preferences(app).use_fine_tuned_model && fine_tuned_model_available(app)
+}
+
+pub fn set_fine_tuned_model_enabled(app: &AppHandle, enabled: bool) -> Result<(), String> {
+    if enabled && !fine_tuned_model_available(app) {
+        return Err("The fine-tuned Qwen model is not available on this device.".to_string());
+    }
+    save_model_preferences(
+        app,
+        &AiModelPreferences {
+            use_fine_tuned_model: enabled,
+        },
+    )
+}
+
+fn disable_fine_tuned_model(app: &AppHandle) {
+    let _ = save_model_preferences(app, &AiModelPreferences::default());
 }
 
 pub fn recommended_model() -> &'static str {
@@ -316,22 +414,41 @@ fn experimental_mlx_model_path(app: &AppHandle) -> Result<PathBuf, String> {
         .map_err(|error| format!("Could not locate FishSTOP data: {error}"))
 }
 
+fn fine_tuned_mlx_model_path(app: &AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_data_dir()
+        .map(|directory| {
+            directory
+                .join("mlx-models")
+                .join("qwen3-4b-instruct-2507-finetuned-4bit")
+        })
+        .map_err(|error| format!("Could not locate FishSTOP data: {error}"))
+}
+
+fn valid_mlx_model_directory(directory: &Path) -> bool {
+    directory.join("config.json").is_file()
+        && fs::read_dir(directory)
+            .ok()
+            .into_iter()
+            .flatten()
+            .filter_map(Result::ok)
+            .any(|entry| {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                name.starts_with("model") && name.ends_with(".safetensors")
+            })
+}
+
 fn experimental_mlx_model_installed(app: &AppHandle) -> bool {
     experimental_mlx_model_path(app)
         .ok()
-        .is_some_and(|directory| {
-            directory.join("config.json").is_file()
-                && fs::read_dir(directory)
-                    .ok()
-                    .into_iter()
-                    .flatten()
-                    .filter_map(Result::ok)
-                    .any(|entry| {
-                        let name = entry.file_name();
-                        let name = name.to_string_lossy();
-                        name.starts_with("model") && name.ends_with(".safetensors")
-                    })
-        })
+        .is_some_and(|directory| valid_mlx_model_directory(&directory))
+}
+
+fn fine_tuned_mlx_model_installed(app: &AppHandle) -> bool {
+    fine_tuned_mlx_model_path(app)
+        .ok()
+        .is_some_and(|directory| valid_mlx_model_directory(&directory))
 }
 
 fn experimental_mlx_command(_app: &AppHandle) -> Result<Command, String> {
@@ -453,15 +570,25 @@ fn remove_experimental_mlx_model(
 pub fn start_experimental_mlx(
     app: &AppHandle,
     runtime: &Arc<Mutex<OllamaRuntime>>,
-) -> Result<(), String> {
+) -> Result<PreparedModel, String> {
     if !experimental_mlx_enabled() {
         return Err("The experimental MLX backend requires Apple Silicon.".to_string());
     }
     if experimental_mlx_ready() {
-        return Ok(());
+        let fine_tuned = fine_tuned_model_enabled(app);
+        return Ok(PreparedModel {
+            name: if fine_tuned {
+                FINE_TUNED_MLX_MODEL
+            } else {
+                EXPERIMENTAL_MLX_MODEL
+            }
+            .to_string(),
+            gpu_accelerated: true,
+            fine_tuned,
+        });
     }
 
-    if !experimental_mlx_model_installed(app) {
+    if !experimental_mlx_model_installed(app) && !fine_tuned_model_enabled(app) {
         return Err("Install the Qwen MLX model from Settings before starting an analysis.".to_string());
     }
 
@@ -473,7 +600,12 @@ pub fn start_experimental_mlx(
     fs::create_dir_all(&cache)
         .map_err(|error| format!("Could not prepare MLX model storage: {error}"))?;
 
-    let model = experimental_mlx_model_path(app)?;
+    let requested_fine_tuned = fine_tuned_model_enabled(app);
+    let model = if requested_fine_tuned {
+        fine_tuned_mlx_model_path(app)?
+    } else {
+        experimental_mlx_model_path(app)?
+    };
     let mut command = experimental_mlx_command(app)?;
 
     {
@@ -509,7 +641,16 @@ pub fn start_experimental_mlx(
 
     for _ in 0..1800 {
         if experimental_mlx_ready() {
-            return Ok(());
+            return Ok(PreparedModel {
+                name: if requested_fine_tuned {
+                    FINE_TUNED_MLX_MODEL
+                } else {
+                    EXPERIMENTAL_MLX_MODEL
+                }
+                .to_string(),
+                gpu_accelerated: true,
+                fine_tuned: requested_fine_tuned,
+            });
         }
         let stopped = runtime
             .lock()
@@ -523,11 +664,19 @@ pub fn start_experimental_mlx(
             .is_some();
         if stopped {
             let _ = stop_experimental_mlx(runtime);
+            if requested_fine_tuned {
+                disable_fine_tuned_model(app);
+                return start_experimental_mlx(app, runtime);
+            }
             return Err("MLX stopped before the model was ready.".to_string());
         }
         thread::sleep(Duration::from_millis(500));
     }
     let _ = stop_experimental_mlx(runtime);
+    if requested_fine_tuned {
+        disable_fine_tuned_model(app);
+        return start_experimental_mlx(app, runtime);
+    }
     Err("MLX did not load the model within 15 minutes.".to_string())
 }
 
@@ -560,6 +709,11 @@ fn logical_cpu_count() -> Option<usize> {
 }
 
 fn physical_cpu_count() -> Option<usize> {
+    static CORES: OnceLock<Option<usize>> = OnceLock::new();
+    *CORES.get_or_init(detect_physical_cpu_count)
+}
+
+fn detect_physical_cpu_count() -> Option<usize> {
     #[cfg(target_os = "windows")]
     let detected = command_value(
         "powershell.exe",
@@ -763,6 +917,11 @@ fn configure_background_command(command: &mut Command) {
 }
 
 fn cpu_name() -> String {
+    static CPU: OnceLock<String> = OnceLock::new();
+    CPU.get_or_init(detect_cpu_name).clone()
+}
+
+fn detect_cpu_name() -> String {
     #[cfg(target_os = "windows")]
     let value = command_value(
         "powershell.exe",
@@ -789,6 +948,11 @@ fn cpu_name() -> String {
 }
 
 fn physical_memory_bytes() -> Option<u64> {
+    static MEMORY: OnceLock<Option<u64>> = OnceLock::new();
+    *MEMORY.get_or_init(detect_physical_memory_bytes)
+}
+
+fn detect_physical_memory_bytes() -> Option<u64> {
     #[cfg(target_os = "windows")]
     let value = command_value(
         "powershell.exe",
@@ -818,6 +982,12 @@ fn physical_memory_bytes() -> Option<u64> {
 
 #[cfg(target_os = "windows")]
 fn windows_gpu_name() -> Option<String> {
+    static GPU: OnceLock<Option<String>> = OnceLock::new();
+    GPU.get_or_init(detect_windows_gpu_name).clone()
+}
+
+#[cfg(target_os = "windows")]
+fn detect_windows_gpu_name() -> Option<String> {
     command_value(
         "powershell.exe",
         &[
@@ -1013,6 +1183,17 @@ fn prepare_windows_runtime(app: &AppHandle, bundled: &Path) -> Result<PathBuf, S
 }
 
 fn machine_profile() -> (String, String, String, Option<u64>, String, String) {
+    static PROFILE: OnceLock<(String, String, String, Option<u64>, String, String)> = OnceLock::new();
+    PROFILE.get_or_init(detect_machine_profile).clone()
+}
+
+fn detect_machine_profile() -> (String, String, String, Option<u64>, String, String) {
+    let (cpu, memory, gpu) = thread::scope(|scope| {
+        let cpu = scope.spawn(cpu_name);
+        let memory = scope.spawn(physical_memory_bytes);
+        let gpu = scope.spawn(windows_gpu_name);
+        (cpu.join().unwrap_or_default(), memory.join().unwrap_or(None), gpu.join().unwrap_or(None))
+    });
     let platform = match std::env::consts::OS {
         "windows" => "Windows",
         "macos" => "macOS",
@@ -1021,7 +1202,7 @@ fn machine_profile() -> (String, String, String, Option<u64>, String, String) {
     }
     .to_string();
     let architecture = std::env::consts::ARCH.to_string();
-    let detected_windows_gpu = windows_gpu_name()
+    let detected_windows_gpu = gpu
         .filter(|name| windows_gpu_is_acceleration_candidate(name));
     let accelerator = if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
         "Apple Metal".to_string()
@@ -1041,15 +1222,19 @@ fn machine_profile() -> (String, String, String, Option<u64>, String, String) {
     (
         platform,
         architecture,
-        cpu_name(),
-        physical_memory_bytes(),
+        cpu,
+        memory,
         accelerator,
         selection_reason,
     )
 }
 
 fn loaded_model(endpoint: &str) -> (Option<String>, bool) {
-    let processes = client()
+    let processes = Client::builder()
+        .connect_timeout(Duration::from_millis(500))
+        .timeout(Duration::from_secs(2))
+        .build()
+        .map_err(|error| error.to_string())
         .and_then(|client| {
             client
                 .get(format!("{endpoint}/api/ps"))
@@ -1107,6 +1292,16 @@ fn ensure_server(
     app: &AppHandle,
     runtime: &Arc<Mutex<OllamaRuntime>>,
 ) -> Result<(String, bool), String> {
+    let fine_tuned_requested = load_model_preferences(app).use_fine_tuned_model;
+    let managed_has_fine_tuned = ready(MANAGED_ENDPOINT)
+        && models_at(MANAGED_ENDPOINT)
+            .is_ok_and(|models| models.iter().any(|model| model == FINE_TUNED_MODEL));
+    let external_has_fine_tuned = ready("http://127.0.0.1:11434")
+        && models_at("http://127.0.0.1:11434")
+            .is_ok_and(|models| models.iter().any(|model| model == FINE_TUNED_MODEL));
+    if fine_tuned_requested && external_has_fine_tuned && !managed_has_fine_tuned {
+        return Ok(("http://127.0.0.1:11434".to_string(), false));
+    }
     if ready(MANAGED_ENDPOINT) {
         std::env::set_var(
             "OLLAMA_CHAT_ENDPOINT",
@@ -1121,6 +1316,9 @@ fn ensure_server(
             format!("{MANAGED_ENDPOINT}/api/tags"),
         );
         return Ok((MANAGED_ENDPOINT.to_string(), true));
+    }
+    if fine_tuned_requested && external_has_fine_tuned {
+        return Ok(("http://127.0.0.1:11434".to_string(), false));
     }
     if let Some(binary) = bundled_binary(app) {
         #[cfg(target_os = "windows")]
@@ -1198,19 +1396,22 @@ pub fn prepare_model(
     }
     let (endpoint, _) = ensure_server(app, runtime)?;
     let (_, loaded_on_gpu) = loaded_model(&endpoint);
+    let fine_tuned = fine_tuned_model_enabled(app);
     Ok(PreparedModel {
-        name: recommended_model(),
+        name: if fine_tuned { FINE_TUNED_MODEL } else { recommended_model() }.to_string(),
         // Ollama may not report VRAM until the first model load. Apple Silicon
         // is known to use Metal, while every uncertain case receives the safer
         // CPU timeout for its first analysis.
         gpu_accelerated: loaded_on_gpu || cfg!(all(target_os = "macos", target_arch = "aarch64")),
+        fine_tuned,
     })
 }
 
-pub fn warm_default_model(
+fn warm_model(
     app: &AppHandle,
     runtime: &Arc<Mutex<OllamaRuntime>>,
-) -> Result<(), String> {
+    model: &str,
+) -> Result<PreparedModel, String> {
     let (endpoint, _) = ensure_server(app, runtime)?;
     let cpu_profile = !cfg!(all(target_os = "macos", target_arch = "aarch64"));
     let warmup_timeout = if cpu_profile {
@@ -1234,7 +1435,7 @@ pub fn warm_default_model(
         .map_err(|error| format!("Could not prepare the local AI warm-up: {error}"))?
         .post(format!("{endpoint}/api/generate"))
         .json(&serde_json::json!({
-            "model": recommended_model(),
+            "model": model,
             "prompt": "",
             "stream": false,
             "keep_alive": MODEL_KEEP_ALIVE,
@@ -1243,10 +1444,45 @@ pub fn warm_default_model(
         .send()
         .and_then(|response| response.error_for_status())
         .map_err(|error| format!("Could not preload the AI model: {error}"))?;
-    Ok(())
+    let (_, loaded_on_gpu) = loaded_model(&endpoint);
+    Ok(PreparedModel {
+        name: model.to_string(),
+        gpu_accelerated: loaded_on_gpu || cfg!(all(target_os = "macos", target_arch = "aarch64")),
+        fine_tuned: model == FINE_TUNED_MODEL,
+    })
 }
 
-pub fn unload_default_model() -> Result<(), String> {
+pub fn warm_selected_model(
+    app: &AppHandle,
+    runtime: &Arc<Mutex<OllamaRuntime>>,
+) -> Result<PreparedModel, String> {
+    if runtime
+        .lock()
+        .map_err(|_| "The local AI runtime is unavailable.".to_string())?
+        .cpu_optimization_running
+    {
+        return Err(
+            "CPU optimization is still running. Wait for the benchmark to finish before starting an analysis."
+                .to_string(),
+        );
+    }
+    if fine_tuned_model_enabled(app) {
+        match warm_model(app, runtime, FINE_TUNED_MODEL) {
+            Ok(prepared) => return Ok(prepared),
+            Err(_) => disable_fine_tuned_model(app),
+        }
+    }
+    warm_model(app, runtime, recommended_model())
+}
+
+pub fn warm_default_model(
+    app: &AppHandle,
+    runtime: &Arc<Mutex<OllamaRuntime>>,
+) -> Result<(), String> {
+    warm_selected_model(app, runtime).map(|_| ())
+}
+
+pub fn unload_model(model: &str) -> Result<(), String> {
     let endpoint = if ready(MANAGED_ENDPOINT) {
         MANAGED_ENDPOINT
     } else if ready("http://127.0.0.1:11434") {
@@ -1257,7 +1493,7 @@ pub fn unload_default_model() -> Result<(), String> {
     client()?
         .post(format!("{endpoint}/api/generate"))
         .json(&serde_json::json!({
-            "model": recommended_model(),
+            "model": model,
             "keep_alive": 0
         }))
         .send()
@@ -1273,11 +1509,18 @@ pub fn status(app: &AppHandle, _runtime: &Arc<Mutex<OllamaRuntime>>) -> OllamaRu
         let ready = experimental_mlx_ready();
         let available = experimental_mlx_runtime_available(app);
         let model_installed = experimental_mlx_model_installed(app);
+        let fine_tuned_available = fine_tuned_mlx_model_installed(app);
+        let fine_tuned_enabled = fine_tuned_available && load_model_preferences(app).use_fine_tuned_model;
+        let selected_model = if fine_tuned_enabled {
+            FINE_TUNED_MLX_MODEL
+        } else {
+            EXPERIMENTAL_MLX_MODEL
+        };
         return OllamaRuntimeStatus {
             runtime_ready: available,
-            model_ready: available && model_installed,
+            model_ready: available && (model_installed || fine_tuned_enabled),
             managed: true,
-            model: EXPERIMENTAL_MLX_MODEL.to_string(),
+            model: selected_model.to_string(),
             platform,
             architecture,
             cpu,
@@ -1292,18 +1535,42 @@ pub fn status(app: &AppHandle, _runtime: &Arc<Mutex<OllamaRuntime>>) -> OllamaRu
             } else {
                 "The native MLX runtime is unavailable.".to_string()
             },
-            loaded_model: ready.then(|| EXPERIMENTAL_MLX_MODEL.to_string()),
+            loaded_model: ready.then(|| selected_model.to_string()),
             loaded_on_gpu: ready,
             cpu_only: false,
             cpu_optimization: None,
+            fine_tuned_available,
+            fine_tuned_enabled,
+            fine_tuned_model: FINE_TUNED_MLX_MODEL.to_string(),
+            fine_tuned_version: None,
         };
     }
-    let model = recommended_model().to_string();
-    for (endpoint, managed) in [(MANAGED_ENDPOINT, true), ("http://127.0.0.1:11434", false)] {
-        if ready(endpoint) {
-            let model_ready = models_at(endpoint)
-                .map(|models| models.iter().any(|available| available == &model))
-                .unwrap_or(false);
+    // Each endpoint is queried once, in parallel. Tags prove runtime availability
+    // and supply installed models plus adapter version without repeated probes.
+    let external_endpoint = "http://127.0.0.1:11434";
+    let (managed_tags, external_tags) = thread::scope(|scope| {
+        let managed = scope.spawn(|| model_tags_at(MANAGED_ENDPOINT).ok());
+        let external = scope.spawn(|| model_tags_at(external_endpoint).ok());
+        (managed.join().unwrap_or(None), external.join().unwrap_or(None))
+    });
+    let has_fine_tuned = |tags: &Option<Vec<OllamaTag>>| tags.as_ref()
+        .is_some_and(|tags| tags.iter().any(|tag| tag.name == FINE_TUNED_MODEL));
+    let fine_tuned_available = has_fine_tuned(&managed_tags) || has_fine_tuned(&external_tags)
+        || (bundled_binary(app).is_some() && managed_model_installed(app, FINE_TUNED_MODEL));
+    let fine_tuned_enabled = fine_tuned_available && load_model_preferences(app).use_fine_tuned_model;
+    let model = if fine_tuned_enabled { FINE_TUNED_MODEL } else { recommended_model() }.to_string();
+    let external_fine_tuned = fine_tuned_enabled && has_fine_tuned(&external_tags);
+    let has_selected = |tags: &Option<Vec<OllamaTag>>| tags.as_ref()
+        .is_some_and(|tags| tags.iter().any(|tag| tag.name == model));
+    let prefer_external = external_fine_tuned || (has_selected(&external_tags) && !has_selected(&managed_tags));
+    let endpoints = if prefer_external {
+        [(external_endpoint, false, &external_tags), (MANAGED_ENDPOINT, true, &managed_tags)]
+    } else {
+        [(MANAGED_ENDPOINT, true, &managed_tags), (external_endpoint, false, &external_tags)]
+    };
+    for (endpoint, managed, tags) in endpoints {
+        if let Some(tags) = tags {
+            let model_ready = tags.iter().any(|tag| tag.name == model);
             let (loaded_model, loaded_on_gpu) = loaded_model(endpoint);
             return OllamaRuntimeStatus {
                 runtime_ready: true,
@@ -1324,6 +1591,10 @@ pub fn status(app: &AppHandle, _runtime: &Arc<Mutex<OllamaRuntime>>) -> OllamaRu
                 loaded_on_gpu,
                 cpu_only: cpu_only_machine() && !loaded_on_gpu,
                 cpu_optimization: load_cpu_optimization(app),
+                fine_tuned_available,
+                fine_tuned_enabled,
+                fine_tuned_model: FINE_TUNED_MODEL.to_string(),
+                fine_tuned_version: fine_tuned_version_from_tags(tags),
             };
         }
     }
@@ -1343,6 +1614,10 @@ pub fn status(app: &AppHandle, _runtime: &Arc<Mutex<OllamaRuntime>>) -> OllamaRu
         loaded_on_gpu: false,
         cpu_only: cpu_only_machine(),
         cpu_optimization: load_cpu_optimization(app),
+        fine_tuned_available,
+        fine_tuned_enabled,
+        fine_tuned_model: FINE_TUNED_MODEL.to_string(),
+        fine_tuned_version: None,
     }
 }
 pub fn install_default_model(
@@ -1398,6 +1673,29 @@ pub fn remove_default_model(
 
 #[cfg(test)]
 mod tests {
+    use super::{fine_tuned_version_from_tags, machine_profile, OllamaTag, FINE_TUNED_MODEL};
+    #[test]
+    fn adapter_version_follows_the_active_digest() {
+        let tags = vec![
+            OllamaTag { name: FINE_TUNED_MODEL.to_string(), digest: Some("active".to_string()) },
+            OllamaTag { name: "fishstop-qwen3:4b-finetuned-v5-q4_K_M".to_string(), digest: Some("active".to_string()) },
+            OllamaTag { name: "fishstop-qwen3:4b-finetuned-v4-q4_K_M".to_string(), digest: Some("old".to_string()) },
+        ];
+        assert_eq!(fine_tuned_version_from_tags(&tags).as_deref(), Some("v5"));
+        assert_eq!(fine_tuned_version_from_tags(&[]), None);
+    }
+
+    #[test]
+    fn hardware_profile_is_reused_between_status_checks() {
+        let start = std::time::Instant::now();
+        let first = machine_profile();
+        let first_ms = start.elapsed().as_secs_f64() * 1000.0;
+        let start = std::time::Instant::now();
+        let second = machine_profile();
+        let repeat_ms = start.elapsed().as_secs_f64() * 1000.0;
+        assert_eq!(first, second);
+        println!("Hardware discovery: first {first_ms:.2} ms; cached {repeat_ms:.4} ms");
+    }
     use super::{cpu_benchmark_candidates_for, windows_gpu_is_acceleration_candidate};
 
     #[test]

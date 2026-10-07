@@ -34,8 +34,11 @@ non lo disattivano. La presenza del solo Qwen standard non nasconde Install.
 Dopo l'installazione il modello viene usato offline. Remove elimina il tag v5
 selezionato, lasciando intatti gli altri modelli dell'utente.
 
-Un download interrotto riparte da zero; un GGUF già verificato viene riutilizzato
-se l'importazione fallisce. Errori HTTP, dimensione errata, checksum errato e
+Il download usa quattro connessioni in parallelo e parti da 16 MiB. Le parti
+completate vengono conservate per la ripresa; quelle fallite vengono ritentate
+fino a tre volte. Ogni risposta deve avere intervallo e dimensione corretti.
+I server senza HTTP Range usano il trasferimento singolo. Un GGUF già verificato
+viene riutilizzato se l'importazione fallisce. Errori HTTP, dimensione errata, checksum errato e
 risposte di importazione incomplete non vengono trattati come successo.
 L'installazione è protetta da un lock per impedire importazioni concorrenti.
 
@@ -50,7 +53,7 @@ fine-tuned dedicato e non scarica più Qwen standard come alternativa.
 
 Il catalogo è `src-tauri/model-catalog.json`; il template è
 `src-tauri/model-template.txt`. Le dimensioni e il checksum del GGUF locale
-coincidono con il catalogo. La build frontend e i 20 test Rust passano.
+coincidono con il catalogo. La build frontend e i 22 test Rust passano, inclusi ripresa, assemblaggio, retry e risposte Range errate.
 Un tag temporaneo creato con il payload dell'installer è stato importato e
 caricato correttamente nel runtime locale; il tag temporaneo è stato rimosso.
 Il download pubblico è stato avviato con successo e ha trasferito oltre 58 MB;

@@ -183,8 +183,11 @@ silenziosamente con un altro modello.
 In **Settings → Machine and automatic model**, **Install FishSTOP AI v5**
 scarica il modello completo quantizzato Q4_K_M (circa 2,5 GB), verifica dimensione
 e SHA-256, lo importa nel runtime locale e ne verifica il caricamento.
-Il download usa streaming, mostra l'avanzamento e riutilizza un file già
-verificato dopo un errore di importazione. Un download interrotto va riavviato.
+Il download usa quattro connessioni in parallelo con parti da 16 MiB, mostra
+l'avanzamento e riprende le parti completate dopo un'interruzione. Ogni parte
+fallita viene ritentata fino a tre volte. Per server senza supporto HTTP Range
+si usa un singolo trasferimento. Un file completo già verificato viene
+riutilizzato dopo un errore di importazione.
 Dopo l'installazione il modello funziona offline. **Remove** rimuove il tag v5
 selezionato senza eliminare altri modelli dell'utente.
 

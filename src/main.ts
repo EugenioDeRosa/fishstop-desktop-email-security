@@ -1583,7 +1583,9 @@ function reportMarkup(report: AnalysisReport): string {
     const sensitive = form.sensitive_fields?.length ? `Sensitive fields: ${form.sensitive_fields.join(", ")}.` : "";
     return staticCheckItem(tone, `Form ${index + 1} · ${form.method || "GET"}`, `${target} · ${form.message || ""} ${sensitive}`.trim(), form.risk === "high" ? "Credential harvesting risk" : form.risk === "medium" ? "Review required" : "No sensitive fields");
   }).join("");
-  const htmlFormDetails = `<section class="html-form-inspection static-surface-${formTone}"><div><p class="page-kicker">LOCAL HTML INSPECTION</p><h3>Form and credential harvesting</h3><p>${escapeHtml(formAnalysis?.message || "This analysis is not available in older reports.")}</p></div><ul>${formRows || staticCheckItem(formTone, formAnalysis?.status === "clean" ? "No HTML forms" : "Form inspection unavailable", formAnalysis?.message || "No form data is available.", formAnalysis?.status === "clean" ? "Passed" : "Unavailable")}</ul></section>`;
+  const htmlFormDetails = formAnalysis?.status === "clean" && !formRows && !formAnalysis.form_count
+    ? ""
+    : `<section class="html-form-inspection static-surface-${formTone}"><div><p class="page-kicker">LOCAL HTML INSPECTION</p><h3>Form and credential harvesting</h3><p>${escapeHtml(formAnalysis?.message || "This analysis is not available in older reports.")}</p></div><ul>${formRows || staticCheckItem(formTone, formAnalysis?.status === "clean" ? "No HTML forms" : "Form inspection unavailable", formAnalysis?.message || "No form data is available.", formAnalysis?.status === "clean" ? "Passed" : "Unavailable")}</ul></section>`;
   const copyAnalysis = report.html_copy_deception;
   const copyTone: CheckTone = copyAnalysis?.status === "suspicious" ? "fail" : copyAnalysis?.status === "review" ? "warn" : copyAnalysis?.status === "clean" ? "pass" : "neutral";
   const copyRows = (copyAnalysis?.findings || []).map((finding, index) => {
@@ -1592,7 +1594,9 @@ function reportMarkup(report: AnalysisReport): string {
     const substituted = finding.hidden_text ? `Copied: ${finding.hidden_text}` : (finding.dangerous_paths || []).join(", ");
     return staticCheckItem(tone, `Copy/paste finding ${index + 1}`, `${finding.message || "Deceptive copied content detected."} ${visible}${substituted ? ` · ${substituted}` : ""}`, finding.severity === "high" ? "Hidden executable path" : "Review required");
   }).join("");
-  const copyDeceptionDetails = `<section class="html-form-inspection static-surface-${copyTone}"><div><p class="page-kicker">HTML PRESENTATION SAFETY</p><h3>Copy/paste deception</h3><p>${escapeHtml(copyAnalysis?.message || "This analysis is not available in older reports.")}</p></div><ul>${copyRows || staticCheckItem(copyTone, copyAnalysis?.status === "clean" ? "No copy deception" : "Copy inspection unavailable", copyAnalysis?.message || "No copy/paste inspection data is available.", copyAnalysis?.status === "clean" ? "Passed" : "Unavailable")}</ul></section>`;
+  const copyDeceptionDetails = copyAnalysis?.status === "clean" && !copyRows && !copyAnalysis.finding_count
+    ? ""
+    : `<section class="html-form-inspection static-surface-${copyTone}"><div><p class="page-kicker">HTML PRESENTATION SAFETY</p><h3>Copy/paste deception</h3><p>${escapeHtml(copyAnalysis?.message || "This analysis is not available in older reports.")}</p></div><ul>${copyRows || staticCheckItem(copyTone, copyAnalysis?.status === "clean" ? "No copy deception" : "Copy inspection unavailable", copyAnalysis?.message || "No copy/paste inspection data is available.", copyAnalysis?.status === "clean" ? "Passed" : "Unavailable")}</ul></section>`;
   const displayNameSpoofing = String(report.display_name_spoofing || "").trim();
   const displayNameSpoofed = Boolean(displayNameSpoofing && !["none", "false", "no"].includes(displayNameSpoofing.toLowerCase()));
   const replyToAddress = mailboxAddress(String(report.reply_to || "").trim());

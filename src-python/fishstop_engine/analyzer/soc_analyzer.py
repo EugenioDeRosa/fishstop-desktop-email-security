@@ -593,6 +593,7 @@ class EmlSOCAnalyzer:
         body_parts       = []
         html_parts       = []
         attachments_info = []
+        qr_payloads = []
         archive_budget = ArchiveAnalysisBudget()
         office_budget = OfficeAnalysisBudget()
         plain_noise_removed_lines = 0
@@ -640,6 +641,8 @@ class EmlSOCAnalyzer:
                     "actionable": not is_inline_resource,
                 })
                 attachments_info.append(attachment_info)
+                if isinstance(raw_payload, bytes) and (ct == "application/pdf" or ct in {"image/png", "image/jpeg", "image/webp", "image/gif"}):
+                    qr_payloads.append((len(attachments_info) - 1, raw_payload, ct))
 
         for part in _iter_body_leaf_parts(msg):
             ct = part.get_content_type()
@@ -765,11 +768,20 @@ class EmlSOCAnalyzer:
         )
 
         # ── 10. Link e lookalike ──────────────────────────────────────────
+        from .qr_analysis import qr_request, inspect_requested_qr
+        if qr_request(report.get("body_clean") or ""):
+            # PDFs before presentation images; one isolated worker with an email-wide deadline.
+            qr_payloads.sort(key=lambda item: item[2] != "application/pdf")
+            for index, inspection in inspect_requested_qr(qr_payloads).items():
+                attachments_info[index]["qr_inspection"] = inspection
+                attachments_info[index]["embedded_urls"] = list(dict.fromkeys([
+                    *attachments_info[index].get("embedded_urls", []), *inspection.get("urls", [])]))[:25]
         report["links"] = extract_links(
             body_plain=plain_clean,
             body_html=report.get("body_html") or "",
             embedded_urls=[
-                {"url": url, "label": attachment.get("filename") or "Attachment URL", "source": "attachment"}
+                {"url": url, "label": attachment.get("filename") or "Attachment URL",
+                 "source": "attachment_qr" if url in (attachment.get("qr_inspection") or {}).get("urls", []) else "attachment"}
                 for attachment in attachments_info
                 for url in (attachment.get("embedded_urls") or [])
             ],

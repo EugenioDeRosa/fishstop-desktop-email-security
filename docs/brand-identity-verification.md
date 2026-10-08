@@ -67,13 +67,13 @@ I worker in corso hanno propri timeout; raggiungere il budget non attende il
 loro completamento. La cache Wikidata è versionata per non riutilizzare gli
 esiti ambigui della vecchia risoluzione.
 
-Le impostazioni normali mostrano solo una descrizione della protezione automatica.
+Le impostazioni non mostrano sezioni, moduli o configurazioni per la protezione dell’identità.
 Nel risultato si mostrano solo identità verificata, possibile impersonificazione
 o verifica indisponibile, con una spiegazione breve. I dettagli sono chiusi
 per impostazione predefinita e contengono solo domini, autenticazione e anomalie.
 Indice, confidenza e controlli mancanti restano nel report strutturato. I record
-non risolti non mostrano una falsa data di verifica. Il registro amministrativo
-rimane facoltativo sotto **Advanced administrator tools**.
+non risolti non mostrano una falsa data di verifica. Il registro amministrativo resta disponibile nel backend per integrazioni gestite;
+non è esposto nell’interfaccia delle impostazioni.
 
 ### Copertura attuale e limiti
 
@@ -87,7 +87,7 @@ Il catalogo non pretende di enumerare tutti i mittenti o domini regionali di un 
 
 ## Aziende piccole e partner (solo amministratori)
 
-In Settings → Advanced administrator tools → Verified partners, facoltativamente aggiungere azienda, dominio ufficiale, eventuali
+Tramite il registro amministrativo del backend, facoltativamente aggiungere azienda, dominio ufficiale, eventuali
 alias e mittente delegato, poi indicare come l'identità è stata confermata tramite
 un canale già noto e indipendente dalla mail analizzata. La conferma dura 90 giorni
 ed è revocabile. Non usare il contatto o il link fornito dalla mail sospetta come
@@ -155,6 +155,36 @@ richieste dannose.
 
 ## Riferimenti
 
+I casi di regressione ricavati dalle email Microsoft, Leroy Merlin, Intesa Sanpaolo
+e Spotify verificano anche il recupero del brand quando il modello omette il nome.
+Il riconoscimento considera alias, ruoli nel nome visibile e una breve firma
+immediatamente successiva al corpo selezionato; non aggiunge altre conversazioni
+o l'intero disclaimer. Un singolo indirizzo esplicito in un header malformato può
+essere recuperato per il confronto, mai per autenticare il messaggio.
+
+Un mittente estraneo a un riferimento mantenuto viene mostrato come possibile
+impersonificazione e richiede revisione; il solo mismatch non promuove il verdetto
+a phishing. Un dominio documentato resta non confermato quando manca una firma
+DKIM verificata indipendentemente. I sottodomini Spotify non sono domini esterni.
+
+- [Leroy Merlin: domini delle comunicazioni e false promozioni](https://www.leroymerlin.it/truffe-e-phishing/)
+- [Spotify for Artists](https://artists.spotify.com/en/get-started)
+- [Intesa Sanpaolo: sito ufficiale e phishing](https://www.intesasanpaolo.com/it/persone-e-famiglie/bisogni/sicurezza-digitale/phishing-bancario.html)
+
 - [Authentication-Results e confini di fiducia, RFC 8601](https://www.rfc-editor.org/rfc/rfc8601.html)
 - [Allineamento DMARC, RFC 7489](https://www.rfc-editor.org/info/rfc7489/)
 - [RDAP, ICANN](https://www.icann.org/rdap/)
+# Correlated reward impersonation
+
+A grounded instruction to claim a time-limited reward can produce a phishing
+verdict when it also claims to represent a company whose domain reference is
+high confidence, contradicts that reference in the sender domain, and uses an
+external actionable destination with no documented authorisation for claiming
+rewards. Header SPF PASS on an unrelated domain does not authenticate the company.
+
+This combination is evaluated separately from the identity score: an unrelated
+sender alone still requires review. Unknown references, incidental company
+mentions, official reward destinations and explicitly authorised delegates do
+not qualify. Layout line breaks are normalised for reward evidence; ordinary
+promotions and isolated urgency words cannot satisfy the full combination.
+The checks reuse existing evidence and require no extra model or network calls.

@@ -2,11 +2,10 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from email.utils import parseaddr
 import re
 from urllib.parse import urlparse
 
-from fishstop_engine.domain_utils import registered_domain, normalize_hostname
+from fishstop_engine.domain_utils import registered_domain, normalize_hostname, identity_mailbox
 from fishstop_engine.analyzer.lookalike import check_lookalike_domains
 
 RULE_VERSION = 1
@@ -35,7 +34,7 @@ def assess_impersonation(report: dict, claimed_entities: list[dict], semantic: d
     coherence = coherence if coherence is not None else (report.get("identity_analysis") or {}).get("coherence", [])
     candidate = next((item for item in claimed_entities if item.get("verified_claim") is True), {})
     brand = str(candidate.get("name") or "")
-    display, address = parseaddr(str(report.get("from_") or ""))
+    display, address = identity_mailbox(str(report.get("from_") or ""))
     sender_host = normalize_hostname(address.rsplit("@", 1)[-1]) if "@" in address else ""
     sender = registered_domain(sender_host)
     reference = next((item for item in coherence if str(item.get("brand") or "").casefold() == brand.casefold()), {})
@@ -137,7 +136,11 @@ def assess_impersonation(report: dict, claimed_entities: list[dict], semantic: d
     identity_confidence = "high" if source in {"maintained_catalog", "administrator_confirmation", "signed_directory"} and official else "medium" if official else "low"
     confidence = "high" if represented and official and (authenticated or strong) else "medium" if represented and official else "low"
     escalation = bool(represented and official and (len(strong) >= 2 or "action_destination" in strong))
-    status = "inconsistent" if strong else "consistent" if represented and documented_sender and authenticated else "insufficient_data"
+    # A documented contradiction deserves review in the UI, even when it is
+    # insufficient to convict phishing. Incomplete public references stay neutral.
+    documented_mismatch = represented and sender and source == "maintained_catalog" and any(
+        item["id"] == "sender_domain_mismatch" for item in signals)
+    status = "inconsistent" if strong or documented_mismatch else "consistent" if represented and documented_sender and authenticated else "insufficient_data"
     return {"claimed_identity": brand, "claimed_role": "representative" if represented else claimed_role,
             "claim_evidence": candidate.get("occurrences", []), "signals": signals, "score": score,
             "confidence": confidence, "identity_confidence": identity_confidence,

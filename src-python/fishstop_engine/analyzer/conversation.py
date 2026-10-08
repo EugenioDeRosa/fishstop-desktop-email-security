@@ -300,6 +300,7 @@ def apply_conversation_selection(report: dict, manifest: dict, selection: dict |
         sender = segment.get("from") or "unknown sender"
         sections.append(f"[{role} MESSAGE: {sender}]\n{segment.get('text') or ''}".strip())
     selected_body = "\n\n".join(section for section in sections if section).strip()
+    report["selected_target_body"] = "\n\n".join(str(by_id[item].get("text") or "") for item in target_ids)
     if selected_body:
         report["body_ai"] = selected_body
         report["body_extracted"] = selected_body
@@ -311,6 +312,11 @@ def apply_conversation_selection(report: dict, manifest: dict, selection: dict |
     kept_links = []
     excluded_count = 0
     for link in report.get("links") or []:
+        from .qr_analysis import qr_request
+        if link.get("source") == "attachment_qr" and qr_request(report["selected_target_body"]):
+            link["conversation_scope"] = "selected"
+            kept_links.append(link)
+            continue
         candidates = [link.get("url"), link.get("display_text"), link.get("host")]
         if any(str(candidate).casefold() in selected_text for candidate in candidates if candidate):
             link["conversation_scope"] = "selected"

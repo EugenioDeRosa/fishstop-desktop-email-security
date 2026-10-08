@@ -278,7 +278,7 @@ fn ollama_fine_tuned_available(app: &AppHandle) -> bool {
                 && models_at(endpoint)
                     .is_ok_and(|models| models.iter().any(|model| model == FINE_TUNED_MODEL))
         })
-        || (bundled_binary(app).is_some() && managed_model_installed(app, FINE_TUNED_MODEL))
+        || managed_model_installed(app, FINE_TUNED_MODEL)
 }
 
 pub fn fine_tuned_model_available(app: &AppHandle) -> bool {
@@ -1092,13 +1092,24 @@ fn bundled_binary(app: &AppHandle) -> Option<PathBuf> {
     let executable = "ollama.exe";
     #[cfg(not(target_os = "windows"))]
     let executable = "ollama";
-    app.path()
+    let bundled = app.path()
         .resolve(
             format!("resources/ollama/{TARGET_TRIPLE}/{executable}"),
             BaseDirectory::Resource,
         )
-        .ok()
-        .filter(|path| path.is_file())
+        .ok();
+    // Windows already copies Ollama into persistent app data on first use.
+    // Reuse it after restart even when dev/build resources are absent.
+    #[cfg(target_os = "windows")]
+    let installed = app.path().app_data_dir().ok().map(|directory|
+        directory.join("ollama-runtime").join(OLLAMA_RUNTIME_VERSION).join(executable));
+    #[cfg(not(target_os = "windows"))]
+    let installed = None;
+    select_runtime_binary(bundled, installed)
+}
+
+fn select_runtime_binary(bundled: Option<PathBuf>, installed: Option<PathBuf>) -> Option<PathBuf> {
+    bundled.filter(|path| path.is_file()).or_else(|| installed.filter(|path| path.is_file()))
 }
 
 fn managed_models_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -1155,6 +1166,9 @@ fn ensure_server(
         let mut runtime = runtime
             .lock()
             .map_err(|_| "Local AI runtime is unavailable.".to_string())?;
+        if runtime.child.as_mut().is_some_and(|child| child.try_wait().ok().flatten().is_some()) {
+            runtime.child = None;
+        }
         if runtime.child.is_none() {
             let models = managed_models_directory(app)?;
             let mut command = Command::new(binary);
@@ -1359,7 +1373,7 @@ pub fn status(app: &AppHandle, _runtime: &Arc<Mutex<OllamaRuntime>>) -> OllamaRu
     let has_fine_tuned = |tags: &Option<Vec<OllamaTag>>| tags.as_ref()
         .is_some_and(|tags| tags.iter().any(|tag| tag.name == FINE_TUNED_MODEL));
     let fine_tuned_available = has_fine_tuned(&managed_tags) || has_fine_tuned(&external_tags)
-        || (bundled_binary(app).is_some() && managed_model_installed(app, FINE_TUNED_MODEL));
+        || managed_model_installed(app, FINE_TUNED_MODEL);
     let fine_tuned_enabled = fine_tuned_available;
     let model = if fine_tuned_enabled { FINE_TUNED_MODEL } else { recommended_model() }.to_string();
     let external_fine_tuned = fine_tuned_enabled && has_fine_tuned(&external_tags);
@@ -1405,7 +1419,7 @@ pub fn status(app: &AppHandle, _runtime: &Arc<Mutex<OllamaRuntime>>) -> OllamaRu
     let managed = bundled_binary(app).is_some();
     OllamaRuntimeStatus {
         runtime_ready: managed,
-        model_ready: managed && managed_model_installed(app, &model),
+        model_ready: managed_model_installed(app, &model),
         managed,
         model,
         platform,
@@ -1500,6 +1514,19 @@ mod tests {
         println!("Hardware discovery: first {first_ms:.2} ms; cached {repeat_ms:.4} ms");
     }
     use super::{cpu_benchmark_candidates_for, windows_gpu_is_acceleration_candidate};
+
+    #[test]
+    fn persistent_runtime_survives_missing_bundle_resources() {
+        let directory = std::env::temp_dir().join(format!("fishstop-runtime-recovery-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let installed = directory.join("ollama.exe");
+        std::fs::write(&installed, b"test-runtime").unwrap();
+        assert_eq!(super::select_runtime_binary(Some(directory.join("missing.exe")), Some(installed.clone())), Some(installed.clone()));
+        assert_eq!(super::select_runtime_binary(None, Some(installed.clone())), Some(installed.clone()));
+        assert_eq!(super::select_runtime_binary(None, Some(directory.join("missing.exe"))), None);
+        std::fs::remove_file(installed).unwrap();
+        std::fs::remove_dir(directory).unwrap();
+    }
 
     #[test]
     fn small_cpu_candidates_leave_one_core_available() {

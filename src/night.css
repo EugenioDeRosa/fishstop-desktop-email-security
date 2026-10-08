@@ -2,17 +2,17 @@
    Night mode keeps the teal identity and the same green / amber / coral risks. */
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --night-canvas: #0e1d1f;
-  --night-surface: #162a2d;
-  --night-subtle: #1b3335;
-  --night-raised: #234043;
-  --night-border: #365457;
+  --night-canvas: #10191d;
+  --night-surface: #1c282d;
+  --night-subtle: #25343a;
+  --night-raised: #30434a;
+  --night-border: #496168;
   --night-accent-border: #568e80;
   --night-warning-border: #8b7043;
   --night-danger-border: #945b56;
-  --night-text: #e5efeb;
-  --night-secondary: #c1d5ce;
-  --night-muted: #a3bdb4;
+  --night-text: #eef3f2;
+  --night-secondary: #d2dedd;
+  --night-muted: #b3c5c6;
   --night-accent: #86dfc3;
   --night-warning: #f3cd85;
   --night-danger: #ffa69b;
@@ -21,11 +21,25 @@
   --night-warning-surface: #463a27;
   --night-danger-surface: #472e31;
   --fishstop-card-border: var(--night-border);
-  --fishstop-card-surface: linear-gradient(135deg, #182f31, #162a2d);
+  --fishstop-card-surface: linear-gradient(135deg, #1f2e33, #1c282d);
   --fishstop-card-shadow: 0 1px 2px rgba(0,0,0,.16), 0 8px 24px rgba(0,0,0,.12);
 }
 
 :root[data-theme="light"] { color-scheme: light; }
+
+/* Neutral surfaces separate the canvas, cards and inset evidence. Teal is
+   reserved for navigation, actions and positive results. */
+:root[data-theme="dark"] .sidebar { background: #122327; }
+:root[data-theme="dark"] :is(.account small, .logout) { color: var(--night-muted); }
+:root[data-theme="dark"] .nav-item { color: var(--night-secondary); }
+:root[data-theme="dark"] .nav-item:hover { background: var(--night-subtle); color: var(--night-text); }
+:root[data-theme="dark"] .nav-item.selected { background: #24584e; color: var(--night-text); }
+:root[data-theme="dark"] .report-tab.active { color: var(--night-text); }
+:root[data-theme="dark"] .report-tab-indicator {
+  background: var(--night-raised);
+}
+
+:root[data-theme="dark"] .identity-result-details summary { color: var(--night-secondary); }
 
 /* Filled buttons keep a bright mint background and dark, legible lettering. */
 :root[data-theme="dark"] :is(.primary-action, .conversation-selected-action) {
@@ -42,8 +56,7 @@
   color: var(--night-muted);
 }
 :root[data-theme="dark"] .conversation-selected-action:disabled :is(small, b) { color: var(--night-muted); }
-/* Secondary actions have a lighter teal surface and a clear outline instead
-   of blending into the card. Keep navigation and status badges independent. */
+/* Recolour secondary actions without adding borders or changing their shape. */
 :root[data-theme="dark"] :is(
   .soft-action, .cancel-credentials, .model-remove-action,
   .change-analysis, .reset-analysis, .copy-evidence, .manual-vt-action,
@@ -55,8 +68,7 @@
 ) {
   background: #365d59;
   color: #eefaf5;
-  border: 1px solid #83b2a6;
-  box-shadow: inset 0 1px 0 rgba(255,255,255,.08);
+  border-color: #83b2a6;
 }
 :root[data-theme="dark"] :is(
   .soft-action, .cancel-credentials, .model-remove-action,
@@ -82,14 +94,14 @@
 :root[data-theme="dark"] :is(
   .remove-reputation-key, .cancel-analysis, .selected-eml .remove-file,
   .history-actions button
-) { background: #633e40; color: #ffe7e1; border: 1px solid #d99a91; }
+) { background: #633e40; color: #ffe7e1; border-color: #d99a91; }
 :root[data-theme="dark"] :is(
   .remove-reputation-key, .cancel-analysis, .selected-eml .remove-file,
   .history-actions button
 ):hover:not(:disabled) { background: #7b4b4b; color: #fff; border-color: #ffc2b5; }
 :root[data-theme="dark"] .confirm-dialog .dialog-actions :is(
   #confirm-clear-history, #confirm-sign-out, #confirm-remove-model
-) { background: #efa293; color: #3c1c19; border: 1px solid #ffd0c5; }
+) { background: #efa293; color: #3c1c19; border-color: #ffd0c5; }
 :root[data-theme="dark"] .confirm-dialog .dialog-actions :is(
   #confirm-clear-history, #confirm-sign-out, #confirm-remove-model
 ):hover:not(:disabled) { background: #ffc0af; color: #3c1c19; }
@@ -110,16 +122,21 @@
   --analysis-fill-bottom: #1b4037;
   --analysis-light: 189, 255, 215;
   --analysis-halo: 89, 184, 131;
-  --analysis-wave-opacity: .24;
 }
 :root[data-theme="dark"] .fine-tuned-model-toggle > i { background: #54716b; }
 :root[data-theme="dark"] .fine-tuned-model-toggle > i::after { background: #e8f4ee; }
 :root[data-theme="dark"] .fine-tuned-model-toggle input:checked + i { background: #2e9b7f; }
-:root[data-theme="dark"] :is(input, select) { accent-color: #86dfc3; }
-:root[data-theme="dark"] input::placeholder { color: #9eb6af; opacity: 1; }
-:root[data-theme="dark"] :is(button, a, input, select, summary):focus-visible {
-  outline: 2px solid #86dfc3;
-  outline-offset: 3px;
+:root[data-theme="dark"] :is(input, select, textarea) { accent-color: #86dfc3; }
+:root[data-theme="dark"] :is(.settings-card input, .settings-card select, .settings-card textarea) {
+  background: var(--night-canvas);
+  border-color: #658088;
+}
+:root[data-theme="dark"] :is(.settings-card input, .settings-card select, .settings-card textarea):hover:not(:disabled) {
+  border-color: var(--night-accent-border);
+}
+:root[data-theme="dark"] input::placeholder { color: #9eb6af; }
+:root[data-theme="dark"] :is(button, a, input, select, textarea, summary):focus-visible {
+  outline-color: #86dfc3;
 }
 :root[data-theme="dark"] .confirm-dialog::backdrop,
 :root[data-theme="dark"] .external-link-dialog::backdrop { background: rgba(2,10,12,.75); }

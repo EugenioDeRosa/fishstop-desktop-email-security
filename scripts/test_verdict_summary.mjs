@@ -40,6 +40,18 @@ assert.match(legitimate, /informational newsletter/);
 assert.match(legitimate, /follow a link/);
 assert.doesNotMatch(legitimate, /malicious behaviour|impersonation/);
 
+const actionSentence = 'The local AI identified a request to follow a link.';
+report.ai_summary.summary = `An informational newsletter. ${actionSentence}`;
+let deduplicated = context.writtenVerdictSummary(report, 'Fallback');
+assert.equal(deduplicated.split(actionSentence).length - 1, 1);
+assert.match(deduplicated, /An informational newsletter/);
+report.ai_summary.summary = `${actionSentence} ${actionSentence}`;
+assert.equal(context.writtenVerdictSummary(report, 'Fallback'), actionSentence);
+report.ai_summary.status = 'unavailable';
+deduplicated = context.writtenVerdictSummary(report, `Other context. ${actionSentence}`);
+assert.equal(deduplicated.split(actionSentence).length - 1, 1);
+assert.match(deduplicated, /Other context/);
+
 report.phi4_analysis.analysis = { final_verdict: 'review', requested_action: 'none' };
 assert.doesNotMatch(context.writtenVerdictSummary(report, 'Fallback'), /request to/);
 report.phi4_analysis.analysis = { final_verdict: 'phishing', claimed_brand: '<script>', semantic_extraction: { identity_deception: true } };

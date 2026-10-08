@@ -2,7 +2,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
-import { identityRegistryMarkup, bindIdentityRegistry } from "./identity-registry";
 import { createStatusCache } from "./status-cache";
 import { analysisDurationEstimate, recordAnalysisDuration, createAnalysisProgress } from "./analysis-progress";
 import { currentTheme, initializeTheme, setTheme } from "./theme";
@@ -70,6 +69,7 @@ type AnalysisReport = {
   forwarded_identity?: { from?: string; to?: string; cc?: string; subject?: string; date?: string; display_name?: string; address?: string; domain?: string; authentication_status?: string; authentication_scope?: string };
   injection_ip_spf_authorized?: boolean; spf_sender_aligned?: boolean;
   eml_sha256?: string;
+  domain_authentication?: { status?: string; method?: string; verified_domains?: string[]; message?: string };
   raw_eml_preview?: string;
   raw_eml_preview_error?: string;
   return_path_domain_mismatch?: boolean; reply_to_mismatch?: boolean; display_name_spoofing?: string;
@@ -95,6 +95,7 @@ type AnalysisReport = {
       findings?: Array<{ key?: string; label?: string; severity?: string; evidence?: string }>;
     };
     inspection?: { status?: string; analysis_complete?: boolean; summary?: string };
+    qr_inspection?: { status?: string; analysis_complete?: boolean; urls?: string[]; text?: string; pages_scanned?: number };
     pdf_security?: { risk_level?: string; summary?: string; status?: string; analysis_complete?: boolean };
     office_security?: { engine?: string; status?: string; analysis_complete?: boolean; risk_level?: string; summary?: string; vba_macros?: boolean; xlm_macros?: boolean; autoexec?: string[]; suspicious_keywords?: string[]; iocs?: string[]; urls?: string[]; findings?: Array<{ key?: string; label?: string; severity?: string; evidence?: string }> };
     archive_security?: { risk_level?: string; summary?: string; status?: string; analysis_complete?: boolean; members?: unknown[]; entry_count?: number; total_uncompressed_bytes?: number; encrypted_entry_count?: number; nested_archive_count?: number; findings?: Array<{ label?: string; severity?: string; count?: number; samples?: string[] }> };
@@ -790,6 +791,7 @@ function structuredReportData(report: AnalysisReport): SiemReport {
       findings: [...(attachment.attachment_security?.findings || []), ...(attachment.office_security?.findings || [])],
       office_security: attachment.office_security,
       inspection: attachment.inspection,
+      qr_inspection: attachment.qr_inspection,
       pdf_security: attachment.pdf_security,
       archive_security: attachment.archive_security,
       reputation: publicReputation(attachment.file_reputation),
@@ -1299,7 +1301,16 @@ function writtenVerdictSummary(report: AnalysisReport, fallback: string): string
   const generated = report.ai_summary?.status === "ok" ? safeGeneratedSummary(report.ai_summary.summary) : "";
   // Written evidence must not disappear behind a generated or static-only summary.
   if (!staticReason && !labels.length) evidence.unshift(generated || fallback);
-  return [...new Set(evidence.filter(Boolean))].join(" ");
+  // Generated summaries may already include a sentence added by the evidence
+  // rules. Deduplicate sentences, including repetitions inside one summary.
+  const seen = new Set<string>();
+  return evidence.filter(Boolean).flatMap(part => part.trim().split(/(?<=[.!?])\s+(?=[A-Z])/u))
+    .filter(sentence => {
+      const key = sentence.replace(/\s+/g, " ").trim().replace(/[.!?]+$/, "").toLowerCase();
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    }).join(" ");
 }
 
 function assessment(report: AnalysisReport): { tone: "safe" | "review" | "danger"; label: string; detail: string } {
@@ -1641,7 +1652,7 @@ function reportMarkup(report: AnalysisReport): string {
   const riskyLookalikeAlerts = (report.lookalike_alerts || []).filter(isRiskyLookalikeAlert);
   const informationalIdnAlerts = (report.lookalike_alerts || []).filter((alert) => !isRiskyLookalikeAlert(alert));
   const lookalikeHosts = new Set(riskyLookalikeAlerts.map((alert) => (alert.host || "").toLowerCase()));
-  const sourceLabel: Record<string, string> = { html_href: "HTML link", html_button: "HTML button", html_text: "HTML text", plain_text: "Email text", attachment: "Attachment URL" };
+  const sourceLabel: Record<string, string> = { html_href: "HTML link", html_button: "HTML button", html_text: "HTML text", plain_text: "Email text", attachment: "Attachment URL", attachment_qr: "Attachment QR code" };
   const techniqueLabel: Record<string, string> = {
     edit_distance: "Edit distance", homoglyph: "Unicode homoglyphs", unicode_homoglyph: "Confusable Unicode characters",
     punycode_idna: "Internationalized IDN domain", punycode_invalid: "Invalid Punycode / IDNA domain", mixed_script_idn: "Mixed-script IDN domain", punycode_homograph: "Punycode homograph", typosquatting: "Typosquatting",
@@ -1713,12 +1724,14 @@ function reportMarkup(report: AnalysisReport): string {
     const archiveMeta = attachment.archive_security ? `${attachment.archive_security.entry_count || 0} entries${attachment.archive_security.nested_archive_count ? ` · ${attachment.archive_security.nested_archive_count} nested` : ""}${attachment.archive_security.encrypted_entry_count ? ` · ${attachment.archive_security.encrypted_entry_count} encrypted` : ""}` : "";
     const note = (dangerousType ? attachment.attachment_security?.summary : "") || attachment.anomaly || (incomplete || typeOnly ? attachment.inspection?.summary : "") || office?.summary || attachment.pdf_security?.summary || attachment.archive_security?.summary || "File type checks only; content not inspected";
     const officeDetails = office ? `<em>Office inspection (oletools): ${escapeHtml(office.status || "unknown")} · ${officeIncomplete ? "Incomplete — requires review" : "Completed"}</em>${(office.findings || []).slice(0, 8).map((finding) => `<em>${escapeHtml(`${finding.label || finding.key || "Office finding"}${finding.evidence ? ` · ${finding.evidence}` : ""}`)}</em>`).join("")}` : "";
+    const qr = attachment.qr_inspection;
+    const qrDetails = qr ? `<em>${escapeHtml(qr.urls?.length ? `QR destination: ${qr.urls.join(", ")}` : qr.analysis_complete ? "QR check: no web destination decoded." : "QR check incomplete: destination not confirmed.")}</em>` : "";
     const tone = risky || reputation === "fail" || otxMatch ? "fail" : caution || reputation === "warn" ? "warn" : reputation || "pass";
     const status = dangerousType ? "High-risk file type" : risky ? "Anomaly detected" : reputation === "fail" ? "Detected by VirusTotal" : otxMatch ? "SHA-256 matched in OTX threat intelligence" : incomplete ? "Not fully inspected" : caution || reputation === "warn" ? "Review required" : reputation === "pass" ? "VirusTotal clean" : typeOnly ? "Type checks only" : "Supported checks completed";
     const intelligence = [reputationResult?.detection_ratio && `VirusTotal: ${reputationResult.detection_ratio}`, reputationResult?.last_analysis && `Last analysis: ${reputationResult.last_analysis}`].filter(Boolean).join(" · ");
     const reportLink = reputationResult?.permalink ? `<p><a href="${escapeHtml(reputationResult.permalink)}" target="_blank" rel="noopener noreferrer">VirusTotal report ↗</a></p>` : "";
     const copyAction = tone === "fail" && attachment.hash_sha256 ? `<button class="copy-evidence" type="button" data-copy-ioc="${escapeHtml(attachment.hash_sha256)}">Copy SHA-256</button>` : "";
-    return `<li class="static-check static-check-${tone}"><strong>${escapeHtml(attachment.filename || "Unnamed attachment")}</strong><small>${escapeHtml(`${status} · ${detail} · ${note}`)}</small>${officeDetails}${archiveMeta ? `<em>Archive inspection: ${escapeHtml(archiveMeta)}</em>` : ""}${intelligence ? `<em>${escapeHtml(intelligence)}</em>` : ""}${otxInlineEvidence(otxMatches)}${copyAction}${reportLink}</li>`;
+    return `<li class="static-check static-check-${tone}"><strong>${escapeHtml(attachment.filename || "Unnamed attachment")}</strong><small>${escapeHtml(`${status} · ${detail} · ${note}`)}</small>${qrDetails}${officeDetails}${archiveMeta ? `<em>Archive inspection: ${escapeHtml(archiveMeta)}</em>` : ""}${intelligence ? `<em>${escapeHtml(intelligence)}</em>` : ""}${otxInlineEvidence(otxMatches)}${copyAction}${reportLink}</li>`;
   }).join("") || staticCheckItem("neutral", "No attachments detected", "No MIME files are available to check.", "Not applicable");
   const lookalikes = (report.lookalike_alerts || []).map((alert) => {
     const risky = isRiskyLookalikeAlert(alert);
@@ -1749,10 +1762,13 @@ function reportMarkup(report: AnalysisReport): string {
     : "";
   const senderPanelTitle = targetAuthUnavailable ? "Selected message identity" : "Forwarding sender";
   const authenticationTitle = targetAuthUnavailable ? "Authentication unavailable" : "Authentication";
+  const independentAuthentication = report.domain_authentication
+    ? `<p class="quiet"><strong>Independent sender verification:</strong> ${report.domain_authentication.status === "verified" ? "Verified on the original message." : "Not confirmed. Header PASS results do not establish independent verification."}</p>`
+    : "";
   const authenticationDescription = targetAuthUnavailable
     ? "This embedded message has no independent transport or authentication headers."
-    : "Routing context and header checks in one view.";
-  return `<section class="analysis-report verdict-${verdict.tone}"><div class="report-summary"><p class="page-kicker">ANALYSIS RESULT</p><h2>${risk}</h2><p class="verdict-detail">${escapeHtml(verdict.detail)}</p>${rationale}<p><strong>${escapeHtml(report.subject || "No subject")}</strong> · ${escapeHtml(report.from_ || "Sender unavailable")}</p><div class="report-stats">${aiThreatBadges}<span>${high} high</span><span>${medium} medium</span><span>${(report.links || []).filter((link) => (link.scheme || "").toLowerCase() !== "mailto").length} web links</span><span>${(report.attachments || []).length} attachments</span></div></div><nav class="report-tabs" aria-label="Report sections"><span class="report-tab-indicator" aria-hidden="true"></span>${tabs}</nav>${panel("summary", `<div class="report-grid"><section><h3>Message</h3>${fields([["From", report.from_], ["To", report.to], ["Subject", report.subject], ["Date", report.date]])}</section><section><h3>Trust checks</h3><ul class="auth-grid">${auth}</ul><p class="quiet">${lookalikeSummary}</p></section></div><div class="report-flags"><h3>All signals</h3><ul>${details}</ul></div>`, true)}${panel("sender", `<div class="report-grid"><section><h3>${senderPanelTitle}</h3>${fields([["From", report.from_], ["Delivered-To", report.delivered_to], ["Return-Path", report.return_path], ["Reply-To", report.reply_to], ["Errors-To", report.errors_to], ["Importance", report.importance]])}</section>${forwardedIdentity}<section class="sender-consistency"><h3>Identity consistency</h3><ul class="auth-grid">${senderInconsistencies}</ul></section></div>`)}${panel("auth", `${conversationAuthBoundary}<section class="authentication-card"><div class="authentication-heading"><div><p class="page-kicker">MESSAGE AUTHENTICATION</p><h3>${authenticationTitle}</h3><p>${authenticationDescription}</p></div><div class="routing-summary" aria-label="Routing summary">${routingSummary}</div></div><div class="auth-evidence-grid">${authDetails}</div></section>`)}${panel("links", `<div class="report-grid"><section class="evidence-card"><h3>Web links</h3><ul>${links}</ul></section><section class="evidence-card"><h3>Email actions</h3><ul>${emailActions}</ul></section><section class="evidence-card"><h3>Lookalike / Typosquatting</h3><ul>${lookalikes}</ul></section></div>`)}${panel("files", `<section class="evidence-card"><h3>Attachments</h3><ul>${attachments}</ul></section>`)}${panel("content", `<div class="report-grid"><section><h3>Context</h3>${fields([["Source", report.body_source], ["Selection", report.body_context]])}</section><section><h3>Extracted body</h3><pre>${escapeHtml((report.body_ai || report.body_clean || "No extractable text.").slice(0, 12000))}</pre></section></div>`)}${panel("technical", `<section class="technical-report raw-eml-report"><div><h3>Raw EML</h3><p>Read-only source view. Attachment payloads are omitted to keep MIME evidence readable.</p></div><pre tabindex="0" aria-label="Raw EML source with attachment payloads omitted">${escapeHtml(report.raw_eml_preview || report.raw_eml_preview_error || "Raw EML preview unavailable for this saved report. Reanalyse the email to generate it.")}</pre></section><section class="technical-report"><div><h3>Structured report</h3><p>Export technical evidence as JSON, without the raw EML preview or original binary content.</p></div><button id="download-report" type="button">Download JSON</button><pre>${escapeHtml(JSON.stringify(structuredReport, null, 2))}</pre></section>`)}</section>`;
+    : "SPF, DKIM and DMARC results reported by receiving mail servers. Header PASS results and independent sender verification are separate checks.";
+  return `<section class="analysis-report verdict-${verdict.tone}"><div class="report-summary"><p class="page-kicker">ANALYSIS RESULT</p><h2>${risk}</h2><p class="verdict-detail">${escapeHtml(verdict.detail)}</p>${rationale}<p><strong>${escapeHtml(report.subject || "No subject")}</strong> · ${escapeHtml(report.from_ || "Sender unavailable")}</p><div class="report-stats">${aiThreatBadges}<span>${high} high</span><span>${medium} medium</span><span>${(report.links || []).filter((link) => (link.scheme || "").toLowerCase() !== "mailto").length} web links</span><span>${(report.attachments || []).length} attachments</span></div></div><nav class="report-tabs" aria-label="Report sections"><span class="report-tab-indicator" aria-hidden="true"></span>${tabs}</nav>${panel("summary", `<div class="report-grid"><section><h3>Message</h3>${fields([["From", report.from_], ["To", report.to], ["Subject", report.subject], ["Date", report.date]])}</section><section><h3>Trust checks</h3><ul class="auth-grid">${auth}</ul><p class="quiet">${lookalikeSummary}</p></section></div><div class="report-flags"><h3>All signals</h3><ul>${details}</ul></div>`, true)}${panel("sender", `<div class="report-grid"><section><h3>${senderPanelTitle}</h3>${fields([["From", report.from_], ["Delivered-To", report.delivered_to], ["Return-Path", report.return_path], ["Reply-To", report.reply_to], ["Errors-To", report.errors_to], ["Importance", report.importance]])}</section>${forwardedIdentity}<section class="sender-consistency"><h3>Identity consistency</h3><ul class="auth-grid">${senderInconsistencies}</ul></section></div>`)}${panel("auth", `${conversationAuthBoundary}<section class="authentication-card"><div class="authentication-heading"><div><p class="page-kicker">MESSAGE AUTHENTICATION</p><h3>${authenticationTitle}</h3><p>${authenticationDescription}</p></div><div class="routing-summary" aria-label="Routing summary">${routingSummary}</div></div><div class="auth-evidence-grid">${authDetails}</div>${independentAuthentication}</section>`)}${panel("links", `<div class="report-grid"><section class="evidence-card"><h3>Web links</h3><ul>${links}</ul></section><section class="evidence-card"><h3>Email actions</h3><ul>${emailActions}</ul></section><section class="evidence-card"><h3>Lookalike / Typosquatting</h3><ul>${lookalikes}</ul></section></div>`)}${panel("files", `<section class="evidence-card"><h3>Attachments</h3><ul>${attachments}</ul></section>`)}${panel("content", `<div class="report-grid"><section><h3>Context</h3>${fields([["Source", report.body_source], ["Selection", report.body_context]])}</section><section><h3>Extracted body</h3><pre>${escapeHtml((report.body_ai || report.body_clean || "No extractable text.").slice(0, 12000))}</pre></section></div>`)}${panel("technical", `<section class="technical-report raw-eml-report"><div><h3>Raw EML</h3><p>Read-only source view. Attachment payloads are omitted to keep MIME evidence readable.</p></div><pre tabindex="0" aria-label="Raw EML source with attachment payloads omitted">${escapeHtml(report.raw_eml_preview || report.raw_eml_preview_error || "Raw EML preview unavailable for this saved report. Reanalyse the email to generate it.")}</pre></section><section class="technical-report"><div><h3>Structured report</h3><p>Export technical evidence as JSON, without the raw EML preview or original binary content.</p></div><button id="download-report" type="button">Download JSON</button><pre>${escapeHtml(JSON.stringify(structuredReport, null, 2))}</pre></section>`)}</section>`;
 }
 
 function reputationRows(items: Array<{ title: string; detail: string; result?: ReputationResult; copyValue?: string }>): string {
@@ -2773,8 +2789,6 @@ function contentFor(section: Section, user: AuthUser): string {
             <ul class="credential-list">${keyRow("virustotal", "VirusTotal API key", keys.virustotal)}${keyRow("abuseipdb", "AbuseIPDB API key", keys.abuseipdb)}${keyRow("otx", "AlienVault OTX API key", keys.otx)}</ul>
             <form id="reputation-settings"><div class="credential-edit-actions"><button class="primary-action" type="submit">Save changes</button><button class="cancel-credentials" id="cancel-reputation-edit" type="button">Cancel</button></div><span id="settings-status" aria-live="polite"></span></form>
           </section>
-          <section class="settings-card"><p class="page-kicker">IDENTITY PROTECTION</p><h2>Automatic identity checks</h2><p class="settings-note">FishStop automatically compares the claimed company with documented domains, sender authentication and sensitive action destinations. Public lookups use company names and domains; email content and attachments stay on this device. No partner setup is required.</p></section>
-          <details class="identity-admin-tools"><summary>Advanced administrator tools</summary>${identityRegistryMarkup()}</details>
           <section class="settings-card settings-preferences">
             <p class="page-kicker">YOUR EXPERIENCE</p><h2>Preferences</h2>
             <div class="settings-preference-list">
@@ -3039,8 +3053,6 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       if (status) status.textContent = "Could not save the preference. Please try again.";
     }
   });
-  const identityRegistry = document.querySelector<HTMLElement>(".identity-registry");
-  if (identityRegistry) bindIdentityRegistry(identityRegistry, request => invoke("identity_registry", { request }), escapeHtml);
   const machineProfile = document.querySelector<HTMLElement>("#machine-profile");
   if (machineProfile) machineProfile.innerHTML = `<dl><div><dt>System</dt><dd id="machine-system">Reading…</dd></div><div><dt>Processor</dt><dd id="machine-processor">Reading…</dd></div><div><dt>Memory</dt><dd id="machine-memory">Reading…</dd></div><div><dt>Execution</dt><dd id="machine-execution">Reading…</dd></div><div class="machine-model-row" id="machine-model-row"><dt>Selected model</dt><dd><div class="machine-model-heading"><strong id="machine-model-name">Checking…</strong><span class="model-status-badge" id="model-status-badge" hidden></span><button class="model-remove-action" id="remove-managed-qwen" type="button" aria-haspopup="dialog" aria-controls="remove-model-dialog" hidden>Remove</button></div><small id="managed-model-status">Checking the bundled AI runtime…</small><div class="managed-model-progress" id="managed-model-progress" hidden><div><span id="managed-model-progress-label">Preparing download…</span><strong id="managed-model-progress-value">0%</strong></div><div class="managed-model-progress-track" id="managed-model-progress-track" role="progressbar" aria-label="AI model download progress" aria-valuemin="0" aria-valuemax="100"><i id="managed-model-progress-fill"></i></div></div><div class="machine-model-actions"><button class="primary-action" id="install-managed-qwen" type="button" disabled>Checking…</button></div></dd></div></dl><p class="fine-tuned-model-status" id="fine-tuned-model-status" aria-live="polite"></p><div class="execution-guidance" id="execution-guidance"><p id="execution-guidance-message">Reading the local acceleration profile…</p><section class="cpu-optimization" id="cpu-optimization" hidden><div class="cpu-optimization-heading"><span class="cpu-optimization-mark" aria-hidden="true"><i></i><i></i><i></i></span><div><p class="page-kicker">CPU PERFORMANCE</p><h4>Optimize this computer</h4></div></div><p>FishStop will benchmark the local model with a short sample text and save the fastest CPU setting for future analyses. The text and results never leave this device.</p><div class="cpu-optimization-progress" id="cpu-optimization-progress" hidden><span id="cpu-optimization-progress-label">Preparing the local benchmark…</span><div role="progressbar" aria-label="CPU optimization progress" aria-valuemin="0" aria-valuemax="100" id="cpu-optimization-progress-track"><i id="cpu-optimization-progress-fill"></i></div></div><p class="cpu-optimization-result" id="cpu-optimization-result"></p><button class="soft-action" id="optimize-cpu-performance" type="button">Optimize CPU performance</button></section></div>`;
   const machineSystem = document.querySelector<HTMLElement>("#machine-system");
@@ -3161,7 +3173,8 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
           modelStatusBadge.hidden = true;
           modelStatusBadge.textContent = "";
         }
-        managedModelStatus.hidden = true;
+        managedModelStatus.hidden = runtime.runtime_ready;
+        if (!runtime.runtime_ready) managedModelStatus.textContent = "FishSTOP AI v5 is saved on this computer, but its local runtime is unavailable. The model does not need to be downloaded again.";
         installManagedQwen.hidden = true;
         removeManagedQwen.hidden = false;
       } else {
@@ -3170,7 +3183,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
         if (modelStatusBadge) {
           modelStatusBadge.hidden = false;
           modelStatusBadge.className = "model-status-badge missing";
-          modelStatusBadge.textContent = "Not installed";
+          modelStatusBadge.textContent = runtime.runtime_ready ? "Not installed" : "Runtime unavailable";
         }
         managedModelStatus.textContent = !runtime.model_download_available
           ? usesMlx ? "The fine-tuned MLX download is not available. Use the default FishSTOP AI backend."
@@ -3392,6 +3405,10 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       paintHeuristicProgress();
       queueProgress(event.payload.completed_check, event.payload.message);
     }).catch(() => null);
+    // Start model loading alongside MIME/reputation checks. Settle errors here
+    // immediately; the AI command retains its normal availability/error path.
+    const modelPreparation = invoke<void>("prepare_analysis_ai", { analysisId })
+      .catch((error) => console.warn("Early AI preparation unavailable", error));
     try {
       const report = await request(analysisId);
       if (activeAnalysis !== session) return;
@@ -3400,6 +3417,8 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       progress.enter("loading", performance.now());
       paintHeuristicProgress();
       queueProgress(0, "Message checks complete. Preparing local analysis…");
+      await modelPreparation;
+      if (activeAnalysis !== session) return;
       await runAiAnalysis(user, report, null, document.createElement("div"), startedAt, analysisId, () => activeAnalysis === session, (engine) => {
         if (activeAnalysis === session) {
           if (engine === "phi4") { progress.enter("finishing", performance.now()); paintHeuristicProgress(); }
@@ -3416,14 +3435,25 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
         resultReady: Math.round(resultDuration),
       });
       if (heuristicTimer !== undefined) window.clearInterval(heuristicTimer);
-      updateAnalysisProgress(session, 4);
+      updateAnalysisProgress(session, 4, "Analysis complete.");
+      const completionSplash = analysisIsVisible(session)
+        ? document.querySelector<HTMLElement>("#analysis-result .analysis-loading") : null;
+      if (completionSplash) {
+        completionSplash.style.setProperty("--analysis-completion-duration", "300ms");
+        completionSplash.classList.add("is-complete");
+        const hint = completionSplash.querySelector<HTMLElement>(".loading-estimate");
+        if (hint) hint.textContent = "100% · Analysis complete";
+      }
+      setAnalysisProgressVisual(session, 100);
+      // Let the last 300ms fill transition finish, then show the full bar briefly.
+      // This only presents an already finished result; it never gates on estimates.
+      if (completionSplash) await new Promise<void>((resolve) => window.setTimeout(resolve, 650));
+      if (activeAnalysis !== session) return;
       session.status = "complete";
-      session.progressPercent = 100;
       if (report.phi4_analysis?.status === "ok") {
         try { recordAnalysisDuration(localStorage, durationProfile, resultDuration); } catch { /* Optional timing history. */ }
       }
-      // Display completion immediately, regardless of the estimated percentage.
-      // Persisting history must not hold the finished report behind the splash.
+      // History persistence must not hold the report behind the completion splash.
       if (activeAnalysis === session && analysisIsVisible(session)) renderDashboard(user, analysisSection(session));
       session.recordId = await saveAnalysis(user, report, Math.round(resultDuration));
     } catch (error) {
@@ -3437,7 +3467,10 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
     finally {
       if (heuristicTimer !== undefined) window.clearInterval(heuristicTimer);
       unlistenAnalysisProgress?.();
-      void invoke("finish_analysis", { analysisId }).catch(() => undefined);
+      // A failed/cancelled static pass can finish before warmup. Wait for that
+      // warmup before cleanup so it cannot reload a model after final unloading.
+      await modelPreparation;
+      await invoke("finish_analysis", { analysisId }).catch(() => undefined);
       if (activeAnalysis === session) document.querySelector<HTMLButtonElement>("#eml-drop")?.removeAttribute("disabled");
     }
   };

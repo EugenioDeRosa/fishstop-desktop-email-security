@@ -9,6 +9,29 @@ from fishstop_engine.analyzer.llm_context_analyzer import (
 
 
 class IdentityPolicyTests(unittest.TestCase):
+    def test_header_pass_is_not_described_as_incomplete_authentication(self):
+        report = {"from_": "Person <sender@sielups.com>",
+            "domain_authentication": {"status": "unverified", "verified_domains": []},
+            "effective_auth_results": {name: {"status": "pass"} for name in ("SPF", "DKIM", "DMARC")}}
+        status, reasons = _identity_risk(report)
+        self.assertEqual("uncertain", status)
+        self.assertIn("SPF, DKIM and DMARC are reported as PASS", reasons[0])
+        self.assertIn("could not be independently verified", reasons[0])
+        self.assertNotIn("incomplete", " ".join(reasons))
+
+    def test_header_failure_remains_explicit(self):
+        report = {"from_": "Person <sender@example.com>",
+            "domain_authentication": {"status": "unverified"},
+            "effective_auth_results": {"SPF": {"status": "fail"}, "DKIM": {"status": "pass"}, "DMARC": {"status": "fail"}}}
+        self.assertIn("SPF did not pass (fail)", _identity_risk(report)[1])
+
+    def test_relay_warning_explains_its_limited_scope(self):
+        from fishstop_engine.analyzer.llm_context_analyzer import _technical_risk
+        report = {"hop_reputation": {"2a01:111:f403:c200::3": {
+            "status": "suspicious", "abuseConfidenceScore": 30, "totalReports": 19}}}
+        _, reasons = _technical_risk(report)
+        self.assertTrue(any("delivery infrastructure" in reason and "does not confirm a threat" in reason for reason in reasons))
+
     def report(self):
         return {"from_": "Acme <notice@acme.com>",
                 "domain_authentication": {"status": "verified", "verified_domains": ["acme.com"]},

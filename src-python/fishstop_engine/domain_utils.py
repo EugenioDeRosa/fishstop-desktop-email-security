@@ -4,6 +4,23 @@ from __future__ import annotations
 
 import ipaddress
 import warnings
+import re
+from email.utils import parseaddr
+
+
+def identity_mailbox(value: str) -> tuple[str, str]:
+    """Recover one explicit mailbox for comparison, never for authentication.
+
+    Some exported From headers have punctuation outside their single angle
+    address. Ambiguous or multiple addresses must remain unavailable.
+    """
+    display, address = parseaddr(str(value or ""))
+    if address and "@" in address:
+        return display, address
+    match = re.fullmatch(r'([^<>@]*)<([^<>\s@]+@[^<>\s@]+)>\s*', str(value or ""))
+    if match:
+        return match[1].strip().strip('"').rstrip(', _"'), match[2]
+    return "", ""
 
 try:
     from publicsuffix2 import get_sld, get_tld

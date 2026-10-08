@@ -9,3 +9,6 @@ oletools==0.60.2
 dkimpy>=1.1.8
 cryptography>=43.0.0
 tinycss2>=1.4.0,<2
+pillow>=11,<13
+pypdfium2>=4.30,<6
+zxing-cpp>=2.3,<4

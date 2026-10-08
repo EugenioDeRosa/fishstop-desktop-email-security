@@ -9,7 +9,7 @@ export function currentTheme(): Theme {
 function applyTheme(theme: Theme): void {
   document.documentElement.dataset.theme = theme;
   document.querySelector<HTMLMetaElement>('meta[name="theme-color"]')
-    ?.setAttribute("content", theme === "dark" ? "#0e1d1f" : "#071b1b");
+    ?.setAttribute("content", theme === "dark" ? "#10191d" : "#071b1b");
   const control = document.querySelector<HTMLInputElement>("#night-mode-enabled");
   if (control) control.checked = theme === "dark";
 }

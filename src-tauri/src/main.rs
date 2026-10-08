@@ -2,6 +2,7 @@
 
 mod ollama_runtime;
 mod model_download;
+mod analysis_model;
 
 use std::{
     collections::{HashMap, HashSet},
@@ -2031,77 +2032,83 @@ async fn analyze_phi4(
     app: tauri::AppHandle,
     runtime: tauri::State<'_, Arc<Mutex<OllamaRuntime>>>,
     cancellation: tauri::State<'_, Arc<AnalysisCancellation>>,
+    model_session: tauri::State<'_, Arc<analysis_model::AnalysisModel>>,
 ) -> Result<serde_json::Value, String> {
     let runtime = Arc::clone(&runtime);
     let cancellation = Arc::clone(&cancellation);
+    let model_session = Arc::clone(&model_session);
     tauri::async_runtime::spawn_blocking(move || {
-        let use_mlx = ollama_runtime::experimental_mlx_enabled();
-        let mut loaded_model: Option<String> = None;
-        let result = (|| {
-            if cancellation.is_cancelled(&analysis_id) {
-                return Err("Analysis cancelled.".to_string());
-            }
-            let _ = app.emit(
-                "analysis-progress",
-                AnalysisProgress {
-                    analysis_id: analysis_id.clone(),
-                    stage: "model-loading".to_string(),
-                    completed_check: None,
-                    message: "Loading the local AI model…".to_string(),
-                },
-            );
-            let preparation_started = Instant::now();
-            let prepared = if use_mlx {
-                ollama_runtime::start_experimental_mlx(&app, &runtime)?
+        let session_id = analysis_id.clone();
+        let session_cancellation = Arc::clone(&cancellation);
+        model_session.run(&session_id, || session_cancellation.is_cancelled(&session_id), |needs_cleanup| {
+            let use_mlx = ollama_runtime::experimental_mlx_enabled();
+            let mut loaded_model: Option<String> = None;
+            let result = (|| {
+                if cancellation.is_cancelled(&analysis_id) {
+                    return Err("Analysis cancelled.".to_string());
+                }
+                let _ = app.emit(
+                    "analysis-progress",
+                    AnalysisProgress {
+                        analysis_id: analysis_id.clone(),
+                        stage: "model-loading".to_string(),
+                        completed_check: None,
+                        message: "Loading the local AI model…".to_string(),
+                    },
+                );
+                let preparation_started = Instant::now();
+                *needs_cleanup = true;
+                let prepared = if use_mlx {
+                    ollama_runtime::start_experimental_mlx(&app, &runtime)?
+                } else {
+                    ollama_runtime::warm_selected_model(&app, &runtime)?
+                };
+                loaded_model = Some(prepared.name.clone());
+                let preparation_ms = preparation_started.elapsed().as_millis() as u64;
+                if cancellation.is_cancelled(&analysis_id) {
+                    return Err("Analysis cancelled.".to_string());
+                }
+                let _ = app.emit(
+                    "analysis-progress",
+                    AnalysisProgress {
+                        analysis_id: analysis_id.clone(),
+                        stage: "model-ready".to_string(),
+                        completed_check: Some(1),
+                        message: if prepared.fine_tuned {
+                            "The fine-tuned Qwen model is ready. Analyzing content and intent…"
+                        } else {
+                            "The local AI model is ready. Analyzing content and intent…"
+                        }
+                        .to_string(),
+                    },
+                );
+                let engine_started = Instant::now();
+                let mut value = analyze_ai_with_engine(
+                    "phi4",
+                    report,
+                    &prepared.name,
+                    prepared.gpu_accelerated,
+                    use_mlx,
+                    analysis_id,
+                    cancellation,
+                    app.clone(),
+                )?;
+                if let Some(metrics) = value.get_mut("performance").and_then(serde_json::Value::as_object_mut) {
+                    metrics.insert("runtime_prepare_ms".into(), preparation_ms.into());
+                    metrics.insert("engine_process_ms".into(), (engine_started.elapsed().as_millis() as u64).into());
+                }
+                Ok(value)
+            })();
+            let released = if use_mlx {
+                ollama_runtime::stop_experimental_mlx(&runtime)
             } else {
-                ollama_runtime::warm_selected_model(&app, &runtime)?
+                ollama_runtime::unload_model(loaded_model.as_deref().unwrap_or(ollama_runtime::recommended_model()))
             };
-            loaded_model = Some(prepared.name.clone());
-            let preparation_ms = preparation_started.elapsed().as_millis() as u64;
-            if cancellation.is_cancelled(&analysis_id) {
-                return Err("Analysis cancelled.".to_string());
-            }
-            let _ = app.emit(
-                "analysis-progress",
-                AnalysisProgress {
-                    analysis_id: analysis_id.clone(),
-                    stage: "model-ready".to_string(),
-                    completed_check: Some(1),
-                    message: if prepared.fine_tuned {
-                        "The fine-tuned Qwen model is ready. Analyzing content and intent…"
-                    } else {
-                        "The local AI model is ready. Analyzing content and intent…"
-                    }
-                    .to_string(),
-                },
-            );
-            let engine_started = Instant::now();
-            let mut value = analyze_ai_with_engine(
-                "phi4",
-                report,
-                &prepared.name,
-                prepared.gpu_accelerated,
-                use_mlx,
-                analysis_id,
-                cancellation,
-                app.clone(),
-            )?;
-            if let Some(metrics) = value.get_mut("performance").and_then(serde_json::Value::as_object_mut) {
-                metrics.insert("runtime_prepare_ms".into(), preparation_ms.into());
-                metrics.insert("engine_process_ms".into(), (engine_started.elapsed().as_millis() as u64).into());
-            }
-            Ok(value)
-        })();
-        if use_mlx {
-            let _ = ollama_runtime::stop_experimental_mlx(&runtime);
-        } else {
-            if let Some(model) = loaded_model.as_deref() {
-                let _ = ollama_runtime::unload_model(model);
-            }
-        }
-        // Release the runner after every analysis, including success, errors,
-        // and cancellation. keep_alive only permits reuse between its AI passes.
-        result
+            if released.is_ok() { *needs_cleanup = false; }
+            // Release the runner after every analysis, including success, errors,
+            // and cancellation. keep_alive only permits reuse between its AI passes.
+            result
+        })
     })
     .await
     .map_err(|error| format!("Phi-4 analysis interrupted: {error}"))?
@@ -2120,12 +2127,53 @@ fn cancel_analysis(
 }
 
 #[tauri::command]
-fn finish_analysis(
+async fn finish_analysis(
     analysis_id: String,
     cancellation: tauri::State<'_, Arc<AnalysisCancellation>>,
+    runtime: tauri::State<'_, Arc<Mutex<OllamaRuntime>>>,
+    model_session: tauri::State<'_, Arc<analysis_model::AnalysisModel>>,
 ) -> Result<(), String> {
-    cancellation.finish(&analysis_id);
-    Ok(())
+    let cancellation = Arc::clone(&cancellation);
+    let runtime = Arc::clone(&runtime);
+    let model_session = Arc::clone(&model_session);
+    tauri::async_runtime::spawn_blocking(move || {
+        let result = model_session.finish(&analysis_id, || {
+            if ollama_runtime::experimental_mlx_enabled() {
+                ollama_runtime::stop_experimental_mlx(&runtime)
+            } else {
+                ollama_runtime::unload_model(ollama_runtime::recommended_model())
+            }
+        });
+        cancellation.finish(&analysis_id);
+        result
+    }).await.map_err(|error| format!("AI cleanup interrupted: {error}"))?
+}
+
+#[tauri::command]
+async fn prepare_analysis_ai(
+    analysis_id: String,
+    app: tauri::AppHandle,
+    runtime: tauri::State<'_, Arc<Mutex<OllamaRuntime>>>,
+    cancellation: tauri::State<'_, Arc<AnalysisCancellation>>,
+    model_session: tauri::State<'_, Arc<analysis_model::AnalysisModel>>,
+) -> Result<(), String> {
+    if analysis_id.trim().is_empty() || analysis_id.len() > 128 {
+        return Err("Invalid analysis identifier.".into());
+    }
+    let runtime = Arc::clone(&runtime);
+    let cancellation = Arc::clone(&cancellation);
+    let model_session = Arc::clone(&model_session);
+    tauri::async_runtime::spawn_blocking(move || {
+        model_session.run(&analysis_id, || cancellation.is_cancelled(&analysis_id), |needs_cleanup| {
+            *needs_cleanup = true;
+            if ollama_runtime::experimental_mlx_enabled() {
+                ollama_runtime::start_experimental_mlx(&app, &runtime)?;
+            } else {
+                ollama_runtime::warm_selected_model(&app, &runtime)?;
+            }
+            Ok(())
+        })
+    }).await.map_err(|error| format!("AI preparation interrupted: {error}"))?
 }
 
 #[tauri::command]
@@ -2277,6 +2325,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(Arc::new(AnalysisCancellation::default()))
+        .manage(Arc::new(analysis_model::AnalysisModel::default()))
         .manage(Arc::new(Mutex::new(OllamaRuntime::default())))
         .manage(Arc::new(Mutex::new(ReputationCredentialCache::default())))
         .setup(|_app| {
@@ -2325,6 +2374,7 @@ fn main() {
             cancel_analysis,
             finish_analysis,
             analyze_phi4,
+            prepare_analysis_ai,
             warm_ollama_model,
             optimize_cpu_performance,
             ollama_runtime_status,

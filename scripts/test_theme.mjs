@@ -26,7 +26,7 @@ assert.equal(exports.currentTheme(), 'light', 'Existing users keep the day appea
 assert.equal(exports.setTheme('dark'), true);
 assert.equal(dataset.theme, 'dark');
 assert.equal(control.checked, true);
-assert.equal(metaColor, '#0e1d1f');
+assert.equal(metaColor, '#10191d');
 dataset.theme = 'light';
 exports.initializeTheme();
 assert.equal(exports.currentTheme(), 'dark', 'Night mode survives a fresh initialization');

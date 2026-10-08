@@ -155,6 +155,64 @@
           ]
         }
       ]
+    },
+    {
+      "brand": "Spotify",
+      "aliases": [
+        "Spotify for Artists"
+      ],
+      "reference": "https://artists.spotify.com/en/get-started; https://support.spotify.com/article/spotify-email-legit/",
+      "relations": [
+        {
+          "domain": "spotify.com",
+          "role": "official",
+          "scopes": [
+            "sender",
+            "reply",
+            "visit_link",
+            "verify_account",
+            "change_account_settings"
+          ]
+        }
+      ]
+    },
+    {
+      "brand": "Intesa Sanpaolo",
+      "aliases": [],
+      "reference": "https://www.intesasanpaolo.com/it/persone-e-famiglie/bisogni/sicurezza-digitale/phishing-bancario.html",
+      "relations": [
+        {
+          "domain": "intesasanpaolo.com",
+          "role": "official",
+          "scopes": [
+            "sender",
+            "reply",
+            "visit_link",
+            "verify_account",
+            "change_account_settings"
+          ]
+        }
+      ]
+    },
+    {
+      "brand": "Leroy Merlin",
+      "aliases": [
+        "Leroy-Merlin"
+      ],
+      "reference": "https://www.leroymerlin.it/truffe-e-phishing/",
+      "relations": [
+        {
+          "domain": "leroymerlin.it",
+          "role": "official",
+          "scopes": [
+            "sender",
+            "reply",
+            "visit_link",
+            "verify_account",
+            "change_account_settings"
+          ]
+        }
+      ]
     }
   ]
 }

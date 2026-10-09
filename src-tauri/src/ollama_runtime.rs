@@ -1187,6 +1187,12 @@ fn ensure_server(
             #[cfg(target_os = "windows")]
             if windows_should_enable_vulkan() {
                 command.env("OLLAMA_VULKAN", "1");
+                // Ollama otherwise excludes integrated Radeon GPUs even when
+                // Vulkan can fit the model in their shared memory. Preserve an
+                // explicit user override, including opting out with "0".
+                if std::env::var_os("OLLAMA_IGPU_ENABLE").is_none() {
+                    command.env("OLLAMA_IGPU_ENABLE", "1");
+                }
             }
             configure_background_command(&mut command);
             let child = command

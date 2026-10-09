@@ -45,3 +45,24 @@ La telemetria distingue tempo tecnico, pipeline AI e tempo delle chiamate al
 modello. Il backend aggiunge `runtime_prepare_ms` ed `engine_process_ms` al campo
 `performance`, per rendere distinguibile il caricamento dalla generazione.
 Le correzioni native richiedono una nuova build e un riavvio dell'app.
+
+## Integrated Radeon acceleration — 9 October 2026
+
+On Windows AMD/Radeon machines the managed Vulkan runtime now defaults
+`OLLAMA_IGPU_ENABLE` to `1`, allowing Ollama to consider integrated GPUs and
+select GPU or CPU according to its runtime support and memory scheduling.
+An explicit environment override is preserved, including `0` to disable it.
+This applies to a newly started managed runtime; an already running external
+Ollama server keeps its own configuration. NVIDIA CUDA selection is unchanged.
+
+An isolated test with the installed Ollama v0.32.15 and the FishSTOP 4B Q4_K_M
+model on Ryzen 7 PRO 7730U / integrated Radeon loaded 37/37 layers on Vulkan.
+The runtime reported approximately 2.9 GB allocated on the GPU. For a 1445-token
+prompt and 64 generated tokens, the cold request took 48.3 s versus 56.5 s on
+CPU; a repeated cached-prefix request took 11.7 s versus 13.5 s. These short
+measurements support enabling the GPU candidate on this machine, but do not
+establish performance or long-term stability on every AMD/Intel system.
+The existing Intel adapter filter is unchanged because no Intel device was
+available for validation. Full-email correctness was not retested in this
+microbenchmark. Logs and measurements remain local in
+`output/gpu-check-2026-10-09`.

@@ -14,6 +14,11 @@ pub struct AnalysisModel {
 }
 
 impl AnalysisModel {
+    pub fn while_idle<T>(&self, operation: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+        let slot = self.session.lock().map_err(|_| "AI session unavailable")?;
+        if slot.is_some() { return Err("Finish or cancel the current analysis before changing AI mode.".into()); }
+        operation()
+    }
     pub fn run<T>(
         &self,
         id: &str,
@@ -173,4 +178,14 @@ mod tests {
         worker.join().unwrap().unwrap();
         state.finish("b", || Ok(())).unwrap();
     }
+    #[test]
+    fn mode_change_requires_idle_analysis() {
+        let state = AnalysisModel::default();
+        assert_eq!(state.while_idle(|| Ok(42)).unwrap(), 42);
+        state.run("active", || false, |_| Ok(())).unwrap();
+        assert!(state.while_idle(|| Ok(42)).is_err());
+        state.finish("active", || Ok(())).unwrap();
+        assert!(state.while_idle(|| Ok(42)).is_ok());
+    }
+
 }

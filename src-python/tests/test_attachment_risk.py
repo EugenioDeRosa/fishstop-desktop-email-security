@@ -131,6 +131,26 @@ class AttachmentRiskTests(unittest.TestCase):
         self.assertEqual(security["field_count"], 0)
         self.assertEqual(security["uri_evidence"]["uri_action_url_count"], 1)
 
+    def test_pdf_text_is_available_to_identity_analysis_with_page_limit(self):
+        from pypdf import PdfWriter
+        from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
+        writer = PdfWriter()
+        for i in range(4):
+            page = writer.add_blank_page(width=200, height=200)
+            font = DictionaryObject({NameObject("/Type"): NameObject("/Font"),
+                NameObject("/Subtype"): NameObject("/Type1"), NameObject("/BaseFont"): NameObject("/Helvetica")})
+            page[NameObject("/Resources")] = DictionaryObject({NameObject("/Font"): DictionaryObject({
+                NameObject("/F1"): writer._add_object(font)})})
+            content = DecodedStreamObject()
+            content.set_data(f"BT /F1 12 Tf 10 100 Td (Example Security Team page {i}) Tj ET".encode())
+            page[NameObject("/Contents")] = writer._add_object(content)
+        output = io.BytesIO(); writer.write(output)
+        security = analyze_pdf_security(output.getvalue())
+        self.assertIn("Example Security Team page 0", security["text_excerpt"])
+        self.assertIn("page 2", security["text_excerpt"])
+        self.assertNotIn("page 3", security["text_excerpt"])
+        self.assertEqual("partial", security["text_extraction_status"])
+
     def test_archive_uses_the_same_dangerous_extension_policy(self):
         buffer = io.BytesIO()
         with zipfile.ZipFile(buffer, "w") as archive:

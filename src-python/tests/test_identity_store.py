@@ -47,6 +47,14 @@ class IdentityStoreTests(unittest.TestCase):
         registry_operation({"operation": "remove", "id": result["records"][0]["id"]})
         self.assertIsNone(resolve_partner("Small Company"))
 
+    def test_generic_role_suffix_resolves_reference_without_substring_matching(self):
+        self.add()
+        self.assertEqual("Small Company", resolve_partner("Small Company account team")["brand"])
+        self.assertIsNone(resolve_partner("Small Company Valley Dental"))
+        self.add(brand="Small Company Support", aliases=[], relations=[
+            {"domain": "separate-company.test", "role": "official", "scopes": ["sender"]}])
+        self.assertEqual("Small Company Support", resolve_partner("Small Company Support")["brand"])
+
     def test_expired_evidence_is_not_reused(self):
         put("sample", {"test": True}, -1)
         self.assertIsNone(cached("sample"))

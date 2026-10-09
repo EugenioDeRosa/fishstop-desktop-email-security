@@ -8,17 +8,17 @@ from urllib.parse import urlparse
 from fishstop_engine.domain_utils import registered_domain, normalize_hostname, identity_mailbox
 from fishstop_engine.analyzer.lookalike import check_lookalike_domains
 
-RULE_VERSION = 1
+RULE_VERSION = 2
 WEIGHTS = {"free_mail_claim": 25, "sender_domain_mismatch": 15,
            "sender_lookalike": 35, "display_domain_deception": 35,
            "sensitive_external_action": 20, "action_lookalike": 35,
-           "external_reply": 10, "recent_registration": 8,
+           "external_reply": 10, "personal_mailbox_action": 35, "recent_registration": 8,
            "weak_dmarc_policy": 3, "documented_sender": -10,
            "authenticated_documented_sender": -25}
 FREE_MAIL_DOMAINS = frozenset({"gmail.com", "googlemail.com", "outlook.com", "hotmail.com",
     "live.com", "yahoo.com", "yahoo.it", "aol.com", "icloud.com", "proton.me", "protonmail.com"})
 SENSITIVE_ACTIONS = frozenset({"provide_credentials", "pay_or_transfer", "verify_account",
-    "change_account_settings", "provide_information"})
+    "change_account_settings", "provide_information", "claim_reward"})
 
 
 def _brand_in_display(display: str, brand: str) -> bool:
@@ -93,10 +93,19 @@ def assess_impersonation(report: dict, claimed_entities: list[dict], semantic: d
         for link in action_links[:20] if sensitive else []:
             host = normalize_hostname(link.get("host") or urlparse(str(link.get("url") or "")).hostname or "")
             domain = registered_domain(host)
-            if not domain or domain in official or any(action_authorized(link, relation, semantic.get("requested_action"))
-                    for relation in reference.get("authorized_action_relations", [])):
+            relations = reference.get("documented_action_relations", reference.get("authorized_action_relations", []))
+            allowed = any(action_authorized(link, relation, semantic.get("requested_action")) for relation in relations)
+            # Public websites corroborate a domain; scoped registry records must
+            # explicitly permit the requested action, including on official hosts.
+            if not domain or allowed or (source == "wikidata" and domain in official):
                 continue
             add("sensitive_external_action", "action_destination", f"The sensitive request leads to {host}, which is not a documented destination for {brand}.", "action_link")
+            if (str(link.get("scheme") or urlparse(str(link.get("url") or "")).scheme).lower() == "mailto"
+                    and domain in FREE_MAIL_DOMAINS
+                    and semantic.get("requested_action") in {"verify_account", "provide_credentials", "change_account_settings"}):
+                add("personal_mailbox_action", "action_destination",
+                    f"The message requests an account-security action for {brand} through the undocumented personal mailbox at {host}.",
+                    "action_link", source in {"maintained_catalog", "administrator_confirmation", "signed_directory"})
             alerts = check_lookalike_domains([{"host": host, "url": str(link.get("url") or "")}], known_brands=sorted(official))
             if any(item.get("level") in {"HIGH", "MEDIUM"} for item in alerts):
                 add("action_lookalike", "action_destination", f"The sensitive action targets {host}, a lookalike of a documented company domain.", source + ":action_link", True)
@@ -138,9 +147,10 @@ def assess_impersonation(report: dict, claimed_entities: list[dict], semantic: d
     escalation = bool(represented and official and (len(strong) >= 2 or "action_destination" in strong))
     # A documented contradiction deserves review in the UI, even when it is
     # insufficient to convict phishing. Incomplete public references stay neutral.
-    documented_mismatch = represented and sender and source == "maintained_catalog" and any(
+    documented_mismatch = represented and sender and official and any(
         item["id"] == "sender_domain_mismatch" for item in signals)
-    status = "inconsistent" if strong or documented_mismatch else "consistent" if represented and documented_sender and authenticated else "insufficient_data"
+    destination_mismatch = represented and any(item["family"] == "action_destination" and item["weight"] > 0 for item in signals)
+    status = "inconsistent" if strong or documented_mismatch or destination_mismatch else "consistent" if represented and documented_sender and authenticated else "insufficient_data"
     return {"claimed_identity": brand, "claimed_role": "representative" if represented else claimed_role,
             "claim_evidence": candidate.get("occurrences", []), "signals": signals, "score": score,
             "confidence": confidence, "identity_confidence": identity_confidence,

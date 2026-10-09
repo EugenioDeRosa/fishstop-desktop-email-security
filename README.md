@@ -154,9 +154,9 @@ Per abilitare tutti i controlli di reputazione prepara una chiave personale per 
 Poi:
 
 1. Apri **Settings → Reputation**.
-2. Seleziona **Configure keys**. Se alcune chiavi sono già presenti, il pulsante diventa **Edit keys**.
-3. Incolla le tre chiavi nei rispettivi campi.
-4. Seleziona **Save changes**.
+2. Seleziona **Add** accanto al servizio da configurare. Per una chiave già presente sono disponibili **Edit** e **Remove**.
+3. Incolla la chiave nel campo del servizio selezionato.
+4. Seleziona **Save changes** e ripeti per gli altri servizi.
 5. Controlla che ogni servizio mostri lo stato **Ready** e che l'indicatore superiore mostri **Protection active**.
 
 Le chiavi vengono conservate nel portachiavi sicuro del sistema operativo e non sono salvate in chiaro nell'interfaccia. Se una chiave manca, FishStop continua a eseguire i controlli statici e l'AI locale, ma il relativo controllo di reputazione rimane non disponibile.

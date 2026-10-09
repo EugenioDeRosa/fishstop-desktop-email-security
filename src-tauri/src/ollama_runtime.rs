@@ -18,6 +18,36 @@ use std::io::{Read, Write};
 
 pub const FINE_TUNED_MODEL: &str = "fishstop-qwen3:4b-finetuned-v5-q4_K_M";
 pub const MANAGED_MODEL: &str = FINE_TUNED_MODEL;
+pub const FAST_MODEL: &str = "qwen3:1.7b-q4_K_M";
+
+#[derive(Default, Serialize, Deserialize, PartialEq, Debug)]
+#[serde(rename_all = "lowercase")]
+pub enum AiMode { Fast, #[default] Performance }
+
+pub fn ai_mode(app: &AppHandle) -> AiMode {
+    app.path().app_data_dir().ok()
+        .and_then(|dir| fs::read(dir.join("ai-mode.json")).ok())
+        .and_then(|data| serde_json::from_slice(&data).ok()).unwrap_or_default()
+}
+
+pub fn set_ai_mode(app: &AppHandle, mode: &str) -> Result<(), String> {
+    let mode: AiMode = serde_json::from_value(serde_json::json!(mode))
+        .map_err(|_| "Select Fast or Performance.".to_string())?;
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    fs::write(dir.join("ai-mode.json"), serde_json::to_vec(&mode).map_err(|e| e.to_string())?)
+        .map_err(|e| format!("Could not save the AI mode: {e}"))
+}
+
+fn model_for_mode(mode: AiMode) -> &'static str {
+    match mode { AiMode::Fast => FAST_MODEL, AiMode::Performance => FINE_TUNED_MODEL }
+}
+
+pub fn selected_model(app: &AppHandle) -> &'static str { model_for_mode(ai_mode(app)) }
+
+pub fn uses_mlx(app: &AppHandle) -> bool {
+    experimental_mlx_enabled() && ai_mode(app) == AiMode::Performance
+}
 pub const FINE_TUNED_MLX_MODEL: &str = "fishstop/Qwen3-4B-Instruct-2507-FineTuned-4bit";
 pub const CPU_REQUEST_TIMEOUT_SECONDS: u64 = 600;
 pub const CPU_RESPONSE_IDLE_TIMEOUT_SECONDS: u64 = 300;
@@ -282,7 +312,7 @@ fn ollama_fine_tuned_available(app: &AppHandle) -> bool {
 }
 
 pub fn fine_tuned_model_available(app: &AppHandle) -> bool {
-    if experimental_mlx_enabled() {
+    if uses_mlx(app) {
         fine_tuned_mlx_model_installed(app)
     } else {
         ollama_fine_tuned_available(app)
@@ -290,7 +320,7 @@ pub fn fine_tuned_model_available(app: &AppHandle) -> bool {
 }
 
 pub fn fine_tuned_model_enabled(app: &AppHandle) -> bool {
-    fine_tuned_model_available(app)
+    ai_mode(app) == AiMode::Performance && fine_tuned_model_available(app)
 }
 
 pub fn recommended_model() -> &'static str {
@@ -586,7 +616,7 @@ fn load_cpu_optimization(app: &AppHandle) -> Option<CpuOptimizationSummary> {
     let physical = physical_cpu_count().unwrap_or(logical);
     (profile.version == CPU_PROFILE_VERSION
         && profile.cpu == cpu_name()
-        && profile.model == MANAGED_MODEL
+        && profile.model == selected_model(app)
         && profile.logical_cores == logical
         && profile.physical_cores == physical
         && profile.result.threads > 0
@@ -644,7 +674,7 @@ pub fn optimize_cpu_performance(
     let (endpoint, _) = ensure_server(app, runtime)?;
     if !models_at(&endpoint)?
         .iter()
-        .any(|model| model == MANAGED_MODEL)
+        .any(|model| model == selected_model(app))
     {
         return Err("Install the local AI model before optimizing CPU performance.".to_string());
     }
@@ -672,7 +702,7 @@ pub fn optimize_cpu_performance(
         let response: BenchmarkResponse = benchmark_client
             .post(format!("{endpoint}/api/generate"))
             .json(&serde_json::json!({
-                "model": MANAGED_MODEL,
+                "model": selected_model(app),
                 "prompt": "In about 100 words, explain why checking the sender and destination of a link helps identify a suspicious email.",
                 "stream": false,
                 "keep_alive": MODEL_KEEP_ALIVE,
@@ -717,7 +747,7 @@ pub fn optimize_cpu_performance(
     let profile = CpuOptimizationProfile {
         version: CPU_PROFILE_VERSION,
         cpu: cpu_name(),
-        model: MANAGED_MODEL.to_string(),
+        model: selected_model(app).to_string(),
         logical_cores: logical,
         physical_cores: physical_cpu_count().unwrap_or(logical),
         result: result.clone(),
@@ -1058,7 +1088,7 @@ fn detect_machine_profile() -> (String, String, String, Option<u64>, String, Str
     )
 }
 
-fn loaded_model(endpoint: &str) -> (Option<String>, bool) {
+fn loaded_model(endpoint: &str, model: &str) -> (Option<String>, bool) {
     let processes = Client::builder()
         .connect_timeout(Duration::from_millis(500))
         .timeout(Duration::from_secs(2))
@@ -1077,7 +1107,14 @@ fn loaded_model(endpoint: &str) -> (Option<String>, bool) {
                 .map_err(|error| error.to_string())
         })
         .unwrap_or_default();
-    let selected = processes.models.unwrap_or_default().into_iter().next();
+    selected_loaded_model(processes, model)
+}
+
+fn selected_loaded_model(processes: OllamaProcesses, model: &str) -> (Option<String>, bool) {
+    let selected = processes.models.unwrap_or_default().into_iter().find(|process| {
+        process.name.as_deref() == Some(model)
+            || process.model.as_deref() == Some(model)
+    });
     match selected {
         Some(process) => (
             process.name.or(process.model),
@@ -1132,13 +1169,14 @@ fn ensure_server(
     app: &AppHandle,
     runtime: &Arc<Mutex<OllamaRuntime>>,
 ) -> Result<(String, bool), String> {
+    let selected = selected_model(app);
     let fine_tuned_requested = true;
     let managed_has_fine_tuned = ready(MANAGED_ENDPOINT)
         && models_at(MANAGED_ENDPOINT)
-            .is_ok_and(|models| models.iter().any(|model| model == FINE_TUNED_MODEL));
+            .is_ok_and(|models| models.iter().any(|model| model == selected));
     let external_has_fine_tuned = ready("http://127.0.0.1:11434")
         && models_at("http://127.0.0.1:11434")
-            .is_ok_and(|models| models.iter().any(|model| model == FINE_TUNED_MODEL));
+            .is_ok_and(|models| models.iter().any(|model| model == selected));
     if fine_tuned_requested && external_has_fine_tuned && !managed_has_fine_tuned {
         return Ok(("http://127.0.0.1:11434".to_string(), false));
     }
@@ -1276,7 +1314,7 @@ fn warm_model(
         .send()
         .and_then(|response| response.error_for_status())
         .map_err(|error| format!("Could not preload the AI model: {error}"))?;
-    let (_, loaded_on_gpu) = loaded_model(&endpoint);
+    let (_, loaded_on_gpu) = loaded_model(&endpoint, model);
     Ok(PreparedModel {
         name: model.to_string(),
         gpu_accelerated: loaded_on_gpu || cfg!(all(target_os = "macos", target_arch = "aarch64")),
@@ -1298,7 +1336,7 @@ pub fn warm_selected_model(
                 .to_string(),
         );
     }
-    warm_model(app, runtime, recommended_model())
+    warm_model(app, runtime, selected_model(app))
 }
 
 pub fn warm_default_model(
@@ -1331,7 +1369,7 @@ pub fn unload_model(model: &str) -> Result<(), String> {
 pub fn status(app: &AppHandle, _runtime: &Arc<Mutex<OllamaRuntime>>) -> OllamaRuntimeStatus {
     let (platform, architecture, cpu, memory_bytes, accelerator, selection_reason) =
         machine_profile();
-    if experimental_mlx_enabled() {
+    if uses_mlx(app) {
         let ready = experimental_mlx_ready();
         let available = experimental_mlx_runtime_available(app);
         let model_installed = fine_tuned_mlx_model_installed(app);
@@ -1365,7 +1403,7 @@ pub fn status(app: &AppHandle, _runtime: &Arc<Mutex<OllamaRuntime>>) -> OllamaRu
             fine_tuned_enabled,
             fine_tuned_model: FINE_TUNED_MLX_MODEL.to_string(),
             fine_tuned_version: Some(crate::model_download::version()),
-            model_download_available: !experimental_mlx_enabled() && crate::model_download::download_available(),
+            model_download_available: ai_mode(app) == AiMode::Fast || (!experimental_mlx_enabled() && crate::model_download::download_available()),
         };
     }
     // Each endpoint is queried once, in parallel. Tags prove runtime availability
@@ -1380,8 +1418,8 @@ pub fn status(app: &AppHandle, _runtime: &Arc<Mutex<OllamaRuntime>>) -> OllamaRu
         .is_some_and(|tags| tags.iter().any(|tag| tag.name == FINE_TUNED_MODEL));
     let fine_tuned_available = has_fine_tuned(&managed_tags) || has_fine_tuned(&external_tags)
         || managed_model_installed(app, FINE_TUNED_MODEL);
-    let fine_tuned_enabled = fine_tuned_available;
-    let model = if fine_tuned_enabled { FINE_TUNED_MODEL } else { recommended_model() }.to_string();
+    let fine_tuned_enabled = ai_mode(app) == AiMode::Performance && fine_tuned_available;
+    let model = selected_model(app).to_string();
     let external_fine_tuned = fine_tuned_enabled && has_fine_tuned(&external_tags);
     let has_selected = |tags: &Option<Vec<OllamaTag>>| tags.as_ref()
         .is_some_and(|tags| tags.iter().any(|tag| tag.name == model));
@@ -1393,8 +1431,11 @@ pub fn status(app: &AppHandle, _runtime: &Arc<Mutex<OllamaRuntime>>) -> OllamaRu
     };
     for (endpoint, managed, tags) in endpoints {
         if let Some(tags) = tags {
-            let model_ready = tags.iter().any(|tag| tag.name == model);
-            let (loaded_model, loaded_on_gpu) = loaded_model(endpoint);
+            // A live server may still be starting or use another model store.
+            // Its empty tags must not hide a model saved in managed storage.
+            let model_ready = tags.iter().any(|tag| tag.name == model)
+                || managed_model_installed(app, &model);
+            let (loaded_model, loaded_on_gpu) = loaded_model(endpoint, &model);
             return OllamaRuntimeStatus {
                 runtime_ready: true,
                 model_ready,
@@ -1418,7 +1459,7 @@ pub fn status(app: &AppHandle, _runtime: &Arc<Mutex<OllamaRuntime>>) -> OllamaRu
                 fine_tuned_enabled,
                 fine_tuned_model: FINE_TUNED_MODEL.to_string(),
                 fine_tuned_version: fine_tuned_version_from_tags(tags).or_else(|| Some(crate::model_download::version())),
-                model_download_available: crate::model_download::download_available(),
+                model_download_available: ai_mode(app) == AiMode::Fast || crate::model_download::download_available(),
             };
         }
     }
@@ -1442,14 +1483,32 @@ pub fn status(app: &AppHandle, _runtime: &Arc<Mutex<OllamaRuntime>>) -> OllamaRu
         fine_tuned_enabled,
         fine_tuned_model: FINE_TUNED_MODEL.to_string(),
         fine_tuned_version: Some(crate::model_download::version()),
-            model_download_available: !experimental_mlx_enabled() && crate::model_download::download_available(),
+            model_download_available: ai_mode(app) == AiMode::Fast || (!experimental_mlx_enabled() && crate::model_download::download_available()),
     }
 }
 pub fn install_default_model(
     app: &AppHandle,
     runtime: &Arc<Mutex<OllamaRuntime>>,
 ) -> Result<(), String> {
-    if experimental_mlx_enabled() {
+    if ai_mode(app) == AiMode::Fast {
+        use std::io::{BufRead, BufReader};
+        let (endpoint, _) = ensure_server(app, runtime)?;
+        let response = Client::builder().timeout(Duration::from_secs(1800)).build()
+            .map_err(|e| e.to_string())?.post(format!("{endpoint}/api/pull"))
+            .json(&serde_json::json!({"name": FAST_MODEL, "stream": true}))
+            .send().and_then(|r| r.error_for_status()).map_err(|e| e.to_string())?;
+        for line in BufReader::new(response).lines() {
+            let progress: serde_json::Value = serde_json::from_str(&line.map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?;
+            if let Some(error) = progress["error"].as_str() { return Err(error.to_string()); }
+            app.emit("ollama-model-progress", ModelProgress {
+                status: "Preparing Fast mode…".into(), total: progress["total"].as_u64(), completed: progress["completed"].as_u64(),
+            }).map_err(|e| e.to_string())?;
+        }
+        warm_selected_model(app, runtime)?;
+        return Ok(());
+    }
+    if uses_mlx(app) {
         return Err("The v5 download uses the default GGUF backend. A native fine-tuned MLX export must be installed separately.".into());
     }
     if !crate::model_download::download_available() {
@@ -1473,13 +1532,13 @@ pub fn remove_default_model(
     app: &AppHandle,
     runtime: &Arc<Mutex<OllamaRuntime>>,
 ) -> Result<(), String> {
-    if experimental_mlx_enabled() {
+    if uses_mlx(app) {
         return remove_experimental_mlx_model(app, runtime);
     }
     let (endpoint, _) = ensure_server(app, runtime)?;
     client()?
         .delete(format!("{endpoint}/api/delete"))
-        .json(&serde_json::json!({"name": recommended_model()}))
+        .json(&serde_json::json!({"name": selected_model(app)}))
         .send()
         .and_then(|response| response.error_for_status())
         .map_err(|error| format!("Could not remove the AI model: {error}"))?;
@@ -1488,7 +1547,19 @@ pub fn remove_default_model(
 
 #[cfg(test)]
 mod tests {
-    use super::{fine_tuned_version_from_tags, machine_profile, OllamaTag, FINE_TUNED_MODEL};
+    use super::{fine_tuned_version_from_tags, machine_profile, OllamaTag, FINE_TUNED_MODEL, FAST_MODEL, AiMode, model_for_mode};
+    #[test]
+    fn acceleration_status_tracks_fishstop_instead_of_first_loaded_model() {
+        let processes = serde_json::from_value(serde_json::json!({"models": [
+            {"name": "unrelated:latest", "size_vram": 0},
+            {"model": FINE_TUNED_MODEL, "size_vram": 2048}
+        ]})).unwrap();
+        assert_eq!(super::selected_loaded_model(processes, FINE_TUNED_MODEL), (Some(FINE_TUNED_MODEL.to_string()), true));
+        let processes = serde_json::from_value(serde_json::json!({"models": [
+            {"name": "unrelated:latest", "size_vram": 2048}
+        ]})).unwrap();
+        assert_eq!(super::selected_loaded_model(processes, FINE_TUNED_MODEL), (None, false));
+    }
     #[test]
     fn warmup_and_inference_use_the_same_hardware_context() {
         use super::model_context_tokens;
@@ -1571,4 +1642,12 @@ mod tests {
             "Intel(R) Arc(TM) A770 Graphics"
         ));
     }
+    #[test]
+    fn ai_modes_select_separate_models_and_default_to_performance() {
+        assert_eq!(model_for_mode(AiMode::default()), FINE_TUNED_MODEL);
+        assert_eq!(model_for_mode(AiMode::Fast), FAST_MODEL);
+        assert!(serde_json::from_str::<AiMode>("\"invalid\"").is_err());
+        assert_eq!(serde_json::from_str::<AiMode>("\"fast\"").unwrap(), AiMode::Fast);
+    }
+
 }

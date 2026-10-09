@@ -34,15 +34,41 @@ Nessuno di questi controlli garantisce da solo che un messaggio sia sicuro.
 
 ## Motore automatico di impersonificazione
 
-L'AI estrae `claimed_brand` e `claimed_role` (rappresentante, menzione, terza parte
-oppure incerto), con un nome presente nel testo visibile. Non decide l'appartenenza
-aziendale. L'app normalizza l'azione e raccoglie le prove prima della policy finale,
-senza una nuova passata AI. Se il modello omette azienda o ruolo, le intestazioni
-esplicite dei marchi del catalogo (ad esempio "Microsoft account" seguita da
-"We detected...") e i display name esatti vengono recuperati localmente.
-Semplici menzioni, nomi più lunghi e descrizioni di clienti non diventano
-rappresentanza aziendale. Questo recupero identifica la dichiarazione, senza
-autenticare il mittente. Le destinazioni sensibili vengono controllate anche
+Una passata AI dedicata estrae `claimed_brand` e `claimed_role` (rappresentante,
+menzione, terza parte oppure incerto) dal nome visibile del mittente, dall'oggetto
+e dal testo selezionato della mail e degli allegati PDF pertinenti, senza
+consultare il catalogo dei marchi. Il testo dei PDF viene estratto durante la
+scansione statica, con un massimo di tre pagine e un estratto limitato; PDF
+senza testo o non leggibili non producono identità inventate. Il testo estratto
+è trattato come dato non attendibile e la fonte rimane `attachment`.
+Su Ollama l'estrazione usa il modello generale
+`qwen3:4b-instruct-2507-q4_K_M`, separatamente dal modello addestrato per il rischio,
+che tende a omettere i campi d'identità. Il modello di estrazione deve essere
+installato nello stesso runtime; `FISHSTOP_IDENTITY_MODEL` permette di sostituirlo.
+Un modello assente produce estrazione indisponibile, senza bloccare l'analisi del
+contenuto. Il backend sperimentale MLX conserva il modello configurato per quel
+backend; non è stato validato in questa prova Windows. Nome del modello e durata
+si trovano nella telemetria e nel risultato dell'estrazione.
+Richiede una citazione esatta e la relativa fonte; il motore rifiuta nomi e
+citazioni non presenti nei campi visibili. Sono ammesse soltanto differenze negli
+spazi e negli a capo; una fonte errata viene corretta solo quando la citazione
+compare in un unico campo, conservando la citazione presente nell'input.
+Se il nome proposto dall'AI coincide con l'intero nome visibile del mittente,
+eventualmente seguito da ruoli generici, il campo del mittente può recuperare
+una citazione omessa o parafrasata. Nomi di reparti espliciti e firme aziendali
+con saluto possono recuperare un ruolo erroneamente classificato come menzione;
+un ruolo `third_party` non viene promosso a rappresentanza. Nessuno di questi
+controlli usa un elenco di marchi per estrarre un nome.
+Il contenuto della mail è trattato come
+dato non attendibile, mai come istruzione. Questo identifica una dichiarazione,
+senza autenticare il mittente o decidere l'appartenenza aziendale.
+Se la passata fallisce o restituisce prove non valide, si conserva soltanto
+l'eventuale nome già estratto e fondato nel testo dall'analisi principale,
+senza recupero basato sui nomi del catalogo. Lo stato della passata e il suo tempo
+sono disponibili in `identity_analysis.extraction`; il tempo è registrato anche
+in `performance.identity_extraction_seconds` e la chiamata nella telemetria
+con stage `identity`. L'app raccoglie le prove prima della policy finale.
+Le destinazioni sensibili vengono controllate anche
 se manca il campo From. `impersonation.py` è puro e non effettua richieste di rete.
 
 Il risultato è in `identity_analysis.impersonation`: segnali con fonte, peso,
@@ -59,6 +85,22 @@ un dominio recente, da soli, richiedono al massimo revisione. Le destinazioni
 sensibili sono selezionate da CTA/ruolo `body_action`, non da tutti i link di
 una newsletter. Età e DMARC `p=none` sono contesto debole. Dati mancanti restano
 neutrali. Un dominio vecchio, un redirect o un provider condiviso non concedono fiducia.
+
+Una contraddizione del mittente rispetto a un riferimento pubblico risolto
+produce possibile impersonificazione e revisione, senza richiedere che il
+riferimento sia nel catalogo. L'autenticazione mancante resta distinta dalla
+contraddizione e non la nasconde. Una richiesta di verifica, credenziali o
+modifica dell'account verso una casella personale non documentata tramite
+`mailto:` genera una contraddizione sulla destinazione; diventa una prova forte
+quando il riferimento è un registro o catalogo indipendentemente mantenuto e
+con scopi espliciti. Un elenco pubblico incompleto, da solo, richiede revisione
+e non condanna automaticamente il messaggio. Per i riferimenti
+del registro vengono rispettati gli scopi delle azioni anche sui domini ufficiali;
+la corrispondenza della destinazione non autentica automaticamente il mittente.
+I suffissi generici di reparto/account si normalizzano soltanto nella risoluzione
+del riferimento, dopo aver cercato il nome esatto; nomi e citazioni originali
+rimangono nel report. Una piattaforma software che invia notifiche di un sito
+terzo non viene automaticamente interpretata come rappresentante del fornitore.
 
 Lookup Wikidata, DNS e RDAP lavorano in parallelo con un budget complessivo di
 attesa di sei secondi e cache persistente. Le richieste Wikidata sono limitate

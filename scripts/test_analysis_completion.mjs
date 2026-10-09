@@ -15,6 +15,10 @@ assert.ok(controller);
 const compiled = ts.transpileModule(`globalThis.startAnalysis = ${controller};`, {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
 }).outputText;
+const gateExports = {};
+new Function('exports', ts.transpileModule(readFileSync(new URL('../src/background-checks.ts', import.meta.url), 'utf8'), {
+  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+}).outputText)(gateExports);
 const deferred = () => {
   let resolve, reject;
   const promise = new Promise((done, fail) => { resolve = done; reject = fail; });
@@ -34,13 +38,20 @@ async function verifyCompletion(cancelled = false, preparationOutcome = 'success
     document: { querySelector: (selector) => selector === '#analysis-result .analysis-loading' ? splash : null, createElement: () => ({}) },
     intake: null, inboxIntake: null, changeEmail: null, resetAnalysis: null, cancelAnalysis: null, dropZone: null,
     ollamaRuntimeSnapshot: null, localStorage: {},
+    backgroundChecks: gateExports.createBackgroundChecks(), protectionRefreshTimer: undefined, managedModelRefreshTimer: undefined,
+    managedModelOperation: null, cpuOptimizationOperation: null,
+    refreshProtectionStatus: async () => { assert.equal(cleanupCount, 1); assert.equal(context.backgroundChecks.paused, false); },
+    refreshManagedModel: async () => {}, refreshReputationSettings: async () => {},
     analysisLoadingMarkup: () => '', analysisIsVisible: () => true, analysisSection: () => 'analyse',
-    setAnalysisProgressVisual(session, percentage) { session.progressPercent = percentage; }, updateAnalysisProgress() {}, recordAnalysisDuration() {},
+    setAnalysisProgressVisual(session, percentage) { session.progressPercent = percentage; }, updateAnalysisProgress(session, check) {
+      if (check === 3) assert.equal(session.progressPercent, 100, 'All four checks complete only at 100%');
+      session.completedChecks = Array.from({ length: check + 1 }, (_, index) => index);
+    }, recordAnalysisDuration() {},
     analysisDurationEstimate: () => 900_000,
     createAnalysisProgress: () => ({ sample: () => ({ percentage: 1, hint: '15 minutes' }), enter() {}, setEstimate() {} }),
     window: {
-      setInterval: () => 1, clearInterval: () => { stoppedTimer++; },
-      setTimeout: (callback, delay) => { scheduledWaits++; assert.equal(delay, 650); finishSplash = callback; },
+      clearTimeout() {}, setInterval: () => 1, clearInterval: () => { stoppedTimer++; },
+      setTimeout: (callback, delay) => { scheduledWaits++; assert.equal(delay, 350); finishSplash = callback; },
     },
     listen: async (_, handler) => { eventHandler = handler; return () => {}; },
     invoke: (command) => {
@@ -53,11 +64,20 @@ async function verifyCompletion(cancelled = false, preparationOutcome = 'success
     renderDashboard: () => { rendered++; assert.equal(context.activeAnalysis.status, preparationOutcome === 'static-error' ? 'error' : 'complete'); },
   });
   vm.runInContext(compiled, context);
+  const background = deferred();
+  const backgroundRequest = context.backgroundChecks.run(() => background.promise);
+  await flush();
   const finished = context.startAnalysis('synthetic.eml', () => {
     technicalStarted = true;
     assert.ok(preparing, 'Warmup must start before technical checks');
+    assert.equal(context.backgroundChecks.paused, true, 'Background checks stay paused throughout analysis');
     return technical.promise;
   });
+  await flush();
+  assert.equal(technicalStarted, false, 'Existing protection checks finish before analysis starts');
+  assert.equal(preparing, false, 'Model warmup cannot overlap an existing background check');
+  background.resolve();
+  await backgroundRequest;
   await flush();
   assert.ok(technicalStarted, 'Technical checks must not wait for warmup');
   assert.equal(rendered, 0);
@@ -82,6 +102,7 @@ async function verifyCompletion(cancelled = false, preparationOutcome = 'success
   assert.equal(aiStarted, true, 'Normal AI path must also run after a warmup failure');
   for (let i = 0; i < 20; i++) eventHandler({ payload: { analysis_id: 'test-analysis', completed_check: i % 4 } });
   assert.equal(rendered, 0, 'Progress events must not reveal an unfinished result');
+  assert.deepEqual(Array.from(context.activeAnalysis.completedChecks), [0, 1, 2], 'Early native completion events leave the final assessment active');
   if (cancelled) context.activeAnalysis = null;
   now = 200;
   ai.resolve();

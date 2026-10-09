@@ -13,6 +13,7 @@ import time
 import unicodedata
 import base64
 import hashlib
+import re
 from pathlib import Path
 from contextlib import contextmanager
 
@@ -78,21 +79,32 @@ def local_records() -> list[dict]:
 
 
 def resolve_partner(name: str) -> dict | None:
-    key = brand_key(name)
-    matches = [entry for entry in local_records() if key in {brand_key(entry["brand"]), *map(brand_key, entry.get("aliases", []))}]
-    # An ambiguous alias is not a verified identity.
-    if matches:
-        return matches[0] if len(matches) == 1 else None
+    keys = [brand_key(name)]
+    # Resolve generic department/account suffixes after exact names. This is
+    # reference matching, never discovery or extraction of an unnamed brand.
+    role = r"(?:account|security|support|team|department|billing|payments|assistenza|sicurezza)"
+    shortened = re.sub(r"(?:\s+" + role + r"){1,3}$", "", keys[0]).strip()
+    if shortened and shortened != keys[0]:
+        keys.append(shortened)
+    local = local_records()
+    catalog_records = []
+    catalog = {}
     try:
         catalog = json.loads((Path(__file__).parent / "data" / "identity-catalog.json").read_text(encoding="utf-8"))
-        if not catalog["verified_at"] <= time.time() < catalog["expires_at"]:
-            return None
-        matches = [entry for entry in catalog["records"] if key in {brand_key(entry["brand"]), *map(brand_key, entry.get("aliases", []))}]
-        if len(matches) == 1:
-            return {**matches[0], "id": "catalog:" + brand_key(matches[0]["brand"]),
-                    "source": "maintained_catalog", "verified_at": catalog["verified_at"], "expires_at": catalog["expires_at"]}
+        if catalog["verified_at"] <= time.time() < catalog["expires_at"]:
+            catalog_records = catalog["records"]
     except (OSError, ValueError, KeyError, TypeError):
         pass
+    for key in keys:
+        for records, source in [(local, "local"), (catalog_records, "catalog")]:
+            matches = [entry for entry in records if key in {brand_key(entry["brand"]), *map(brand_key, entry.get("aliases", []))}]
+            if matches:
+                if len(matches) != 1:
+                    return None
+                if source == "local":
+                    return matches[0]
+                return {**matches[0], "id": "catalog:" + brand_key(matches[0]["brand"]),
+                        "source": "maintained_catalog", "verified_at": catalog["verified_at"], "expires_at": catalog["expires_at"]}
     return None
 
 

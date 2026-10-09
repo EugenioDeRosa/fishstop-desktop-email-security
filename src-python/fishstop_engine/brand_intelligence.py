@@ -360,7 +360,7 @@ def _entity_is_brand_candidate(entity: dict) -> bool:
     sources = {str(item.get("source") or "").lower() for item in (entity.get("occurrences") or [])}
     sender_anchored = "domain" in entity_types or bool(sources & {"sender", "sender domain"})
     grounded_claim = entity.get("verified_claim") is True and bool(
-        sources & {"sender", "subject", "body"}
+        sources & {"sender", "subject", "body", "attachment"}
     )
     return (sender_anchored or grounded_claim) and bool(entity_types & {"ORG", "DOMAIN"}) and not (
         _entity_is_only_postal_address_context(entity) or _entity_is_location_context(entity)
@@ -556,6 +556,7 @@ def assess_brand_coherence(report: dict, entities: list[dict]) -> list[dict]:
                         "official_website": websites[0] if websites else "", "official_websites": websites,
                         "official_domain": official_domains[0] if official_domains else "", "official_domains": official_domains,
                         "associated_domains": associated, "trusted_action_domains": [],
+                        "documented_action_relations": action_relations if partner else [],
                         "authorized_action_relations": action_relations if partner and authenticated and coherent else [],
                         "external_reply_domains": external_reply, "resolution_source": source,
                         "contacts": comparisons, "mismatches": mismatches, "status": status, "message": message,

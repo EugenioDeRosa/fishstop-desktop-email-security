@@ -173,6 +173,10 @@ def analyze_phi4(report_path: str) -> dict[str, Any]:
             total = int(event.get("total") or 0)
             if stage == "merge":
                 message = "Preparing the final assessment…"
+            elif stage == "context-resplit":
+                message = "Adjusting the analysis sections to fit the local model…"
+            elif stage == "identity":
+                message = "Verifying the identity represented by the message…"
             elif stage == "primary-complete":
                 message = "Reviewing important details…"
             elif stage == "verification":
@@ -183,7 +187,7 @@ def analyze_phi4(report_path: str) -> dict[str, Any]:
                 message = f"The AI model is analyzing email section {current} of {total}…"
             else:
                 message = "The AI model is analyzing the complete email…"
-            completed_check = 3 if stage == "merge" else 2 if stage == "primary-complete" else None
+            completed_check = 2 if stage in {"merge", "primary-complete"} else None
             _write_analysis_progress(stage, message, completed_check)
         if event.get("status") == "error":
             raise RuntimeError(str(event.get("message") or "Phi-4 analysis failed."))

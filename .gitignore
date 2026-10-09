@@ -22,6 +22,10 @@ __pycache__/
 
 # Email e storico locale potenzialmente sensibili
 data/raw/
+/evaluation/qwen-light-testset-v1/
+/evaluation/qwen-light-testset-v1.zip
+/output/local-email-inventory.json
+/output/local-email-candidates.json
 
 # Materiale locale della tesi: non fa parte del software pubblicato
 /*.docx

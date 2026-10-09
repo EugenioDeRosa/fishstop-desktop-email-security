@@ -69,7 +69,7 @@ class QrPaymentTests(unittest.TestCase):
         body = "Aquí está la cuenta bancaria: IBAN PT50 0035 0701 0000 8660 9300 8. Enviaré la información solicitada tan pronto como recibamos el comprobante de pago."
         result = assess({"body_clean": body, "body_context": "conversation_selection", "selected_target_body": body})
         self.assertEqual("pay_or_transfer", result["requested_action"])
-        self.assertEqual("review", result["final_verdict"])
+        self.assertEqual("phishing", result["final_verdict"])
         self.assertNotIn("changed", result["content_summary"])
 
     def test_iban_alone_and_received_receipt_are_not_payment_requests(self):

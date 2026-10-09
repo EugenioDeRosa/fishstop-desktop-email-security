@@ -1967,6 +1967,9 @@ fn analyze_ai_with_engine(
                 ollama_request_timeout_seconds(gpu_accelerated).to_string(),
             )
             .env("OLLAMA_KEEP_ALIVE", ollama_runtime::MODEL_KEEP_ALIVE);
+        if ollama_model == ollama_runtime::FAST_MODEL {
+            engine.env("FISHSTOP_IDENTITY_MODEL", ollama_model);
+        }
         let load_options = ollama_runtime::model_load_options(&app);
         if let Some(context) = load_options["num_ctx"].as_u64() {
             engine.env("OLLAMA_NUM_CTX", context.to_string());
@@ -2041,7 +2044,7 @@ async fn analyze_phi4(
         let session_id = analysis_id.clone();
         let session_cancellation = Arc::clone(&cancellation);
         model_session.run(&session_id, || session_cancellation.is_cancelled(&session_id), |needs_cleanup| {
-            let use_mlx = ollama_runtime::experimental_mlx_enabled();
+            let use_mlx = ollama_runtime::uses_mlx(&app);
             let mut loaded_model: Option<String> = None;
             let result = (|| {
                 if cancellation.is_cancelled(&analysis_id) {
@@ -2075,7 +2078,7 @@ async fn analyze_phi4(
                         stage: "model-ready".to_string(),
                         completed_check: Some(1),
                         message: if prepared.fine_tuned {
-                            "The fine-tuned Qwen model is ready. Analyzing content and intent…"
+                            "Performance mode is ready. Analyzing content and intent…"
                         } else {
                             "The local AI model is ready. Analyzing content and intent…"
                         }
@@ -2128,6 +2131,7 @@ fn cancel_analysis(
 
 #[tauri::command]
 async fn finish_analysis(
+    app: tauri::AppHandle,
     analysis_id: String,
     cancellation: tauri::State<'_, Arc<AnalysisCancellation>>,
     runtime: tauri::State<'_, Arc<Mutex<OllamaRuntime>>>,
@@ -2138,10 +2142,10 @@ async fn finish_analysis(
     let model_session = Arc::clone(&model_session);
     tauri::async_runtime::spawn_blocking(move || {
         let result = model_session.finish(&analysis_id, || {
-            if ollama_runtime::experimental_mlx_enabled() {
+            if ollama_runtime::uses_mlx(&app) {
                 ollama_runtime::stop_experimental_mlx(&runtime)
             } else {
-                ollama_runtime::unload_model(ollama_runtime::recommended_model())
+                ollama_runtime::unload_model(ollama_runtime::selected_model(&app))
             }
         });
         cancellation.finish(&analysis_id);
@@ -2166,7 +2170,7 @@ async fn prepare_analysis_ai(
     tauri::async_runtime::spawn_blocking(move || {
         model_session.run(&analysis_id, || cancellation.is_cancelled(&analysis_id), |needs_cleanup| {
             *needs_cleanup = true;
-            if ollama_runtime::experimental_mlx_enabled() {
+            if ollama_runtime::uses_mlx(&app) {
                 ollama_runtime::start_experimental_mlx(&app, &runtime)?;
             } else {
                 ollama_runtime::warm_selected_model(&app, &runtime)?;
@@ -2220,6 +2224,17 @@ async fn identity_registry(request: serde_json::Value) -> Result<serde_json::Val
         let _ = fs::remove_file(path);
         result
     }).await.map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn set_ai_mode(
+    app: tauri::AppHandle,
+    mode: String,
+    model_session: tauri::State<'_, Arc<analysis_model::AnalysisModel>>,
+) -> Result<(), String> {
+    let session = Arc::clone(&model_session);
+    tauri::async_runtime::spawn_blocking(move || session.while_idle(|| ollama_runtime::set_ai_mode(&app, &mode)))
+        .await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -2378,6 +2393,7 @@ fn main() {
             warm_ollama_model,
             optimize_cpu_performance,
             ollama_runtime_status,
+            set_ai_mode,
             identity_registry,
             install_default_ollama_model,
             remove_default_ollama_model,

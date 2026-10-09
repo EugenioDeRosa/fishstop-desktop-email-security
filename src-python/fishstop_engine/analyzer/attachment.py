@@ -687,6 +687,8 @@ def _pypdf_structural_scan(raw: bytes) -> tuple[Counter, dict]:
         "walked_nodes": 0,
         "walk_limit_reached": False,
         "uri_evidence": _empty_uri_evidence(),
+        "text_excerpt": "",
+        "text_extraction_status": "unavailable",
     }
 
     try:
@@ -708,6 +710,28 @@ def _pypdf_structural_scan(raw: bytes) -> tuple[Counter, dict]:
             stats["page_count"] = len(reader.pages)
         except Exception as exc:
             stats["parser_warnings"].append(f"Page count unavailable: {exc}")
+
+        # Reuse the parsed document to expose bounded, untrusted visible text
+        # for identity and intent analysis. No document actions are executed.
+        try:
+            texts = []
+            for page in list(reader.pages[:3]):
+                contents = page.get_contents()
+                if contents and len(contents.get_data()) > 2 * 1024 * 1024:
+                    stats["text_extraction_status"] = "partial"
+                    break
+                text = page.extract_text() or ""
+                if len(text) > 6000:
+                    stats["text_extraction_status"] = "partial"
+                texts.append(text[:6000])
+            joined = "\n".join(texts)
+            if len(joined) > 12000:
+                stats["text_extraction_status"] = "partial"
+            stats["text_excerpt"] = joined[:12000].strip()
+            if stats["text_extraction_status"] != "partial":
+                stats["text_extraction_status"] = "partial" if len(reader.pages) > 3 else "extracted" if stats["text_excerpt"] else "empty"
+        except Exception:
+            stats["text_extraction_status"] = "unavailable"
 
         try:
             fields = reader.get_fields() or {}
@@ -893,6 +917,8 @@ def analyze_pdf_security(raw: bytes) -> dict:
         "has_open_destination": structural_stats.get("has_open_destination"),
         "page_mode": structural_stats.get("page_mode"),
         "walked_nodes": structural_stats.get("walked_nodes"),
+        "text_excerpt": structural_stats.get("text_excerpt", ""),
+        "text_extraction_status": structural_stats.get("text_extraction_status", "unavailable"),
     }
 
 

@@ -102,9 +102,14 @@ def recover_mislabelled_utf7_html(value: str) -> str:
 
 def _parse_html_for_preview(html: str):
     try:
-        return BeautifulSoup(html, "lxml")
+        soup = BeautifulSoup(html, "lxml")
     except Exception:
         return BeautifulSoup(html, "html.parser")
+    # Malformed wrappers before <html> can make lxml nest the real body
+    # inside an inferred head. Removing that head would erase the message.
+    if soup.body is not None and soup.body.find_parent("head") is not None:
+        return BeautifulSoup(html, "html.parser")
+    return soup
 
 
 def _inline_style_properties(style: str) -> dict[str, str]:
@@ -200,7 +205,9 @@ def _sanitize_preview_soup(html: str, block_images: bool = True) -> str:
         if tag.name is None:
             continue
         if tag.name not in allowed_tags:
-            tag.decompose()
+            # Unknown presentation wrappers may contain the entire message.
+            # Active elements were removed above; preserve these children.
+            tag.unwrap()
             continue
         for attr in list(tag.attrs):
             attr_l = attr.lower()
@@ -246,10 +253,7 @@ def strip_html(html: str) -> str:
         return ""
 
     if _BS4_AVAILABLE:
-        try:
-            soup = BeautifulSoup(html, "lxml")
-        except Exception:
-            soup = BeautifulSoup(html, "html.parser")
+        soup = _parse_html_for_preview(html)
 
         for tag in soup(["script", "style", "head", "template", "svg", "math"]):
             tag.decompose()

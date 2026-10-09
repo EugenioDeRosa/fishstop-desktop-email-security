@@ -22,4 +22,7 @@ assert.ok(panel.innerHTML.includes('&lt;script&gt;'));
 render(container, { impersonation: { status: 'insufficient_data' } });
 assert.ok(panel.innerHTML.includes('Verification unavailable'));
 assert.ok(!panel.innerHTML.includes('<details'), 'No empty details are shown');
+render(container, { impersonation: { status: 'insufficient_data', decision: 'none', claimed_identity: 'Example Platform', claimed_role: 'third_party' } });
+assert.ok(panel.innerHTML.includes('named as a service or third party'));
+assert.ok(!panel.innerHTML.includes('Possible impersonation'));
 console.log('Identity panel checks passed: three concise states, hidden details, no empty diagnostics, escaped names.');

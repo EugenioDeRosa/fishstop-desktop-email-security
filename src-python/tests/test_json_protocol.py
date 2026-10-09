@@ -6,6 +6,8 @@ import io
 import json
 import sys
 import unittest
+import tempfile
+from pathlib import Path
 from unittest.mock import patch
 
 import main
@@ -25,6 +27,22 @@ class _BinaryInput:
 
 
 class JsonProtocolTests(unittest.TestCase):
+    def test_merge_and_identity_do_not_complete_final_assessment(self) -> None:
+        events = [
+            {"status": "progress", "stage": "merge"},
+            {"status": "progress", "stage": "identity"},
+            {"status": "ok", "analysis": {}},
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            report = Path(directory) / "report.json"
+            report.write_text("{}", encoding="utf-8")
+            with patch("fishstop_engine.analyzer.llm_context_analyzer.stream_phi4_email_analysis", return_value=iter(events)), patch.object(main, "_write_analysis_progress") as progress:
+                result = main.analyze_phi4(str(report))
+        self.assertEqual("ok", result["status"])
+        self.assertEqual(2, progress.call_args_list[0].args[2])
+        self.assertIsNone(progress.call_args_list[1].args[2])
+        self.assertIn("identity", progress.call_args_list[1].args[1])
+
     def test_output_is_utf8_independent_of_text_stream_encoding(self) -> None:
         output = _BinaryOutput()
         payload = {

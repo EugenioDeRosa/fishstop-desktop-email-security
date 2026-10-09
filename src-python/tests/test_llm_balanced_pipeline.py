@@ -2,7 +2,7 @@ import json
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -75,6 +75,96 @@ def _fake_stream(primary, audit=None, calls=None):
 
 
 class BalancedPipelineTests(unittest.TestCase):
+    def test_spanish_bank_details_and_pending_payment_proof_are_phishing(self):
+        body = (
+            "Buenos días Araceli,\nAquí está la cuenta bancaria:\n"
+            "*Caixa Geral*\n*IBAN: PT50 0035 0701 0000 8660 9300 8*\n*BIC: CGDIPTPL*\n"
+            "Enviaré la información solicitada tan pronto como recibamos el comprobante\n"
+            "de pago.\nEspero su pronta respuesta\nSaludos,\nMicaela Mamini"
+        )
+        for context in (None, "conversation_selection"):
+            with self.subTest(context=context):
+                soc = {"subject": "recogida de pedido", "body_for_ai": body, "links": [], "attachments": []}
+                if context:
+                    soc.update(body_context=context, selected_target_body=body)
+                result, _ = self._analyze(soc, _primary())
+                analysis = result["analysis"]
+                self.assertEqual("pay_or_transfer", analysis["requested_action"])
+                self.assertEqual("phishing", analysis["final_verdict"])
+                self.assertFalse(analysis["payment_destination_change"])
+                self.assertIn(analysis["intent_evidence"], " ".join(body.split()))
+
+    def test_bank_details_without_pending_payment_condition_are_not_phishing(self):
+        for suffix in ("", "Hemos recibido el comprobante de pago. Gracias."):
+            body = "IBAN: PT50 0035 0701 0000 8660 9300 8\n" + suffix
+            analysis = llm.apply_email_risk_policy(
+                {"body_for_ai": body, "links": [], "attachments": []}, _primary()
+            )
+            self.assertNotEqual("phishing", analysis["final_verdict"])
+
+    def test_payment_condition_in_unselected_history_does_not_override_target(self):
+        soc = {
+            "body_for_ai": "IBAN: PT50 0035 0701 0000 8660 9300 8\n"
+                "Enviaré la información tan pronto como recibamos el comprobante de pago.",
+            "selected_target_body": "Gracias, hemos recibido el pago.",
+            "body_context": "conversation_selection", "links": [], "attachments": [],
+        }
+        analysis = llm.apply_email_risk_policy(soc, _primary())
+        self.assertNotEqual("phishing", analysis["final_verdict"])
+
+    def test_backend_context_error_is_classified_without_retrying_other_400_errors(self):
+        for detail, expected in [("request (3103 tokens) exceeds the available context size (3072 tokens)", True), ("invalid model options", False)]:
+            response = MagicMock()
+            response.status_code = 400
+            response.json.return_value = {"error": json.dumps({"error": {"type": "exceed_context_size_error" if expected else "invalid_options", "message": detail}})}
+            response.raise_for_status.side_effect = llm.requests.exceptions.HTTPError(response=response)
+            response.__enter__.return_value = response
+            with patch.object(llm.requests, "post", return_value=response):
+                events = list(llm._stream_ollama([], "local-model", 10))
+            self.assertEqual(expected, events[-1].get("error_code") == "context_length_exceeded")
+
+    def test_context_rejection_resplits_only_failed_section_without_loss(self):
+        bodies = ["FIRST completed body", "SECOND rejected body containing the entire attachment"]
+        prompts = [(body, f"BODY: {body}") for body in bodies]
+        calls = []
+        fake_success = _fake_stream(_primary())
+
+        def stream(messages, model, timeout, **kwargs):
+            stage = kwargs.get("request_stage", "")
+            if stage.startswith("primary:"):
+                calls.append(messages[-1]["content"])
+                if len(calls) == 2:
+                    yield {"status": "error", "error_code": "context_length_exceeded", "message": "context overflow"}
+                    return
+            yield from fake_success(messages, model, timeout, **kwargs)
+
+        # Force a sufficiently large rejected body to exercise the real recovery.
+        bodies[1] = bodies[1] * 15
+        prompts[1] = (bodies[1], f"BODY: {bodies[1]}")
+        with patch.object(llm, "_build_complete_email_prompts", return_value=prompts), patch.object(llm, "_use_ollama", return_value=True), patch.object(llm, "_stream_ollama", side_effect=stream), patch.object(llm, "ANALYSIS_MODE", "fast"):
+            events = list(llm.stream_phi4_email_analysis({"body_for_ai": "ordinary update"}))
+        self.assertEqual("ok", events[-1]["status"])
+        self.assertEqual(4, len(calls))
+        self.assertEqual(1, sum(bodies[0] in call for call in calls))
+        middle = len(bodies[1]) // 2
+        self.assertIn(bodies[1][:middle], calls[2])
+        self.assertIn(bodies[1][middle:], calls[3])
+        self.assertTrue(any(event.get("stage") == "context-resplit" for event in events))
+
+    def test_context_recovery_is_bounded_for_unsplittable_section(self):
+        with patch.object(llm, "_use_ollama", return_value=True), patch.object(llm, "_stream_ollama", return_value=iter([{"status": "error", "error_code": "context_length_exceeded"}])):
+            events = list(llm.stream_phi4_email_analysis({"body_for_ai": "small body"}))
+        self.assertEqual("context_length_exceeded", events[-1]["error_code"])
+        self.assertIn("after splitting", events[-1]["message"])
+
+    def test_prompt_budget_accounts_for_attachment_and_preserves_tail(self):
+        soc = {"body_for_ai": "Message introduction", "attachments": [{"filename": "order.pdf", "pdf_security": {"text_excerpt": "PDF text " * 650 + "UNIQUE_ATTACHMENT_TAIL"}}]}
+        with patch.object(llm, "OLLAMA_NUM_CTX", 3072), patch.object(llm, "OLLAMA_NUM_PREDICT", 224):
+            parts = llm._build_complete_email_prompts(soc)
+        self.assertGreater(len(parts), 1)
+        self.assertTrue(any("UNIQUE_ATTACHMENT_TAIL" in prompt for _, prompt in parts))
+        self.assertTrue(all(len(body) < llm.PHI4_BODY_CHUNK_CHARS for body, _ in parts))
+
     def _analyze(self, soc, primary, audit=None):
         calls = []
         fake = _fake_stream(primary, audit=audit, calls=calls)
@@ -91,7 +181,7 @@ class BalancedPipelineTests(unittest.TestCase):
         self.assertEqual(events[-1]["status"], "ok")
         return events[-1], calls
 
-    def test_declared_organisation_is_reused_from_the_semantic_pass(self):
+    def test_grounded_primary_identity_survives_invalid_dedicated_response(self):
         result, calls = self._analyze(
             {
                 "from_": "Account Service <notice@example.net>",
@@ -103,7 +193,7 @@ class BalancedPipelineTests(unittest.TestCase):
             _primary(claimed_brand="PayPal"),
         )
 
-        self.assertEqual(calls, ["primary:1"])
+        self.assertEqual(calls, ["primary:1", "identity"])
         self.assertEqual(
             result["identity_analysis"]["entities"][0]["name"],
             "PayPal",
@@ -128,7 +218,7 @@ class BalancedPipelineTests(unittest.TestCase):
         self.assertEqual(result["identity_analysis"]["entities"], [])
         self.assertEqual(result["analysis"]["claimed_brand"], "")
 
-    def test_benign_information_uses_only_primary_pass(self):
+    def test_benign_information_uses_primary_and_identity_pass(self):
         result, calls = self._analyze(
             {
                 "subject": "Meeting notes",
@@ -144,8 +234,8 @@ class BalancedPipelineTests(unittest.TestCase):
             _primary(),
         )
 
-        self.assertEqual(calls, ["primary:1"])
-        self.assertEqual(result["performance"]["llm_calls"], 1)
+        self.assertEqual(calls, ["primary:1", "identity"])
+        self.assertEqual(result["performance"]["llm_calls"], 2)
         self.assertEqual(result["analysis"]["final_verdict"], "legitimate")
 
     def test_spf_path_conflict_without_dkim_is_not_strong_authentication(self):
@@ -389,7 +479,7 @@ class BalancedPipelineTests(unittest.TestCase):
             ),
         )
 
-        self.assertEqual(calls, ["primary:1"])
+        self.assertEqual(calls, ["primary:1", "identity"])
         self.assertTrue(result["analysis"]["payment_destination_change"])
         self.assertEqual(result["analysis"]["final_verdict"], "phishing")
 
@@ -411,7 +501,7 @@ class BalancedPipelineTests(unittest.TestCase):
             ),
         )
 
-        self.assertEqual(calls, ["primary:1"])
+        self.assertEqual(calls, ["primary:1", "identity"])
         self.assertEqual(result["analysis"]["requested_action"], "pay_or_transfer")
         self.assertEqual(result["analysis"]["intent_evidence"], body)
         self.assertEqual(result["analysis"]["final_verdict"], "phishing")
@@ -554,8 +644,8 @@ class BalancedPipelineTests(unittest.TestCase):
             audit=audit,
         )
 
-        self.assertEqual(calls, ["primary:1", "audit:intent+security_lure"])
-        self.assertEqual(result["performance"]["llm_calls"], 2)
+        self.assertEqual(calls, ["primary:1", "audit:intent+security_lure", "identity"])
+        self.assertEqual(result["performance"]["llm_calls"], 3)
         self.assertEqual(result["analysis"]["requested_action"], "verify_account")
         self.assertEqual(result["analysis"]["final_verdict"], "review")
         self.assertEqual(result["identity_analysis"]["impersonation"]["score"], 0,
@@ -594,7 +684,7 @@ class BalancedPipelineTests(unittest.TestCase):
             ),
         )
 
-        self.assertEqual(calls, ["primary:1"])
+        self.assertEqual(calls, ["primary:1", "identity"])
         self.assertEqual(result["analysis"]["requested_action"], "claim_reward")
         self.assertTrue(result["analysis"]["urgency_targets_risky_action"])
         self.assertEqual(result["analysis"]["content_risk"], "suspicious")

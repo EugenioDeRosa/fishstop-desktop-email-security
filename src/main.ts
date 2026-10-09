@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
+import { createBackgroundChecks } from "./background-checks";
 import { createStatusCache } from "./status-cache";
 import { analysisDurationEstimate, recordAnalysisDuration, createAnalysisProgress } from "./analysis-progress";
 import { currentTheme, initializeTheme, setTheme } from "./theme";
@@ -199,6 +200,8 @@ type ConversationSelection = { target_ids: string[]; context_ids: string[]; prio
 let managedModelOperation: ManagedModelOperation | null = null;
 let cpuOptimizationOperation: CpuOptimizationProgress | null = null;
 let ollamaRuntimeSnapshot: OllamaRuntimeStatus | null = null;
+const backgroundChecks = createBackgroundChecks();
+let protectionRefreshTimer: number | undefined;
 const runtimeStatusCache = createStatusCache(() => invoke<OllamaRuntimeStatus>("ollama_runtime_status"), 15_000);
 const reputationStatusCaches = new Map<string, ReturnType<typeof createStatusCache<ReputationKeyStatus>>>();
 function reputationStatusCache(user: AuthUser) {
@@ -251,18 +254,24 @@ async function migrateLegacyReputationKeys(user: AuthUser): Promise<void> {
 }
 
 async function refreshReputationSettings(user: AuthUser, force = false): Promise<void> {
+  return backgroundChecks.run(() => refreshReputationSettingsNow(user, force));
+}
+
+async function refreshReputationSettingsNow(user: AuthUser, force = false): Promise<void> {
   const card = document.querySelector<HTMLElement>(".settings-reputation");
   if (!card) return;
   try {
     const cache = reputationStatusCache(user);
     const keys = await cache.load(force);
     if (!card.isConnected || cache.peek() !== keys) return;
-    const configured = Number(keys.virustotal) + Number(keys.abuseipdb) + Number(keys.otx);
     (["virustotal", "abuseipdb", "otx"] as const).forEach((provider) => {
       const ready = keys[provider];
       const row = card.querySelector<HTMLElement>(`li[data-reputation-provider="${provider}"]`);
       if (!row) return;
-      row.className = ready ? "ready" : "missing";
+      row.classList.toggle("ready", ready);
+      row.classList.toggle("missing", !ready);
+      const edit = row.querySelector<HTMLButtonElement>(".edit-reputation-key");
+      if (edit) edit.textContent = ready ? "Edit" : "Add";
       const icon = row.querySelector(":scope > i"); if (icon) icon.textContent = ready ? "✓" : "—";
       const detail = row.querySelector(".credential-static-copy small"); if (detail) detail.textContent = ready ? "Stored in the system keychain" : "Key not configured";
       const status = row.querySelector(":scope > b"); if (status) status.textContent = ready ? "Ready" : "Required";
@@ -275,8 +284,6 @@ async function refreshReputationSettings(user: AuthUser, force = false): Promise
       const input = row.querySelector<HTMLInputElement>("input");
       if (input) input.placeholder = ready ? "Enter a new key or leave unchanged" : `Enter the ${provider === "otx" ? "OTX" : provider === "virustotal" ? "VirusTotal" : "AbuseIPDB"} token`;
     });
-    const edit = card.querySelector<HTMLButtonElement>("#edit-reputation-keys");
-    if (edit) edit.textContent = configured ? "Edit keys" : "Configure keys";
   } catch (error) {
     const status = card.querySelector<HTMLElement>("#settings-status");
     console.error("Secure storage unavailable", error);
@@ -289,11 +296,11 @@ function setProtectionStatus(element: HTMLElement, tone: ProtectionTone, message
   element.querySelector("span")!.textContent = message;
 }
 
-async function resolveProtectionStatus(user: AuthUser): Promise<ProtectionStatusSnapshot> {
+async function resolveProtectionStatus(user: AuthUser, force = false): Promise<ProtectionStatusSnapshot> {
   try {
     const [engine, runtime, keys] = await Promise.all([
       invoke<LocalEngineStatus>("local_engine_status"),
-      runtimeStatusCache.load(),
+      runtimeStatusCache.load(force),
       reputationStatusCache(user).load(),
     ]);
     ollamaRuntimeSnapshot = runtime;
@@ -317,19 +324,37 @@ async function resolveProtectionStatus(user: AuthUser): Promise<ProtectionStatus
 }
 
 async function refreshProtectionStatus(user: AuthUser, force = false): Promise<void> {
+  window.clearTimeout(protectionRefreshTimer);
   const element = document.querySelector<HTMLElement>("[data-protection-status]");
   if (!element) return;
-  if (!force && protectionStatusSnapshot?.userSub === user.sub) {
-    setProtectionStatus(element, protectionStatusSnapshot.tone, protectionStatusSnapshot.message);
-    return;
-  }
-  setProtectionStatus(element, "checking", "Checking protection…");
-  if (!protectionStatusRequest) protectionStatusRequest = resolveProtectionStatus(user);
-  const snapshot = await protectionStatusRequest;
-  protectionStatusRequest = null;
-  protectionStatusSnapshot = snapshot;
-  if (element.isConnected) setProtectionStatus(element, snapshot.tone, snapshot.message);
+  const cached = protectionStatusSnapshot?.userSub === user.sub ? protectionStatusSnapshot : null;
+  if (cached) setProtectionStatus(element, cached.tone, cached.message);
+  else if (backgroundChecks.paused) setProtectionStatus(element, "checking", "Analysis in progress");
+  if (backgroundChecks.paused || document.hidden) return;
+  await backgroundChecks.run(async () => {
+    if (force || !cached) {
+      if (!cached) setProtectionStatus(element, "checking", "Checking protection…");
+      const request = protectionStatusRequest ?? resolveProtectionStatus(user, force);
+      protectionStatusRequest = request;
+      const snapshot = await request;
+      if (protectionStatusRequest === request) protectionStatusRequest = null;
+      if (storedUser()?.sub !== snapshot.userSub) return;
+      protectionStatusSnapshot = snapshot;
+      const current = document.querySelector<HTMLElement>("[data-protection-status]");
+      if (current) setProtectionStatus(current, snapshot.tone, snapshot.message);
+    }
+    if (!backgroundChecks.paused && element.isConnected) {
+      protectionRefreshTimer = window.setTimeout(() => void refreshProtectionStatus(user, true),
+        protectionStatusSnapshot?.tone === "error" ? 30_000 : 60_000);
+    }
+  });
 }
+
+document.addEventListener("visibilitychange", () => {
+  window.clearTimeout(protectionRefreshTimer);
+  const user = storedUser();
+  if (!document.hidden && user) void refreshProtectionStatus(user, true);
+});
 
 function analysisFingerprint(report: AnalysisReport): string {
   if (report.eml_sha256) return `sha256:${report.eml_sha256}`;
@@ -2350,7 +2375,7 @@ function renderAiPanels(container: HTMLElement): void {
 
 function setAiPanel(container: HTMLElement, engine: "identity" | "phi4", title: string, message: string, state: "loading" | "ok" | "error"): void {
   const panel = container.querySelector<HTMLElement>(`[data-ai-panel="${engine}"]`);
-  if (panel) panel.innerHTML = `<p class="page-kicker">LOCAL AI</p><h3>${escapeHtml(title)}</h3><p class="ai-${state}">${escapeHtml(message)}</p>`;
+  if (panel) panel.innerHTML = `<p class="page-kicker">${engine === "identity" ? "SENDER IDENTITY" : "LOCAL AI"}</p><h3>${escapeHtml(title)}</h3><p class="ai-${state}">${escapeHtml(message)}</p>`;
 }
 
 function setIdentityPanel(container: HTMLElement, analysis: NonNullable<AnalysisReport["identity_analysis"]>): void {
@@ -2364,6 +2389,7 @@ function setIdentityPanel(container: HTMLElement, analysis: NonNullable<Analysis
   const brand = assessment?.claimed_identity || analysis.entities?.find(item => item.name)?.name || "";
   const message = verified ? `${brand || "The sender"} matches the documented company identity.`
     : suspicious ? `${brand || "The claimed company"} does not match the sender or requested destination.`
+    : brand && ["mention", "third_party"].includes(assessment?.claimed_role || "") ? `${brand} is named as a service or third party. The message does not establish the sender's identity.`
     : brand ? `${brand} identified. The sender could not be confirmed.` : "The claimed company could not be identified reliably.";
   const reference = analysis.coherence?.find(item => item.brand === brand);
   const domains = reference?.official_domains || [];
@@ -2448,6 +2474,19 @@ function setPhiSemanticPanel(container: HTMLElement, analysis: NonNullable<NonNu
   panel.innerHTML = `<p class="page-kicker">LOCAL AI</p><h3>Content summary</h3><p class="semantic-summary">${escapeHtml(contentSummary)}</p>${signals.length || details.length || signalEvidence ? `<details class="semantic-details"><summary>Reasoning and evidence <span>${signals.length + details.length + Number(Boolean(signalEvidence))}</span></summary>${signals.length ? `<p><b>Signals:</b> ${escapeHtml(signals.map(semanticLabel).join(" · "))}</p>` : ""}${signalEvidence ? `<p><b>Context:</b> ${escapeHtml(signalEvidence)}</p>` : ""}${details.length ? `<ul>${details.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>` : ""}</details>` : ""}<small class="semantic-meta">${durationMs ? `${(durationMs / 1000).toFixed(1)} s · ` : ""}${passSummary}${corroboration.supports_decision ? "Supporting evidence is available" : "Review the available message details"}</small>`;
 }
 
+function localAiErrorMessage(error: unknown): string {
+  const detail = String(error instanceof Error ? error.message : error);
+  if (/exceed_context_size|exceeds.*context|context.*too small|context_length_exceeded/i.test(detail))
+    return "This message exceeds the local model's context capacity after splitting. A larger AI context is required.";
+  if (/timeout|timed out|time budget/i.test(detail))
+    return "The local AI exceeded the analysis time limit before completing this message.";
+  if (/unreachable|unavailable|not.*installed|model.*not found/i.test(detail))
+    return "The local AI model is unavailable. Check its installation in Settings.";
+  if (/invalid.*(?:structured|response)|valid JSON/i.test(detail))
+    return "The local AI returned an incomplete assessment for this message.";
+  return "The local AI could not complete this message. The technical checks remain available.";
+}
+
 async function runAiAnalysis(user: AuthUser, report: AnalysisReport, recordId: string | null, container: HTMLElement, startedAt: number, analysisId: string, isCurrent: () => boolean, onSettled?: (engine: "identity" | "phi4" | "content-summary" | "summary") => void, onRuntime?: (runtime: OllamaRuntimeStatus | null) => void): Promise<void> {
   // Runtime inspection is presentation metadata. The native analysis command
   // chooses and prepares the model itself; do not make it wait for another probe.
@@ -2472,9 +2511,9 @@ async function runAiAnalysis(user: AuthUser, report: AnalysisReport, recordId: s
   }).catch((error) => {
     if (!isCurrent()) return;
     console.error("Local AI analysis failed", error);
-    const message = "The local AI analysis could not be completed. Please try again.";
-    report.identity_analysis = { status: "error", message };
-    setAiPanel(container, "identity", "Analysis unavailable", message, "error");
+    const message = localAiErrorMessage(error);
+    report.identity_analysis = { status: "error", message: "Identity verification depends on the AI assessment, which could not be completed." };
+    setAiPanel(container, "identity", "Identity verification unavailable", "Identity verification depends on the AI assessment, which could not be completed.", "error");
     onSettled?.("identity");
     report.phi4_analysis = { status: "error", message };
     setAiPanel(container, "phi4", "Analysis unavailable", message, "error");
@@ -2510,7 +2549,7 @@ function restoreAiAnalysis(report: AnalysisReport, container: HTMLElement): void
   const identity = report.identity_analysis;
   if (identity) {
     if (identity.status === "ok") setIdentityPanel(container, identity);
-    else setAiPanel(container, "identity", "Analysis unavailable", identity.message || "Identity analysis error", "error");
+    else setAiPanel(container, "identity", "Identity verification unavailable", identity.message || "Identity analysis error", "error");
   }
   const phi4 = report.phi4_analysis;
   if (phi4) {
@@ -2694,6 +2733,10 @@ function renderMailboxMessages(state: HTMLElement, user: AuthUser, snapshot: Mai
 }
 
 async function refreshMailboxPanel(user: AuthUser, force = false): Promise<void> {
+  return backgroundChecks.run(() => refreshMailboxPanelNow(user, force));
+}
+
+async function refreshMailboxPanelNow(user: AuthUser, force = false): Promise<void> {
   const panel = document.querySelector<HTMLElement>("#inbox-intake");
   const state = document.querySelector<HTMLElement>("#inbox-state");
   if (!panel || !state) return;
@@ -2799,14 +2842,13 @@ function contentFor(section: Section, user: AuthUser): string {
   if (section === "statistics") return `<div class="page-heading statistics-heading"><div><p class="page-kicker">RISK OVERVIEW</p><h1>Statistics</h1><p>Signals, investigation activity and performance for this account.</p></div><div class="statistics-filter"><span>Period</span><div class="statistics-period-menu"><button class="statistics-period-trigger" id="statistics-period-trigger" type="button" aria-haspopup="listbox" aria-controls="statistics-period-options" aria-expanded="false">${periodLabels[selectedPeriod]}<i aria-hidden="true"></i></button><div class="statistics-period-options" id="statistics-period-options" role="listbox" aria-label="Statistics period" hidden>${periodChoices}</div></div></div></div><section class="metrics stats-metrics"><article><span>Emails analysed</span><strong>${filteredHistory.length}</strong><small>${periodLabels[selectedPeriod]}</small></article><article><span>Average analysis time</span><strong>${formatDuration(averageDuration)}</strong><small>${timedAnalyses.length ? `Based on ${timedAnalyses.length} completed analyses` : "Available after new analyses"}</small></article><article><span>Indicators copied</span><strong>${filteredCopyEvents.length}</strong><small>Copied individually from the Indicators section</small></article></section><section class="stats-layout"><article class="risk-breakdown"><div><p class="page-kicker">DISTRIBUTION</p><h2>Analysis outcomes</h2></div><div class="risk-bars"><div><span>High risk <b>${highRiskCount}</b></span><i><em class="high" style="width:${filteredHistory.length ? (highRiskCount / filteredHistory.length) * 100 : 0}%"></em></i></div><div><span>To review <b>${mediumRiskCount}</b></span><i><em class="medium" style="width:${filteredHistory.length ? (mediumRiskCount / filteredHistory.length) * 100 : 0}%"></em></i></div><div><span>Likely legitimate <b>${clearCount}</b></span><i><em class="clear" style="width:${filteredHistory.length ? (clearCount / filteredHistory.length) * 100 : 0}%"></em></i></div></div></article><article class="activity-card"><div><p class="page-kicker">ACTIVITY</p><h2>Last 7 days</h2></div><div class="activity-chart">${activity.map((item) => `<div><i style="height:${Math.max(5, (item.count / maxActivity) * 100)}%" title="${item.count} analyses"></i><span>${item.label}</span></div>`).join("")}</div></article></section><section class="risk-reasons"><div><p class="page-kicker">RISK PATTERNS</p><h2>Top risk reasons</h2><p>Signals that appeared most often in the selected period.</p></div><ol>${reasonItems}</ol></section>`;
   if (section === "settings") {
     const keys = reputationKeys(user);
-    const reputationReady = Boolean(keys.virustotal || keys.abuseipdb || keys.otx);
-    const keyRow = (provider: "virustotal" | "abuseipdb" | "otx", name: string, value: boolean) => `<li class="${value ? "ready" : "missing"}" data-reputation-provider="${provider}"><i aria-hidden="true">${value ? "✓" : "—"}</i><div class="credential-static-copy"><strong>${name}</strong><small>${value ? "Stored in the system keychain" : "Key not configured"}</small></div><label class="credential-inline-field"><span>${name}</span><input form="reputation-settings" name="${provider}" type="password" autocomplete="new-password" aria-label="${name}" placeholder="${value ? "Enter a new key or leave unchanged" : `Enter the ${provider === "otx" ? "OTX" : provider === "virustotal" ? "VirusTotal" : "AbuseIPDB"} token`}" /></label><b>${value ? "Ready" : "Required"}</b><button class="remove-reputation-key" type="button" data-remove-reputation-key="${provider}" aria-label="Remove ${name}" ${value ? "" : "hidden"}>Remove</button></li>`;
+    const keyRow = (provider: "virustotal" | "abuseipdb" | "otx", name: string, value: boolean) => `<li class="${value ? "ready" : "missing"}" data-reputation-provider="${provider}"><i aria-hidden="true">${value ? "✓" : "—"}</i><div class="credential-static-copy"><strong>${name}</strong><small>${value ? "Stored in the system keychain" : "Key not configured"}</small></div><label class="credential-inline-field"><span>${name}</span><input form="reputation-settings" name="${provider}" type="password" autocomplete="new-password" aria-label="${name}" placeholder="${value ? "Enter a new key or leave unchanged" : `Enter the ${provider === "otx" ? "OTX" : provider === "virustotal" ? "VirusTotal" : "AbuseIPDB"} token`}" /></label><b>${value ? "Ready" : "Required"}</b><div class="credential-row-actions"><button class="soft-action edit-reputation-key" type="button" data-edit-reputation-key="${provider}" aria-label="Edit or add ${name}" aria-expanded="false">${value ? "Edit" : "Add"}</button><button class="remove-reputation-key" type="button" data-remove-reputation-key="${provider}" aria-label="Remove ${name}" ${value ? "" : "hidden"}>Remove</button></div></li>`;
     return `<div class="page-heading"><div><p class="page-kicker">LOCAL CONFIGURATION</p><h1>Settings</h1><p>Manage security services, local AI and appearance preferences.</p></div></div>
       <div class="settings-grid">
         <div class="settings-column">
           <section class="settings-card settings-reputation">
             <p class="page-kicker">EXTERNAL INTELLIGENCE</p>
-            <div class="settings-card-heading"><h2>Reputation</h2><button class="soft-action edit-credentials" id="edit-reputation-keys" type="button" aria-controls="reputation-settings" aria-expanded="false">${reputationReady ? "Edit keys" : "Configure keys"}</button></div>
+            <div class="settings-card-heading"><h2>Reputation</h2></div>
             <p class="settings-note">Check links, sender domains, public IPs and attachment hashes against security intelligence. Add your API keys to enable each provider. Spamhaus ZEN is the keyless fallback for public IPs. Email content is never sent.</p>
             <ul class="credential-list">${keyRow("virustotal", "VirusTotal API key", keys.virustotal)}${keyRow("abuseipdb", "AbuseIPDB API key", keys.abuseipdb)}${keyRow("otx", "AlienVault OTX API key", keys.otx)}</ul>
             <form id="reputation-settings"><div class="credential-edit-actions"><button class="primary-action" type="submit">Save changes</button><button class="cancel-credentials" id="cancel-reputation-edit" type="button">Cancel</button></div><span id="settings-status" aria-live="polite"></span></form>
@@ -2858,8 +2900,8 @@ function contentFor(section: Section, user: AuthUser): string {
 function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
   removeStatisticsMenuDismissal?.();
   removeStatisticsMenuDismissal = null;
-  if (!analysisHistoryReady.has(user.sub)) {
-    void ensureAnalysisHistory(user).then(() => {
+  if (!backgroundChecks.paused && !analysisHistoryReady.has(user.sub)) {
+    void backgroundChecks.run(() => ensureAnalysisHistory(user)).then(() => {
       if (storedUser()?.sub === user.sub) renderDashboard(user, section);
     });
   }
@@ -2879,7 +2921,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       restoreAiAnalysis(active.report, result);
     }
   }
-  void migrateLegacyReputationKeys(user)
+  void backgroundChecks.run(() => migrateLegacyReputationKeys(user))
     .catch(() => { /* Legacy values remain available for a later migration attempt. */ })
     .finally(() => {
       void refreshProtectionStatus(user);
@@ -2999,27 +3041,31 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       actions.querySelector<HTMLButtonElement>('button[type="submit"]')?.insertAdjacentHTML("afterend", '<button class="cancel-credentials" id="cancel-reputation-edit" type="button">Cancel</button>');
     }
   }
-  document.querySelector<HTMLButtonElement>("#edit-reputation-keys")?.setAttribute("aria-expanded", "false");
-  document.querySelector<HTMLButtonElement>("#edit-reputation-keys")?.addEventListener("click", () => {
-    document.querySelector<HTMLFormElement>("#reputation-settings")?.classList.add("is-editing");
+  const closeCredentialEditor = () => {
+    document.querySelectorAll<HTMLElement>(".credential-list li.is-editing-key").forEach((row) => row.classList.remove("is-editing-key"));
+    document.querySelectorAll<HTMLButtonElement>(".edit-reputation-key").forEach((button) => button.setAttribute("aria-expanded", "false"));
+    inlineCredentialForm?.classList.remove("is-editing");
+    document.querySelector<HTMLElement>(".settings-reputation")?.classList.remove("is-editing-credentials");
+    inlineCredentialForm?.reset();
+  };
+  document.querySelectorAll<HTMLButtonElement>(".edit-reputation-key").forEach((button) => button.addEventListener("click", () => {
+    closeCredentialEditor();
+    const row = button.closest<HTMLElement>("li[data-reputation-provider]");
+    row?.classList.add("is-editing-key");
+    inlineCredentialForm?.classList.add("is-editing");
     document.querySelector<HTMLElement>(".settings-reputation")?.classList.add("is-editing-credentials");
-    document.querySelector<HTMLButtonElement>("#edit-reputation-keys")?.setAttribute("aria-expanded", "true");
+    button.setAttribute("aria-expanded", "true");
     const status = document.querySelector<HTMLElement>("#settings-status");
     if (status) status.textContent = "";
-    document.querySelector<HTMLInputElement>('.credential-inline-field input')?.focus();
-  });
+    row?.querySelector<HTMLInputElement>("input")?.focus();
+  }));
   document.querySelector<HTMLButtonElement>("#cancel-reputation-edit")?.addEventListener("click", () => {
-    const form = document.querySelector<HTMLFormElement>("#reputation-settings");
-    form?.classList.remove("is-editing");
-    document.querySelector<HTMLElement>(".settings-reputation")?.classList.remove("is-editing-credentials");
-    form?.reset();
-    document.querySelector<HTMLButtonElement>("#edit-reputation-keys")?.setAttribute("aria-expanded", "false");
+    closeCredentialEditor();
     const status = document.querySelector<HTMLElement>("#settings-status");
     if (status) status.textContent = "";
   });
   document.querySelector<HTMLFormElement>("#reputation-settings")?.addEventListener("submit", (event) => {
     event.preventDefault();
-    const formElement = event.currentTarget as HTMLFormElement;
     const inlineValue = (provider: "virustotal" | "abuseipdb" | "otx") => String(document.querySelector<HTMLInputElement>(`.credential-inline-field input[name="${provider}"]`)?.value || "").trim();
     const virustotal = inlineValue("virustotal");
     const abuseipdb = inlineValue("abuseipdb");
@@ -3028,10 +3074,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
     if (status) status.textContent = "Saving in the system keychain…";
     void invoke("save_reputation_keys", { userSub: user.sub, virustotal, abuseipdb, otx }).then(async () => {
       if (status) status.textContent = "Credentials saved securely.";
-      formElement.reset();
-      formElement.classList.remove("is-editing");
-      document.querySelector<HTMLElement>(".settings-reputation")?.classList.remove("is-editing-credentials");
-      document.querySelector<HTMLButtonElement>("#edit-reputation-keys")?.setAttribute("aria-expanded", "false");
+      closeCredentialEditor();
       await refreshReputationSettings(user, true);
       void refreshProtectionStatus(user, true);
     }).catch((error) => { console.error("Could not save credentials", error); if (status) status.textContent = "Could not save the settings. Please try again."; });
@@ -3076,7 +3119,10 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
     }
   });
   const machineProfile = document.querySelector<HTMLElement>("#machine-profile");
-  if (machineProfile) machineProfile.innerHTML = `<dl><div><dt>System</dt><dd id="machine-system">Reading…</dd></div><div><dt>Processor</dt><dd id="machine-processor">Reading…</dd></div><div><dt>Memory</dt><dd id="machine-memory">Reading…</dd></div><div><dt>Execution</dt><dd id="machine-execution">Reading…</dd></div><div class="machine-model-row" id="machine-model-row"><dt>Selected model</dt><dd><div class="machine-model-heading"><strong id="machine-model-name">Checking…</strong><span class="model-status-badge" id="model-status-badge" hidden></span><button class="model-remove-action" id="remove-managed-qwen" type="button" aria-haspopup="dialog" aria-controls="remove-model-dialog" hidden>Remove</button></div><small id="managed-model-status">Checking the bundled AI runtime…</small><div class="managed-model-progress" id="managed-model-progress" hidden><div><span id="managed-model-progress-label">Preparing download…</span><strong id="managed-model-progress-value">0%</strong></div><div class="managed-model-progress-track" id="managed-model-progress-track" role="progressbar" aria-label="AI model download progress" aria-valuemin="0" aria-valuemax="100"><i id="managed-model-progress-fill"></i></div></div><div class="machine-model-actions"><button class="primary-action" id="install-managed-qwen" type="button" disabled>Checking…</button></div></dd></div></dl><p class="fine-tuned-model-status" id="fine-tuned-model-status" aria-live="polite"></p><div class="execution-guidance" id="execution-guidance"><p id="execution-guidance-message">Reading the local acceleration profile…</p><section class="cpu-optimization" id="cpu-optimization" hidden><div class="cpu-optimization-heading"><span class="cpu-optimization-mark" aria-hidden="true"><i></i><i></i><i></i></span><div><p class="page-kicker">CPU PERFORMANCE</p><h4>Optimize this computer</h4></div></div><p>FishStop will benchmark the local model with a short sample text and save the fastest CPU setting for future analyses. The text and results never leave this device.</p><div class="cpu-optimization-progress" id="cpu-optimization-progress" hidden><span id="cpu-optimization-progress-label">Preparing the local benchmark…</span><div role="progressbar" aria-label="CPU optimization progress" aria-valuemin="0" aria-valuemax="100" id="cpu-optimization-progress-track"><i id="cpu-optimization-progress-fill"></i></div></div><p class="cpu-optimization-result" id="cpu-optimization-result"></p><button class="soft-action" id="optimize-cpu-performance" type="button">Optimize CPU performance</button></section></div>`;
+  if (machineProfile) machineProfile.innerHTML = `<fieldset class="ai-mode-picker"><legend>Analysis mode</legend><label><input type="radio" name="ai-mode" value="fast" disabled><span><strong>Fast</strong><small>Lighter analysis, lower memory use.</small></span></label><label><input type="radio" name="ai-mode" value="performance" disabled><span><strong>Performance</strong><small>Fine-tuned for deeper email analysis.</small></span></label></fieldset><p id="ai-mode-status" role="status"></p><dl><div><dt>System</dt><dd id="machine-system">Reading…</dd></div><div><dt>Processor</dt><dd id="machine-processor">Reading…</dd></div><div><dt>Memory</dt><dd id="machine-memory">Reading…</dd></div><div><dt>Execution</dt><dd id="machine-execution">Reading…</dd></div><div class="machine-model-row" id="machine-model-row"><dt>Selected model</dt><dd><div class="machine-model-heading"><strong id="machine-model-name">Checking…</strong><span class="model-status-badge" id="model-status-badge" hidden></span><button class="model-remove-action" id="remove-managed-qwen" type="button" aria-haspopup="dialog" aria-controls="remove-model-dialog" hidden>Remove</button></div><small id="managed-model-status">Checking the bundled AI runtime…</small><div class="managed-model-progress" id="managed-model-progress" hidden><div><span id="managed-model-progress-label">Preparing download…</span><strong id="managed-model-progress-value">0%</strong></div><div class="managed-model-progress-track" id="managed-model-progress-track" role="progressbar" aria-label="AI model download progress" aria-valuemin="0" aria-valuemax="100"><i id="managed-model-progress-fill"></i></div></div><div class="machine-model-actions"><button class="primary-action" id="install-managed-qwen" type="button" disabled>Checking…</button></div></dd></div></dl><p class="fine-tuned-model-status" id="fine-tuned-model-status" aria-live="polite"></p><div class="execution-guidance" id="execution-guidance"><p id="execution-guidance-message">Reading the local acceleration profile…</p><section class="cpu-optimization" id="cpu-optimization" hidden><div class="cpu-optimization-heading"><span class="cpu-optimization-mark" aria-hidden="true"><i></i><i></i><i></i></span><div><p class="page-kicker">CPU PERFORMANCE</p><h4>Optimize this computer</h4></div></div><p>FishStop will benchmark the local model with a short sample text and save the fastest CPU setting for future analyses. The text and results never leave this device.</p><div class="cpu-optimization-progress" id="cpu-optimization-progress" hidden><span id="cpu-optimization-progress-label">Preparing the local benchmark…</span><div role="progressbar" aria-label="CPU optimization progress" aria-valuemin="0" aria-valuemax="100" id="cpu-optimization-progress-track"><i id="cpu-optimization-progress-fill"></i></div></div><p class="cpu-optimization-result" id="cpu-optimization-result"></p><button class="soft-action" id="optimize-cpu-performance" type="button">Optimize CPU performance</button></section></div>`;
+  let aiModeChanging = false;
+  const aiModeControls = [...document.querySelectorAll<HTMLInputElement>('input[name="ai-mode"]')];
+  const aiModeStatus = document.querySelector<HTMLElement>("#ai-mode-status");
   const machineSystem = document.querySelector<HTMLElement>("#machine-system");
   const machineProcessor = document.querySelector<HTMLElement>("#machine-processor");
   const machineMemory = document.querySelector<HTMLElement>("#machine-memory");
@@ -3107,6 +3153,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
     const percent = cpuOptimizationOperation.total > 0
       ? Math.round(Math.max(0, cpuOptimizationOperation.candidate - 1) / cpuOptimizationOperation.total * 100)
       : 0;
+    aiModeControls.forEach(control => control.disabled = true);
     optimizeCpuPerformance.disabled = true;
     optimizeCpuPerformance.textContent = "Optimizing CPU…";
     cpuOptimizationProgress.hidden = false;
@@ -3117,6 +3164,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
     if (removeManagedQwen) removeManagedQwen.disabled = true;
   };
   const renderManagedOperation = (): boolean => {
+    aiModeControls.forEach(control => control.disabled = aiModeChanging || !!managedModelOperation || !!cpuOptimizationOperation);
     if (!managedModelOperation) {
       if (managedProgress) {
         managedProgress.hidden = true;
@@ -3160,22 +3208,29 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
   };
   const renderRuntimeStatus = (runtime: OllamaRuntimeStatus) => {
       if (!managedModelStatus || !installManagedQwen || !removeManagedQwen) return;
+      const fast = runtime.model === "qwen3:1.7b-q4_K_M";
+      const modeName = fast ? "Fast" : "Performance";
+      for (const control of aiModeControls) {
+        control.checked = control.value === (fast ? "fast" : "performance");
+        control.disabled = aiModeChanging || !!managedModelOperation || !!cpuOptimizationOperation;
+      }
       const memory = runtime.memory_bytes ? `${(runtime.memory_bytes / 1024 ** 3).toFixed(1)} GB` : "Unavailable";
       const usesMlx = /mlx/i.test(runtime.accelerator);
       const gpuAccelerated = runtime.loaded_on_gpu || usesMlx;
+      const gpuAvailable = !runtime.cpu_only;
       if (machineSystem) machineSystem.textContent = `${runtime.platform} · ${runtime.architecture}`;
       if (machineProcessor) machineProcessor.textContent = runtime.cpu;
       if (machineMemory) machineMemory.textContent = memory;
       if (machineExecution) machineExecution.textContent = runtime.accelerator + (runtime.loaded_on_gpu ? " · accelerated" : "");
       if (renderManagedOperation()) return;
       if (fineTunedModelStatus) {
-        fineTunedModelStatus.textContent = runtime.model_ready
-          ? `FishSTOP AI ${runtime.fine_tuned_version ?? "v5"} · Active on this device.`
-          : "FishSTOP AI v5 · Local email-security model · Download: 2.5 GB.";
+        fineTunedModelStatus.textContent = fast
+          ? `Fast · Base version · ${runtime.model_ready ? "Installed on this device." : "Download: 1.4 GB."}`
+          : `Performance · Fine-tune ${runtime.fine_tuned_version ?? "v5"} · ${runtime.model_ready ? "Installed on this device." : "Download: 2.5 GB."}`;
       }
       if (machineModelName) {
-        machineModelName.textContent = "FishSTOP AI v5" + (usesMlx ? " · MLX" : "");
-        machineModelName.title = runtime.model;
+        machineModelName.textContent = `FishSTOP ${modeName}`;
+        machineModelName.removeAttribute("title");
       }
       if (executionGuidanceMessage) {
         executionGuidanceMessage.hidden = false;
@@ -3183,10 +3238,14 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
           ? "FishStop uses Apple MLX with Metal acceleration and unified memory for private local AI analysis."
           : gpuAccelerated
             ? `FishStop uses ${runtime.accelerator} hardware acceleration for private local AI analysis.`
-            : "FishStop runs local AI analysis entirely on this computer's CPU.";
+            : runtime.loaded_model
+              ? "FishStop is currently running the local AI model on the CPU."
+              : gpuAvailable
+                ? "GPU acceleration is available. Actual GPU use will be checked when the AI model is loaded for analysis."
+                : "FishStop runs local AI analysis on this computer's CPU.";
       }
       machineModelRow?.classList.remove("is-busy", "is-missing", "is-ready");
-      installManagedQwen.textContent = "Install FishSTOP AI v5";
+      installManagedQwen.textContent = `Install ${modeName}`;
       removeManagedQwen.textContent = "Remove";
       removeManagedQwen.disabled = false;
       if (runtime.model_ready) {
@@ -3196,7 +3255,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
           modelStatusBadge.textContent = "";
         }
         managedModelStatus.hidden = runtime.runtime_ready;
-        if (!runtime.runtime_ready) managedModelStatus.textContent = "FishSTOP AI v5 is saved on this computer, but its local runtime is unavailable. The model does not need to be downloaded again.";
+        if (!runtime.runtime_ready) managedModelStatus.textContent = `${modeName} is saved on this computer, but its local runtime is unavailable. The model does not need to be downloaded again.`;
         installManagedQwen.hidden = true;
         removeManagedQwen.hidden = false;
       } else {
@@ -3211,7 +3270,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
           ? usesMlx ? "The fine-tuned MLX download is not available. Use the default FishSTOP AI backend."
             : "FishSTOP AI v5 is not yet available for download in this version."
           : runtime.runtime_ready
-            ? "Install FishSTOP AI v5 to enable private, local email analysis."
+            ? `Install ${modeName} to enable private, local email analysis.`
             : "The local AI component is unavailable.";
         installManagedQwen.hidden = false;
         installManagedQwen.disabled = !runtime.runtime_ready || !runtime.model_download_available;
@@ -3235,8 +3294,11 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
         }
       }
   };
-  const refreshManagedModel = async (force = false) => {
-    if (!machineProfile?.isConnected) return;
+  let managedModelRefreshTimer: number | undefined;
+  const refreshManagedModel = (force = false): Promise<void> => backgroundChecks.run(() => refreshManagedModelNow(force));
+  const refreshManagedModelNow = async (force = false) => {
+    window.clearTimeout(managedModelRefreshTimer);
+    if (!machineProfile?.isConnected || document.hidden) return;
     const cached = runtimeStatusCache.peek() ?? ollamaRuntimeSnapshot;
     if (cached && !force) renderRuntimeStatus(cached);
     if (renderManagedOperation()) return;
@@ -3245,6 +3307,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       if (!machineProfile.isConnected || runtimeStatusCache.peek() !== runtime) return;
       ollamaRuntimeSnapshot = runtime;
       renderRuntimeStatus(runtime);
+      managedModelRefreshTimer = window.setTimeout(() => { if (machineProfile.isConnected) void refreshManagedModel(true); }, runtime.model_ready ? 60_000 : 30_000);
     } catch (error) {
       console.error("Could not read local AI information", error);
       if (!machineProfile.isConnected) return;
@@ -3268,8 +3331,23 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       if (removeManagedQwen) removeManagedQwen.hidden = true;
     }
   };
+  for (const control of aiModeControls) control.addEventListener("change", async () => {
+    if (!control.checked || aiModeChanging) return;
+    aiModeChanging = true;
+    aiModeControls.forEach(item => item.disabled = true);
+    try {
+      await invoke("set_ai_mode", { mode: control.value });
+      if (aiModeStatus) aiModeStatus.textContent = "Analysis mode saved.";
+    } catch (error) {
+      if (aiModeStatus) aiModeStatus.textContent = typeof error === "string" ? error : "Could not save the analysis mode.";
+    } finally {
+      aiModeChanging = false;
+      await refreshManagedModel(true);
+      void refreshProtectionStatus(user, true);
+    }
+  });
   installManagedQwen?.addEventListener("click", async () => {
-    if (!managedModelStatus || !installManagedQwen || managedModelOperation) return;
+    if (aiModeChanging || backgroundChecks.paused || !managedModelStatus || !installManagedQwen || managedModelOperation || cpuOptimizationOperation) return;
     managedModelOperation = { phase: "installing", status: "Preparing AI model download…" };
     renderManagedOperation();
     let unlisten: (() => void) | null = null;
@@ -3292,10 +3370,10 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
     if (installationError) { console.error("AI model installation failed", installationError); managedModelStatus.hidden = false; managedModelStatus.textContent = typeof installationError === "string" ? installationError : "FishSTOP AI v5 could not be installed. Please try again."; }
     else void refreshProtectionStatus(user, true);
   });
-  if (machineProfile) root.insertAdjacentHTML("beforeend", `<dialog class="confirm-dialog remove-model-dialog" id="remove-model-dialog" aria-labelledby="remove-model-title" aria-describedby="remove-model-description"><div class="dialog-mark">!</div><p class="page-kicker">LOCAL AI MODEL</p><h2 id="remove-model-title">Remove AI model?</h2><p id="remove-model-description">Removing this model will <strong>significantly reduce phishing-detection performance</strong>. FishStop will lose AI-assisted understanding of message content and intent. Only technical checks will remain until you reinstall the model.</p><div class="dialog-actions"><button id="cancel-remove-model" type="button" autofocus>Keep model</button><button id="confirm-remove-model" type="button">Remove</button></div></dialog>`);
+  if (machineProfile) root.insertAdjacentHTML("beforeend", `<dialog class="confirm-dialog remove-model-dialog" id="remove-model-dialog" aria-labelledby="remove-model-title" aria-describedby="remove-model-description"><div class="dialog-mark">!</div><p class="page-kicker">LOCAL AI MODEL</p><h2 id="remove-model-title">Remove AI model?</h2><p id="remove-model-description">AI analysis in the selected mode will be unavailable until you reinstall this model or choose another installed mode. Technical checks will remain available.</p><div class="dialog-actions"><button id="cancel-remove-model" type="button" autofocus>Keep model</button><button id="confirm-remove-model" type="button">Remove</button></div></dialog>`);
   const removeModelDialog = document.querySelector<HTMLDialogElement>("#remove-model-dialog");
   removeManagedQwen?.addEventListener("click", () => {
-    if (managedModelOperation || cpuOptimizationOperation || !removeModelDialog || removeModelDialog.open) return;
+    if (backgroundChecks.paused || managedModelOperation || cpuOptimizationOperation || !removeModelDialog || removeModelDialog.open) return;
     removeModelDialog.showModal();
     animateDialogEntrance(removeModelDialog);
   });
@@ -3303,7 +3381,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
   document.querySelector<HTMLButtonElement>("#confirm-remove-model")?.addEventListener("click", async () => {
     if (!removeModelDialog?.open) return;
     removeModelDialog.close();
-    if (!managedModelStatus || managedModelOperation || cpuOptimizationOperation) return;
+    if (backgroundChecks.paused || !managedModelStatus || managedModelOperation || cpuOptimizationOperation) return;
     managedModelOperation = { phase: "removing", status: "Removing the AI model from this device…" };
     renderManagedOperation();
     let removalError: unknown = null;
@@ -3314,7 +3392,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
     else void refreshProtectionStatus(user, true);
   });
   optimizeCpuPerformance?.addEventListener("click", async () => {
-    if (managedModelOperation || cpuOptimizationOperation || !cpuOptimizationResult) return;
+    if (backgroundChecks.paused || managedModelOperation || cpuOptimizationOperation || !cpuOptimizationResult) return;
     cpuOptimizationOperation = { status: "Preparing the short local benchmark…", candidate: 0, total: 1, threads: 0 };
     renderCpuOptimizationOperation();
     let unlisten: (() => void) | null = null;
@@ -3352,7 +3430,10 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
     return true;
   };
   const displayAnalysis = async (fileName: string, request: (analysisId: string) => Promise<AnalysisReport>) => {
-    if (!uploadStatus) return;
+    if (!uploadStatus || backgroundChecks.paused || managedModelOperation || cpuOptimizationOperation) return;
+    window.clearTimeout(protectionRefreshTimer);
+    window.clearTimeout(managedModelRefreshTimer);
+    const resumeBackgroundChecks = await backgroundChecks.pause();
     const analysisId = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
     const session: ActiveAnalysis = {
       userSub: user.sub,
@@ -3425,7 +3506,9 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       else if (["model-ready", "content", "retry", "primary-complete", "verification"].includes(stage)) progress.enter("ai", performance.now());
       else if (stage === "merge") progress.enter("finishing", performance.now());
       paintHeuristicProgress();
-      queueProgress(event.payload.completed_check, event.payload.message);
+      // Native events describe work in progress; only the returned report
+      // can complete the final assessment, including with older sidecars.
+      queueProgress(event.payload.completed_check === undefined ? undefined : Math.min(2, event.payload.completed_check), event.payload.message);
     }).catch(() => null);
     // Start model loading alongside MIME/reputation checks. Settle errors here
     // immediately; the AI command retains its normal availability/error path.
@@ -3444,7 +3527,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       await runAiAnalysis(user, report, null, document.createElement("div"), startedAt, analysisId, () => activeAnalysis === session, (engine) => {
         if (activeAnalysis === session) {
           if (engine === "phi4") { progress.enter("finishing", performance.now()); paintHeuristicProgress(); }
-          queueProgress(engine === "phi4" ? 2 : engine === "summary" ? 3 : undefined);
+          queueProgress(engine === "phi4" ? 2 : undefined);
         }
       }, startHeuristicProgress);
       if (activeAnalysis !== session) return;
@@ -3457,7 +3540,8 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
         resultReady: Math.round(resultDuration),
       });
       if (heuristicTimer !== undefined) window.clearInterval(heuristicTimer);
-      updateAnalysisProgress(session, 4, "Analysis complete.");
+      setAnalysisProgressVisual(session, 100);
+      updateAnalysisProgress(session, 3, "Analysis complete.");
       const completionSplash = analysisIsVisible(session)
         ? document.querySelector<HTMLElement>("#analysis-result .analysis-loading") : null;
       if (completionSplash) {
@@ -3466,10 +3550,9 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
         const hint = completionSplash.querySelector<HTMLElement>(".loading-estimate");
         if (hint) hint.textContent = "100% · Analysis complete";
       }
-      setAnalysisProgressVisual(session, 100);
       // Let the last 300ms fill transition finish, then show the full bar briefly.
       // This only presents an already finished result; it never gates on estimates.
-      if (completionSplash) await new Promise<void>((resolve) => window.setTimeout(resolve, 650));
+      if (completionSplash) await new Promise<void>((resolve) => window.setTimeout(resolve, 350));
       if (activeAnalysis !== session) return;
       session.status = "complete";
       if (report.phi4_analysis?.status === "ok") {
@@ -3493,6 +3576,10 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       // warmup before cleanup so it cannot reload a model after final unloading.
       await modelPreparation;
       await invoke("finish_analysis", { analysisId }).catch(() => undefined);
+      resumeBackgroundChecks();
+      void refreshProtectionStatus(user, true);
+      void refreshManagedModel(true);
+      void refreshReputationSettings(user);
       if (activeAnalysis === session) document.querySelector<HTMLButtonElement>("#eml-drop")?.removeAttribute("disabled");
     }
   };

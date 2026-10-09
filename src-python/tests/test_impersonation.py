@@ -96,6 +96,47 @@ class ImpersonationTests(unittest.TestCase):
         self.assess()
         self.assertEqual(before, self.report)
 
+    def test_public_reference_mismatch_is_visible_as_possible_impersonation(self):
+        self.report["from_"] = "Acme <notice@unrelated.test>"
+        self.reference[0]["contacts"][0]["matches_official"] = False
+        result = self.assess()
+        self.assertEqual("inconsistent", result["status"])
+        self.assertEqual("review", result["decision"], "A public list alone cannot convict phishing")
+
+    def test_account_verification_to_personal_mailbox_is_strong_destination_evidence(self):
+        self.reference[0]["resolution_source"] = "maintained_catalog"
+        self.report["links"] = [{"url": "mailto:security@gmail.com", "host": "gmail.com",
+                                 "scheme": "mailto", "html_call_to_action": True}]
+        self.semantic.update(requested_action="verify_account", evidence_phrase="Verify your account")
+        result = self.assess()
+        self.assertEqual("phishing", result["decision"])
+        self.assertTrue(any(s["id"] == "personal_mailbox_action" for s in result["signals"]))
+        self.semantic["requested_action"] = "visit_link"
+        self.assertFalse(any(s["id"] == "personal_mailbox_action" for s in self.assess()["signals"]))
+
+    def test_incomplete_public_reference_and_personal_mailbox_require_review(self):
+        self.report["links"] = [{"url": "mailto:owner@gmail.com", "host": "gmail.com",
+                                 "scheme": "mailto", "html_call_to_action": True}]
+        self.semantic.update(requested_action="verify_account", evidence_phrase="Verify your account")
+        self.assertEqual("review", self.assess()["decision"])
+
+    def test_platform_notification_does_not_claim_software_vendor_identity(self):
+        self.semantic["claimed_role"] = "third_party"
+        self.report["from_"] = "Acme <notice@customer.test>"
+        self.reference[0]["contacts"][0]["matches_official"] = False
+        result = self.assess()
+        self.assertEqual([], result["signals"])
+        self.assertFalse(result["coverage"]["claim"])
+
+    def test_official_domain_does_not_bypass_documented_action_scope(self):
+        self.reference[0]["resolution_source"] = "maintained_catalog"
+        self.reference[0]["documented_action_relations"] = [{"domain": "acme.com", "role": "official", "scopes": ["visit_link"]}]
+        self.report["links"] = [{"url": "https://acme.com/payment", "host": "acme.com", "html_call_to_action": True}]
+        self.semantic.update(requested_action="pay_or_transfer", evidence_phrase="Pay the invoice")
+        self.assertEqual("review", self.assess()["decision"])
+        self.reference[0]["documented_action_relations"][0]["scopes"].append("pay_or_transfer")
+        self.assertEqual("none", self.assess()["decision"])
+
     def test_pipeline_normalizes_the_action_before_assessing_identity(self):
         from unittest.mock import patch
         from fishstop_engine.analyzer.llm_context_analyzer import _identity_analysis_from_semantic

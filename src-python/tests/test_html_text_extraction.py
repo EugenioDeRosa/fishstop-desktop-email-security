@@ -1,9 +1,29 @@
 import unittest
 
-from fishstop_engine.analyzer.html_utils import strip_html
+from fishstop_engine.analyzer.html_utils import strip_html, sanitize_html_for_preview
 
 
 class HtmlTextExtractionTests(unittest.TestCase):
+    def test_malformed_wrappers_before_document_preserve_message(self):
+        html = (
+            '<meta charset="utf-8"><HWYhT noise=""><HWYhT>'
+            '<html><head><title>Facebook</title><style>.x{color:red}</style></head>'
+            '<body><p>A user just logged into your account.</p>'
+            '<a href="https://example.test/report" onclick="alert(1)">Report the user</a>'
+            '<script>alert(2)</script></body></html>'
+        )
+        extracted = strip_html(html)
+        self.assertIn('A user just logged into your account.', extracted)
+        self.assertIn('Report the user', extracted)
+        self.assertNotIn('alert(2)', extracted)
+        preview = sanitize_html_for_preview(html)
+        self.assertIn('A user just logged into your account.', preview)
+        self.assertIn('Report the user', preview)
+        self.assertNotIn('hwyht', preview.lower())
+        self.assertNotIn('example.test', preview)
+        self.assertNotIn('onclick', preview)
+        self.assertNotIn('<script', preview)
+
     def test_zero_font_layout_container_preserves_visible_descendants(self):
         html = """
         <table><tr><td style="font-size: 0; padding: 24px">

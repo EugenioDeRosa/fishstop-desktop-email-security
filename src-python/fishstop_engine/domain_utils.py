@@ -5,7 +5,13 @@ from __future__ import annotations
 import ipaddress
 import warnings
 import re
-from email.utils import parseaddr
+from email.utils import parseaddr, getaddresses
+
+
+def mailbox_candidates(value: str) -> list[tuple[str, str]]:
+    """Preserve every syntactically explicit candidate, without authenticating it."""
+    return [(name, address) for name, address in getaddresses([str(value or "")])
+            if re.fullmatch(r"[^\s<>@]+@[^\s<>@]+", address or "")]
 
 
 def identity_mailbox(value: str) -> tuple[str, str]:
@@ -14,6 +20,8 @@ def identity_mailbox(value: str) -> tuple[str, str]:
     Some exported From headers have punctuation outside their single angle
     address. Ambiguous or multiple addresses must remain unavailable.
     """
+    if len(mailbox_candidates(value)) > 1:
+        return "", ""
     display, address = parseaddr(str(value or ""))
     if address and "@" in address:
         return display, address

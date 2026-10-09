@@ -9,6 +9,7 @@ from email.utils import parseaddr
 from pathlib import Path
 
 from .html_utils import strip_html_for_intent
+from fishstop_engine.domain_utils import identity_mailbox
 
 
 _FORWARD_RE = re.compile(
@@ -24,7 +25,7 @@ _REPLY_RE = re.compile(
 )
 _HEADER_RE = re.compile(
     r"^\s*\*{0,2}(?P<label>from|da|de|sent|inviato(?: il)?|enviado el|"
-    r"date|data|to|a|para|subject|oggetto|asunto)\*{0,2}\s*:\s*(?P<value>.*)$",
+    r"date|data|to|a|para|cc|bcc|copia|copia nascosta|subject|oggetto|asunto)\*{0,2}\s*:\s*(?P<value>.*)$",
     re.IGNORECASE,
 )
 _HEADER_KEYS = {
@@ -32,6 +33,7 @@ _HEADER_KEYS = {
     "sent": "date", "inviato": "date", "inviato il": "date",
     "enviado el": "date", "date": "date", "data": "date",
     "to": "to", "a": "to", "para": "to",
+    "cc": "cc", "copia": "cc", "bcc": "bcc", "copia nascosta": "bcc",
     "subject": "subject", "oggetto": "subject", "asunto": "subject",
 }
 _ACTION_PATTERNS = (
@@ -136,7 +138,7 @@ def _preview(text: str, limit: int = 230) -> str:
 
 
 def _identity_fields(raw_from: str) -> tuple[str, str, str]:
-    display_name, address = parseaddr(raw_from or "")
+    display_name, address = identity_mailbox(raw_from or "")
     address = address.lower().strip()
     domain = address.rsplit("@", 1)[-1] if "@" in address else ""
     return display_name, address, domain
@@ -210,6 +212,8 @@ def inspect_conversation_bytes(raw_bytes: bytes) -> dict:
             "kind": boundary["kind"],
             "from": fields.get("from", ""),
             "to": fields.get("to", ""),
+            "cc": fields.get("cc", ""),
+            "bcc": fields.get("bcc", ""),
             "date": fields.get("date", ""),
             "subject": fields.get("subject", str(message.get("Subject") or "")),
             "display_name": display_name,

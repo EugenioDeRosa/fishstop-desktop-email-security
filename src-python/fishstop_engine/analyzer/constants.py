@@ -91,7 +91,7 @@ CONTENT_TYPE_TO_EXT: dict[str, list[str]] = {
     "image/gif":  ["gif"],
     "image/bmp":  ["bmp"],
     "image/tiff": ["tiff"],
-    "text/html":  ["html"],
+    "text/html":  ["html", "htm"],
     "text/xml":   ["xml"],
     "application/rtf": ["rtf"],
     "text/rtf": ["rtf"],

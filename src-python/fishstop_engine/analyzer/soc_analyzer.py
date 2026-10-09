@@ -28,7 +28,7 @@ from fishstop_engine.analysis_limits import (
     MAX_MIME_PARTS,
     MAX_RECEIVED_HOPS,
 )
-from fishstop_engine.domain_utils import registered_domain, same_registered_domain
+from fishstop_engine.domain_utils import registered_domain, same_registered_domain, identity_mailbox, mailbox_candidates
 from .archive_analysis import ArchiveAnalysisBudget
 from fishstop_engine.office_analysis import OfficeAnalysisBudget
 from .attachment      import analyze_attachment
@@ -172,7 +172,7 @@ _ATTACHMENT_CLAIM_RE = re.compile(
 
 def _extract_domain(email_or_addr: str) -> str:
     """Returns the domain portion of an email address, lowercased."""
-    m = re.search(r"@([\w.\-]+)", email_or_addr or "")
+    m = re.search(r"@([\w.\-]+)", identity_mailbox(email_or_addr or "")[1])
     return m.group(1).lower() if m else ""
 
 
@@ -499,6 +499,9 @@ class EmlSOCAnalyzer:
         report["reply_to"]    = reply_to
 
         from_addr  = self._extract_address(report["from_"])
+        candidates = mailbox_candidates(report["from_"])
+        report["from_mailbox_candidates"] = [address for _, address in candidates]
+        report["from_ambiguous"] = len(candidates) > 1
         reply_addr = self._extract_address(reply_to)
         reply_to_mismatch_raw = bool(
             reply_addr and from_addr and reply_addr.lower() != from_addr.lower()
@@ -620,6 +623,7 @@ class EmlSOCAnalyzer:
                     raw_payload=raw_payload,
                     archive_budget=archive_budget,
                     office_budget=office_budget,
+                    from_domain=from_domain,
                 )
                 disposition_type = str(part.get_content_disposition() or "").lower()
                 content_id = str(part.get("Content-ID") or "").strip().strip("<>")
@@ -649,11 +653,11 @@ class EmlSOCAnalyzer:
             if ct == "text/plain":
                 text = _decode_text_part(part)
                 if text and text.strip():
+                    remaining = max(0, min(MAX_AI_BODY_CHARS, MAX_DECODED_TEXT_CHARS - decoded_text_chars))
+                    if len(text) > remaining:
+                        report["body_analysis_incomplete"] = True
+                        text = text[:remaining]
                     decoded_text_chars += len(text)
-                    if decoded_text_chars > MAX_DECODED_TEXT_CHARS:
-                        raise EmailAnalysisLimitError(
-                            "Decoded email text exceeds the supported analysis limit."
-                        )
                     if _looks_like_html(text):
                         html_parts.append(text)
                     else:
@@ -665,11 +669,11 @@ class EmlSOCAnalyzer:
             elif ct == "text/html":
                 text = _decode_text_part(part)
                 if text and text.strip():
+                    remaining = max(0, min(MAX_AI_BODY_CHARS, MAX_DECODED_TEXT_CHARS - decoded_text_chars))
+                    if len(text) > remaining:
+                        report["body_analysis_incomplete"] = True
+                        text = text[:remaining]
                     decoded_text_chars += len(text)
-                    if decoded_text_chars > MAX_DECODED_TEXT_CHARS:
-                        raise EmailAnalysisLimitError(
-                            "Decoded email text exceeds the supported analysis limit."
-                        )
                     html_parts.append(text)
 
         combined_html = "\n".join(html_parts)
@@ -728,12 +732,24 @@ class EmlSOCAnalyzer:
             report.update(html_ai_selection)
             selected_body_for_intent = html_body_for_intent or plain_body_for_ai
         report["body_for_intent"] = selected_body_for_intent.strip()
+        # MIME alternatives may disagree. Keep novel HTML content instead of
+        # letting a decoy plain alternative silently replace the real request.
+        divergent = False
+        if not plain_is_structured and not html_is_structured and html_body_for_intent:
+            plain_tokens = set(re.findall(r"\w+", plain_body_for_ai.casefold()))
+            html_tokens = set(re.findall(r"\w+", html_body_for_intent.casefold()))
+            divergent = bool(plain_body_for_ai and len(html_tokens - plain_tokens) >= 12
+                             and len(html_tokens - plain_tokens) / max(1, len(html_tokens)) > 0.35)
+            if divergent:
+                selected_body_for_intent = plain_body_for_ai + "\n\n[HTML alternative]\n" + html_body_for_intent
+        report["body_alternatives_divergent"] = divergent
+        report["body_for_intent"] = selected_body_for_intent.strip()
         # Apply reply/signature/footer selection to the structurally cleaned
         # text when an explicit HTML signature was actually removed. Otherwise
         # retain the canonical plain alternative, which may contain legitimate
         # details omitted from a divergent HTML alternative.
         bert_source = report["body_for_intent"]
-        if not plain_is_structured and not html_is_structured and not (
+        if not divergent and not plain_is_structured and not html_is_structured and not (
             combined_html and html_body_for_intent != html_clean
         ):
             bert_source = plain_body_for_ai
@@ -751,6 +767,9 @@ class EmlSOCAnalyzer:
                 report[key] = plain_ai_selection.get(key, report.get(key, 0))
         report["body_extracted"] = report.get("body_ai") or bert_source
         report["body_for_ai"] = report["body_extracted"].strip()
+        if len(report["body_for_ai"]) > MAX_AI_BODY_CHARS:
+            report["body_for_ai"] = report["body_for_ai"][:MAX_AI_BODY_CHARS]
+            report["body_analysis_incomplete"] = True
         # Both AI engines must consume the same reply/forward/footer-cleaned
         # content. Keeping the earlier intent source here would reintroduce
         # legal notices and contact cards for Ollama only.
@@ -797,6 +816,12 @@ class EmlSOCAnalyzer:
         report["link_context_alerts"] = self._assess_link_context(report)
         # ── 11. Flag SOC ──────────────────────────────────────────────────
         report["flags"] = self._build_flags(report)
+        if report.get("body_analysis_incomplete"):
+            report["flags"].append({"level": "MEDIUM", "field": "Analysis coverage",
+                "message": "Body text exceeded the analysis budget; only a bounded portion was inspected. Review the unanalysed content."})
+        if report.get("from_ambiguous"):
+            report["flags"].append({"level": "MEDIUM", "field": "From",
+                "message": "Multiple sender mailboxes are present; sender identity is ambiguous."})
 
         return report
 
@@ -862,13 +887,7 @@ class EmlSOCAnalyzer:
 
     @staticmethod
     def _extract_address(raw: Optional[str]) -> Optional[str]:
-        if not raw:
-            return None
-        m = re.search(r"<([^>]+)>", raw)
-        if m:
-            return m.group(1).strip()
-        m2 = re.search(r"[\w.+\-]+@[\w.\-]+", raw)
-        return m2.group(0).strip() if m2 else None
+        return identity_mailbox(raw or "")[1] or None
 
     @staticmethod
     def _extract_injection_sender_ip(msg, hops: list) -> str | None:
@@ -1062,6 +1081,13 @@ class EmlSOCAnalyzer:
 
         # Anomalie allegati
         for att in report.get("attachments", []):
+            html_security = att.get("html_security") or {}
+            if html_security.get("risk_level") == "medium":
+                flag("MEDIUM", "HTML Attachment", f"'{att['filename']}': {html_security['summary']}")
+            if (att.get("attachment_security") or {}).get("risk_level") == "medium":
+                for finding in (att.get("attachment_security") or {}).get("findings", []):
+                    if finding.get("key") == "html_document_disguise":
+                        flag("MEDIUM", "Attachment name", f"'{att['filename']}': {finding['label']}")
             attachment_anomaly = _non_pdf_attachment_anomaly(att)
             if attachment_anomaly:
                 flag("HIGH", "Attachment",

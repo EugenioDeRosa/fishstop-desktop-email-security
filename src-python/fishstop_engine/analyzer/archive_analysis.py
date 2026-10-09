@@ -497,12 +497,19 @@ def analyze_archive_security(
                     archive_budget=budget, office_budget=office_budget, archive_depth=depth + 1,
                 )
                 scans = [child[key] for key in (
-                    "attachment_security", "pdf_security", "archive_security", "office_security",
+                    "attachment_security", "pdf_security", "archive_security", "office_security", "html_security",
                 ) if child.get(key)]
                 ranks = {"clean": 0, "low": 1, "unknown": 2, "medium": 3, "high": 4, "critical": 5}
                 risk = max((scan.get("risk_level", "unknown") for scan in scans),
                            key=lambda value: ranks.get(value, 2), default="unknown")
-                complete = child.get("inspection", {}).get("analysis_complete") is not False
+                inspection = child.get("inspection", {})
+                # Archive completion describes its structural/member checks.
+                # Missing scanners are recorded separately, not presented as
+                # a parser failure of an otherwise inspected OOXML container.
+                type_only = inspection.get("status") == "type_only"
+                complete = inspection.get("analysis_complete") is not False or type_only
+                if type_only:
+                    result["content_uninspected_member_count"] = result.get("content_uninspected_member_count", 0) + 1
                 if risk in {"high", "critical"}:
                     add("nested_risky_content", name)
                 elif risk in {"medium", "unknown"}:

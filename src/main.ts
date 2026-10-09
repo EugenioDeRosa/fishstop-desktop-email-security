@@ -65,6 +65,7 @@ type ImpersonationAssessment = {
 type AnalysisReport = {
   subject?: string; from_?: string; from_registered_domain?: string; reply_to?: string; return_path?: string; flags?: SocFlag[];
   delivered_to?: string; to?: string; date?: string; message_id?: string; errors_to?: string; importance?: string;
+  body_analysis_incomplete?: boolean;
   body_source?: string; body_clean?: string; body_ai?: string; body_context?: string; body_html?: string; body_html_safe?: string; injection_sender_ip?: string;
   forwarded_identity?: { from?: string; to?: string; cc?: string; subject?: string; date?: string; display_name?: string; address?: string; domain?: string; authentication_status?: string; authentication_scope?: string };
   injection_ip_spf_authorized?: boolean; spf_sender_aligned?: boolean;
@@ -94,7 +95,8 @@ type AnalysisReport = {
       summary?: string;
       findings?: Array<{ key?: string; label?: string; severity?: string; evidence?: string }>;
     };
-    inspection?: { status?: string; analysis_complete?: boolean; summary?: string };
+    inspection?: { status?: string; analysis_complete?: boolean; type_checks_complete?: boolean; content_inspected?: boolean; summary?: string };
+    html_security?: { status?: string; analysis_complete?: boolean; risk_level?: string; summary?: string; script_count?: number; urls?: string[]; forms?: Record<string, unknown> };
     qr_inspection?: { status?: string; analysis_complete?: boolean; urls?: string[]; text?: string; pages_scanned?: number };
     pdf_security?: { risk_level?: string; summary?: string; status?: string; analysis_complete?: boolean };
     office_security?: { engine?: string; status?: string; analysis_complete?: boolean; risk_level?: string; summary?: string; vba_macros?: boolean; xlm_macros?: boolean; autoexec?: string[]; suspicious_keywords?: string[]; iocs?: string[]; urls?: string[]; findings?: Array<{ key?: string; label?: string; severity?: string; evidence?: string }> };
@@ -791,6 +793,7 @@ function structuredReportData(report: AnalysisReport): SiemReport {
       findings: [...(attachment.attachment_security?.findings || []), ...(attachment.office_security?.findings || [])],
       office_security: attachment.office_security,
       inspection: attachment.inspection,
+      html_security: attachment.html_security,
       qr_inspection: attachment.qr_inspection,
       pdf_security: attachment.pdf_security,
       archive_security: attachment.archive_security,
@@ -809,6 +812,7 @@ function structuredReportData(report: AnalysisReport): SiemReport {
       duration_ms: report.phi4_analysis?.duration_ms,
       authentication_scope: report.selected_target_authentication_scope || report.authentication_scope,
       coverage: incompleteAnalysisReason(report) ? "incomplete" : "complete",
+      coverage_scope: "body_and_actionable_attachments",
       incomplete_reason: incompleteAnalysisReason(report) || undefined,
     },
   };
@@ -947,6 +951,9 @@ function confirmedMaliciousIndicators(report: AnalysisReport): string[] {
 function highSeverityStaticReason(report: AnalysisReport): string | null {
   const confirmed = confirmedMaliciousIndicators(report);
   if (confirmed.length) return `VirusTotal detected ${confirmed.length === 1 ? confirmed[0] : `${confirmed.length} indicators`} as malicious.`;
+  if ((report.attachments || []).some(attachment => attachment.html_security?.risk_level === "high")) {
+    return "An HTML attachment contains sensitive credential fields submitting to an unrelated or unsafe destination.";
+  }
 
   const highFlags = verdictFlags(report).filter((flag) => flag.level === "HIGH");
   if (!highFlags.length) return null;
@@ -1170,7 +1177,13 @@ function unverifiedRequestedResourceReason(report: AnalysisReport): string | nul
   if (unauthenticatedForwardedLinkRequest) {
     return "The message forwards a link request, but the embedded sender is not authenticated by the available headers and the requested destination could not be verified.";
   }
-  if (action === "visit_link") {
+  const intent = normalizedIntentText(semantic?.intent_evidence);
+  const requestMatchesLink = intent.length >= 4 && requestedLinks.some(link => {
+    const label = normalizedIntentText(link.display_text);
+    return label.length >= 4 && (label.includes(intent) || intent.includes(label));
+  });
+  const suppliedChannel = semantic?.action_channel === "supplied_link" || requestMatchesLink;
+  if (action === "visit_link" || suppliedChannel && sensitiveRequestedAction(report)) {
     const unverifiedLinks = requestedLinks.filter((link) => cannotVerify(report.link_reputation?.[link.url || ""]));
     const identityMismatch = Boolean(
       report.reply_to_mismatch
@@ -1240,12 +1253,19 @@ function conciseAiVerdict(report: AnalysisReport, fallback: string): string {
 }
 
 function attachmentInspectionIncomplete(attachment: NonNullable<AnalysisReport["attachments"]>[number]): boolean {
-  return [attachment.inspection, attachment.pdf_security, attachment.archive_security, attachment.office_security]
+  // Presentation-only MIME resources are not recipient attachment actions.
+  // Their inspection metadata is still exported; confirmed risks remain
+  // handled separately by the static findings.
+  if (attachment.actionable === false || attachment.mime_role === "inline_resource") return false;
+  return [attachment.inspection, attachment.pdf_security, attachment.archive_security, attachment.office_security, attachment.html_security]
     .some((scan) => scan?.analysis_complete === false);
 }
 
 function incompleteAnalysisReason(report: AnalysisReport): string | null {
   const reasons: string[] = [];
+  if (report.body_analysis_incomplete) {
+    reasons.push("Only part of the email body was inspected because it exceeded the analysis budget.");
+  }
   if (report.phi4_analysis?.status !== "ok"
     || !["legitimate", "review", "phishing"].includes((report.phi4_analysis?.analysis?.final_verdict || "").toLowerCase())) {
     reasons.push("The local AI analysis did not complete, so the message content could not be fully assessed.");
@@ -1328,7 +1348,9 @@ function assessment(report: AnalysisReport): { tone: "safe" | "review" | "danger
   const noExternalOrSensitiveAction = ["none", "informational", "info"].includes(action);
   const benignContent = (semantic?.content_risk || "").toLowerCase() === "benign";
   const isolatedMissingDkim = mediumFlags.length > 0 && mediumFlags.every((flag) =>
-    flag.field.toLowerCase() === "dkim" && /\bnone\b|missing|signature validation/i.test(flag.message),
+    flag.field.toLowerCase() === "dkim"
+    && ["none", "missing"].includes(authFromEmlHeader(report, "DKIM").status.toLowerCase())
+    && !/\b(?:fail|timeout|temperror|permerror|mixed)\b/i.test(flag.message),
   );
   const identityMismatch = Boolean(report.reply_to_mismatch || returnPathMismatchForVerdict(report) || report.display_name_spoofing && !["none", "false", "no"].includes(String(report.display_name_spoofing).toLowerCase()));
   const aiClearsInformationalMessage = phi === "legitimate" && benignContent && noExternalOrSensitiveAction && isolatedMissingDkim && !identityMismatch;

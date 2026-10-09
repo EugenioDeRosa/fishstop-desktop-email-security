@@ -324,9 +324,11 @@ def enrich(report: dict, vt_key: str, abuse_key: str) -> dict:
     ips = dict.fromkeys(ip for hop in report.get("received_hops") or [] for ip in (hop.get("all_ips") or ([hop.get("sender_ip")] if hop.get("sender_ip") else [])))
     if report.get("injection_sender_ip"): ips[report["injection_sender_ip"]] = None
     ips = list(ips)
-    def domain(value: str) -> str:
-        match = re.search(r"@([\w.-]+)", value or ""); return match.group(1).lower() if match else ""
-    domains = dict.fromkeys(filter(None, (domain(report.get(key) or "") for key in ("from_", "return_path", "reply_to"))))
+    from fishstop_engine.domain_utils import mailbox_candidates, normalize_hostname
+    domains = dict.fromkeys(filter(None, (
+        normalize_hostname(address.rsplit("@", 1)[1])
+        for key in ("from_", "return_path", "reply_to")
+        for _, address in mailbox_candidates(report.get(key) or ""))))
     # Sender-domain reputation is evaluated as a domain indicator on
     # VirusTotal. Do not infer domain risk from an AbuseIPDB score belonging to
     # a shared hosting/CDN IP, which can create false positives for services

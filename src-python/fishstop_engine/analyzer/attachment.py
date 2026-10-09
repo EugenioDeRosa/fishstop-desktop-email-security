@@ -263,6 +263,10 @@ def _analyze_attachment_file_type(
     name_parts = [part.strip().lower() for part in basename.split(".") if part.strip()]
     extension = name_parts[-1] if len(name_parts) >= 2 else ""
     mime_type = (content_type or "").split(";", 1)[0].strip().lower()
+    if len(name_parts) >= 3 and extension in {"html", "htm"} and name_parts[-2] in DECOY_ATTACHMENT_EXTENSIONS:
+        findings.append({"key": "html_document_disguise", "severity": "medium",
+                         "label": f"HTML attachment filename suggests a '.{name_parts[-2]}' document",
+                         "evidence": basename})
 
     if any(character in _BIDI_FILENAME_CONTROLS for character in original_name):
         add(
@@ -300,7 +304,7 @@ def _analyze_attachment_file_type(
         )
 
     return {
-        "risk_level": "high" if findings else "clean",
+        "risk_level": "high" if any(f["severity"] == "high" for f in findings) else "medium" if findings else "clean",
         "findings": findings,
         "summary": (
             "; ".join(item["label"] for item in findings)
@@ -900,6 +904,7 @@ def analyze_attachment(
     archive_budget: ArchiveAnalysisBudget | None = None,
     office_budget: OfficeAnalysisBudget | None = None,
     archive_depth: int = 0,
+    from_domain: str = "",
 ) -> dict:
     """Analyze an attachment and flag extension/content/magic-byte mismatches."""
     entry: dict = {
@@ -987,7 +992,8 @@ def analyze_attachment(
             f"Content-Type '{ct_base}' expects {expected_exts} but filename has '.{file_ext}'"
         )
     if magic_fmt and file_ext and magic_fmt != file_ext:
-        if not ((magic_fmt == "zip" and file_ext in ZIP_CONTAINER_EXTS)
+        if not ((magic_fmt == "html" and file_ext == "htm")
+                or (magic_fmt == "zip" and file_ext in ZIP_CONTAINER_EXTS)
                 or (magic_fmt == "doc" and file_ext in OLE_EXTENSIONS)):
             mismatches.append(
                 f"Magic bytes identify format as '{magic_fmt}' but filename extension is '.{file_ext}'"
@@ -1002,6 +1008,18 @@ def analyze_attachment(
     entry["extension_match"] = not mismatches
     anomaly_parts = [part for part in (payload_warning, "; ".join(mismatches)) if part]
     attachment_security = entry.get("attachment_security") or {}
+    if ct_base == "text/html" or file_ext in {"html", "htm"} or magic_fmt == "html":
+        from .html_attachment_analysis import analyze_html_attachment
+        entry["html_security"] = analyze_html_attachment(raw_bytes, from_domain)
+        html_security = entry["html_security"]
+        if html_security["risk_level"] in {"medium", "high"}:
+            previous = attachment_security["summary"] if attachment_security["findings"] else ""
+            attachment_security["findings"].extend(html_security["findings"])
+            if attachment_security["risk_level"] != "high":
+                attachment_security["risk_level"] = html_security["risk_level"]
+            attachment_security["summary"] = "; ".join(filter(None, [previous, html_security["summary"]]))
+            if html_security["risk_level"] == "high":
+                anomaly_parts.append(html_security["summary"])
     if attachment_security.get("risk_level") == "high":
         anomaly_parts.append(
             f"High-risk attachment: {attachment_security.get('summary')}"
@@ -1019,13 +1037,16 @@ def analyze_attachment(
     pdf_urls = ((entry.get("pdf_security") or {}).get("uri_evidence") or {}).get("urls") or []
     archive_urls = archive_security.get("urls") or []
     office_urls = (entry.get("office_security") or {}).get("urls") or []
-    entry["embedded_urls"] = list(dict.fromkeys([*pdf_urls, *archive_urls, *office_urls]))[:25]
+    html_urls = (entry.get("html_security") or {}).get("urls") or []
+    entry["embedded_urls"] = list(dict.fromkeys([*pdf_urls, *archive_urls, *office_urls, *html_urls]))[:25]
     entry["anomaly"] = "; ".join(anomaly_parts) if anomaly_parts else None
-    scans = [entry[key] for key in ("pdf_security", "archive_security", "office_security") if entry[key]]
+    scans = [entry[key] for key in ("pdf_security", "archive_security", "office_security", "html_security") if entry.get(key)]
     incomplete = [scan for scan in scans if scan.get("analysis_complete") is False]
     entry["inspection"] = {
         "status": "partial" if incomplete else "complete" if scans else "type_only",
-        "analysis_complete": not incomplete,
+        "analysis_complete": bool(scans) and not incomplete,
+        "type_checks_complete": True,
+        "content_inspected": bool(scans),
         "summary": "; ".join(scan["summary"] for scan in incomplete)
             if incomplete else "Supported local checks completed." if scans
             else "File type checks only; no content scanner is available for this format.",

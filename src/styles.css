@@ -639,3 +639,36 @@ html[data-theme="dark"] .statistics-custom-period input { color-scheme:dark; }
 .settings-grid .credential-list .credential-row-actions button { min-height: 27px; font-size: 10px; padding: 4px 8px; }
 .settings-grid .credential-list li.is-editing-key > .credential-inline-field { grid-column: 2; grid-row: 1 / 3; }
 @media (max-width: 600px) { .settings-about-heading { align-items: start; } .settings-legal-links { width: 100%; } .settings-legal-links .settings-link-button { flex: 1 1 auto; } }
+
+/* Shared rows keep both working panels aligned when device details expand. */
+.settings-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-areas: "privacy privacy" "reputation ollama" "preferences preferences" "updates updates" "about about";
+  align-items: stretch;
+  gap: 20px;
+}
+.settings-grid .settings-column { display: contents; }
+.settings-grid .settings-privacy-mode { grid-area: privacy; padding: 16px 20px; }
+.settings-grid .settings-privacy-mode .settings-local-only { margin: 0; padding: 0; background: transparent; border: 0; }
+.settings-grid .settings-privacy-mode .settings-details { margin: 12px 0 0; padding-top: 10px; }
+.settings-grid .settings-reputation { grid-area: reputation; }
+.settings-grid .ollama-lab { grid-area: ollama; }
+.settings-grid .settings-preferences { grid-area: preferences; }
+.settings-grid .settings-app-updates { grid-area: updates; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px 24px; }
+.settings-grid .settings-app-updates .settings-updates-row { flex: 1; }
+.settings-grid .settings-license { grid-area: about; }
+.settings-grid .settings-preference-list { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.settings-grid .settings-preference-list > label { height: 100%; box-sizing: border-box; }
+.settings-grid .credential-list li,
+.settings-grid .settings-reputation.is-editing-credentials .credential-list li { grid-template-columns: 24px minmax(0, 1fr) 78px; }
+.settings-grid .credential-list .credential-row-actions button { display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px; padding: 7px; border-radius: 7px; }
+.settings-grid .credential-row-actions button svg { width: 17px; height: 17px; flex: none; }
+.settings-grid .credential-row-actions button:focus-visible { outline: 2px solid var(--night-accent, #16816d); outline-offset: 3px; }
+.settings-grid .credential-row-actions button[aria-busy="true"] { opacity: .45; cursor: wait; }
+.settings-grid .credential-row-actions button[hidden] { display: none; }
+@media (max-width: 1080px) {
+  .settings-grid { grid-template-columns: minmax(0, 1fr); grid-template-areas: "privacy" "reputation" "ollama" "preferences" "updates" "about"; }
+}
+@media (max-width: 700px) {
+  .settings-grid .settings-preference-list { grid-template-columns: minmax(0, 1fr); }
+}

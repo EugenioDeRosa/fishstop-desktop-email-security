@@ -342,7 +342,11 @@ async function refreshReputationSettingsNow(user: AuthUser, force = false): Prom
       row.classList.toggle("missing", !ready);
       row.classList.toggle("provider-disabled", disabled);
       const edit = row.querySelector<HTMLButtonElement>(".edit-reputation-key");
-      if (edit) edit.textContent = ready ? "Edit" : "Add";
+      if (edit) {
+        edit.innerHTML = credentialActionIcon(ready ? "edit" : "add");
+        edit.title = `${ready ? "Edit" : "Add"} ${provider === "otx" ? "OTX" : provider === "virustotal" ? "VirusTotal" : "AbuseIPDB"} API key`;
+        edit.setAttribute("aria-label", edit.title);
+      }
       const icon = row.querySelector<HTMLButtonElement>(".toggle-reputation-provider");
       if (icon) { icon.disabled = localOnlyEnabled(user); icon.textContent = disabled ? "—" : "✓"; icon.setAttribute("aria-pressed", String(!disabled)); }
       const detail = row.querySelector(".credential-static-copy small"); if (detail) detail.textContent = ready ? "Stored in the system keychain" : "Key not configured";
@@ -351,7 +355,7 @@ async function refreshReputationSettingsNow(user: AuthUser, force = false): Prom
       if (remove) {
         remove.hidden = !ready;
         remove.disabled = false;
-        remove.textContent = "Remove";
+        remove.innerHTML = credentialActionIcon("remove");
       }
       const input = row.querySelector<HTMLInputElement>("input");
       if (input) input.placeholder = ready ? "Enter a new key or leave unchanged" : `Enter the ${provider === "otx" ? "OTX" : provider === "virustotal" ? "VirusTotal" : "AbuseIPDB"} token`;
@@ -969,6 +973,15 @@ function orderedReceivedHops(hops: ReceivedHop[] = []): ReceivedHop[] {
 
 function searchIconMarkup(): string {
   return `<svg class="search-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="10.5" cy="10.5" r="6.25"></circle><path d="m15.1 15.1 4.4 4.4"></path></svg>`;
+}
+
+function credentialActionIcon(action: "add" | "edit" | "remove"): string {
+  const paths = {
+    add: '<path d="M12 5v14M5 12h14"/>',
+    edit: '<path d="m16 3 5 5-12 12-6 1 1-6L16 3Z"/><path d="m13 6 5 5"/>',
+    remove: '<path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"/>',
+  };
+  return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${paths[action]}</svg>`;
 }
 
 function inboxIconMarkup(): string {
@@ -3026,19 +3039,21 @@ function contentFor(section: Section, user: AuthUser): string {
   if (section === "statistics") return `<div class="page-heading statistics-heading"><div><p class="page-kicker">RISK OVERVIEW</p><h1>Statistics</h1><p>Signals, investigation activity and performance for this account.</p></div><div class="statistics-filter"><span>Period</span><div class="statistics-period-menu"><button class="statistics-period-trigger" id="statistics-period-trigger" type="button" aria-haspopup="listbox" aria-controls="statistics-period-options" aria-expanded="false">${periodLabels[selectedPeriod]}<i aria-hidden="true"></i></button><div class="statistics-period-options" id="statistics-period-options" role="listbox" aria-label="Statistics period" hidden>${periodChoices}</div></div></div></div>${customPeriodMarkup}<section class="metrics stats-metrics"><article><span>Emails analysed</span><strong>${filteredHistory.length}</strong><small>${periodLabels[selectedPeriod]}</small></article><article><span>Average analysis time</span><strong>${formatDuration(averageDuration)}</strong><small>${timedAnalyses.length ? `Based on ${timedAnalyses.length} completed analyses` : "Available after new analyses"}</small></article><article><span>Indicators copied</span><strong>${filteredCopyEvents.length}</strong><small>Copied individually from the Indicators section</small></article></section><section class="stats-layout"><article class="risk-breakdown"><div><p class="page-kicker">DISTRIBUTION</p><h2>Analysis outcomes</h2></div><div class="risk-bars"><div><span>High risk <b>${highRiskCount}</b></span><i><em class="high" style="width:${filteredHistory.length ? (highRiskCount / filteredHistory.length) * 100 : 0}%"></em></i></div><div><span>To review <b>${mediumRiskCount}</b></span><i><em class="medium" style="width:${filteredHistory.length ? (mediumRiskCount / filteredHistory.length) * 100 : 0}%"></em></i></div><div><span>Likely legitimate <b>${clearCount}</b></span><i><em class="clear" style="width:${filteredHistory.length ? (clearCount / filteredHistory.length) * 100 : 0}%"></em></i></div></div></article><article class="activity-card"><div><p class="page-kicker">ACTIVITY</p><h2>${selectedPeriod === "custom" ? "Selected period" : "Last 7 days"}</h2></div><div class="activity-chart">${activity.map((item) => `<div><i style="height:${Math.max(5, (item.count / maxActivity) * 100)}%" title="${item.span}: ${item.count} analyses"></i><span>${item.label}</span></div>`).join("")}</div></article></section><section class="risk-reasons"><div><p class="page-kicker">RISK PATTERNS</p><h2>Top risk reasons</h2><p>Signals that appeared most often in the selected period.</p></div><ol>${reasonItems}</ol></section>`;
   if (section === "settings") {
     const keys = reputationKeys(user);
-    const keyRow = (provider: "virustotal" | "abuseipdb" | "otx", name: string, value: boolean) => `<li class="${value ? "ready" : "missing"} ${disabledReputationProviders(user).includes(provider) ? "provider-disabled" : ""}" data-reputation-provider="${provider}"><button class="toggle-reputation-provider" type="button" data-toggle-provider="${provider}" ${localOnlyEnabled(user) ? "disabled" : ""} aria-label="Enable ${name.replace(" API key", "")}" aria-pressed="${!disabledReputationProviders(user).includes(provider)}">${disabledReputationProviders(user).includes(provider) ? "—" : "✓"}</button><div class="credential-static-copy"><strong>${name.replace(" API key", "")}</strong><small>${value ? "Stored in the system keychain" : "Key not configured"}</small></div><label class="credential-inline-field"><span>${name}</span><input form="reputation-settings" name="${provider}" type="password" autocomplete="new-password" aria-label="${name}" placeholder="${value ? "Enter a new key or leave unchanged" : `Enter the ${provider === "otx" ? "OTX" : provider === "virustotal" ? "VirusTotal" : "AbuseIPDB"} token`}" /></label><b>${disabledReputationProviders(user).includes(provider) ? "Disabled" : value ? "Ready" : "Required"}</b><div class="credential-row-actions"><button class="soft-action edit-reputation-key" type="button" data-edit-reputation-key="${provider}" aria-label="Edit or add ${name}" aria-expanded="false">${value ? "Edit" : "Add"}</button><button class="remove-reputation-key" type="button" data-remove-reputation-key="${provider}" aria-label="Remove ${name}" ${value ? "" : "hidden"}>Remove</button></div></li>`;
+    const keyRow = (provider: "virustotal" | "abuseipdb" | "otx", name: string, value: boolean) => `<li class="${value ? "ready" : "missing"} ${disabledReputationProviders(user).includes(provider) ? "provider-disabled" : ""}" data-reputation-provider="${provider}"><button class="toggle-reputation-provider" type="button" data-toggle-provider="${provider}" ${localOnlyEnabled(user) ? "disabled" : ""} aria-label="Enable ${name.replace(" API key", "")}" aria-pressed="${!disabledReputationProviders(user).includes(provider)}">${disabledReputationProviders(user).includes(provider) ? "—" : "✓"}</button><div class="credential-static-copy"><strong>${name.replace(" API key", "")}</strong><small>${value ? "Stored in the system keychain" : "Key not configured"}</small></div><label class="credential-inline-field"><span>${name}</span><input form="reputation-settings" name="${provider}" type="password" autocomplete="new-password" aria-label="${name}" placeholder="${value ? "Enter a new key or leave unchanged" : `Enter the ${provider === "otx" ? "OTX" : provider === "virustotal" ? "VirusTotal" : "AbuseIPDB"} token`}" /></label><b>${disabledReputationProviders(user).includes(provider) ? "Disabled" : value ? "Ready" : "Required"}</b><div class="credential-row-actions"><button class="soft-action edit-reputation-key" type="button" data-edit-reputation-key="${provider}" aria-label="${value ? "Edit" : "Add"} ${name}" title="${value ? "Edit" : "Add"} ${name}" aria-expanded="false">${credentialActionIcon(value ? "edit" : "add")}</button><button class="remove-reputation-key" type="button" data-remove-reputation-key="${provider}" aria-label="Remove ${name}" title="Remove ${name}" ${value ? "" : "hidden"}>${credentialActionIcon("remove")}</button></div></li>`;
     return `<div class="page-heading"><div><p class="page-kicker">LOCAL CONFIGURATION</p><h1>Settings</h1><p>Choose how FishStop works on this device.</p></div></div>
       <div class="settings-grid">
-        <div class="settings-column">
-          <section class="settings-card settings-reputation">
-            <p class="page-kicker">PRIVACY & SERVICES</p>
-            <div class="settings-card-heading"><h2>Network checks</h2></div>
-            <p class="settings-description">Control which services receive email indicators.</p>
+          <section class="settings-card settings-privacy-mode" aria-label="Analysis privacy">
             <label class="fine-tuned-model-toggle settings-local-only">
               <span><strong>Local only</strong><small>Keep all analysis checks on this device.</small></span>
               <input id="local-only-toggle" type="checkbox" role="switch" ${localOnlyEnabled(user) ? "checked" : ""} /><i aria-hidden="true"></i>
             </label>
             <details class="settings-details"><summary>What does Local only include?</summary><p>Reputation, geolocation, DNS, RDAP and online identity checks are disabled. Local AI remains available. Model downloads, updates, website links and any future account connections are separate online actions.</p></details>
+          </section>
+        <div class="settings-column">
+          <section class="settings-card settings-reputation">
+            <p class="page-kicker">PRIVACY & SERVICES</p>
+            <div class="settings-card-heading"><h2>Network checks</h2></div>
+            <p class="settings-description">Control which services receive email indicators.</p>
             <h3 class="settings-subheading">API services</h3>
             <ul class="credential-list">${keyRow("virustotal", "VirusTotal API key", keys.virustotal)}${keyRow("abuseipdb", "AbuseIPDB API key", keys.abuseipdb)}${keyRow("otx", "AlienVault OTX API key", keys.otx)}</ul>
             <h3 class="settings-subheading">Optional checks</h3>
@@ -3349,17 +3364,19 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       if (!provider) return;
       const status = document.querySelector<HTMLElement>("#settings-status");
       button.disabled = true;
-      button.textContent = "Removing…";
+      button.setAttribute("aria-busy", "true");
       if (status) status.textContent = "Removing the key from the system keychain…";
       void invoke("remove_reputation_key", { userSub: user.sub, provider }).then(async () => {
         if (status) status.textContent = "";
         notify("API key removed.");
+        button.removeAttribute("aria-busy");
         await refreshReputationSettings(user, true);
         void refreshProtectionStatus(user, true);
       }).catch((error) => {
         console.error("Could not remove credential", error);
         button.disabled = false;
-        button.textContent = "Remove";
+        button.removeAttribute("aria-busy");
+        button.innerHTML = credentialActionIcon("remove");
         if (status) status.textContent = "";
         notify("Could not remove the API key. Please try again.", "error");
       });

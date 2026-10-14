@@ -65,7 +65,7 @@ assert.match(h.updateCheckFailure('platform `darwin-aarch64` was not found'),/No
 assert.match(h.updateCheckFailure('unexpected response'),/temporarily unavailable/);
 const main=readFileSync(new URL('../src/main.ts', import.meta.url),'utf8');
 const settings=main.slice(main.indexOf('if (section === "settings")'),main.indexOf('const dashboardHighRiskCount'));
-assert.ok(settings.indexOf('settings-right-column') < settings.indexOf('Machine and automatic model'));
-assert.ok(settings.indexOf('Machine and automatic model') < settings.indexOf('settings-app-updates'));
+assert.ok(settings.indexOf('settings-right-column') < settings.indexOf('ollama-lab'));
+assert.ok(settings.indexOf('ollama-lab') < settings.indexOf('settings-app-updates'));
 assert.equal((settings.match(/data-check-app-updates/g)||[]).length,1);
 console.log('App update checks passed: discovery, explicit consent, postponement, busy guard, safe notes, resource cleanup, install/restart and error recovery.');

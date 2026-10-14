@@ -3119,7 +3119,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       if (storedUser()?.sub === user.sub) renderDashboard(user, section);
     });
   }
-  const labels: Record<Section, string> = { dashboard: "Dashboard", analyse: "Analyse", inbox: "Analyse from inbox", history: "History", statistics: "Statistics", settings: "Settings" };
+  const labels: Record<Section, string> = { dashboard: "Dashboard", analyse: "Analyse", history: "History", statistics: "Statistics", settings: "Settings", inbox: "Analyse from inbox" };
   const icons: Record<Section, string> = { dashboard: homeIconMarkup(), analyse: searchIconMarkup(), inbox: inboxIconMarkup(), history: "◴", statistics: "◔", settings: "⚙" };
   const initial = escapeHtml((user.name || user.email).trim().charAt(0).toUpperCase());
   const safeName = escapeHtml(user.name || (user.provider === "microsoft" ? "Microsoft account" : "Google account"));

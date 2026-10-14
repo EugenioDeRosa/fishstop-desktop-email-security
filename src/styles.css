@@ -646,7 +646,7 @@ html[data-theme="dark"] .statistics-custom-period input { color-scheme:dark; }
 .settings-grid .credential-list li > .toggle-reputation-provider { grid-column: 1; grid-row: 1 / 3; align-self: center; }
 .settings-grid .credential-list li > .credential-static-copy { grid-column: 2; grid-row: 1 / 3; align-self: center; }
 .settings-grid .credential-list li > .provider-status { grid-column: 3; grid-row: 1; justify-self: end; align-self: end; }
-.settings-grid .credential-list .credential-row-actions { grid-column: 3; grid-row: 2; justify-self: end; gap: 5px; }
+.settings-grid .credential-list .credential-row-actions { grid-column: 3; grid-row: 2; justify-self: end; gap: 2px; }
 .settings-grid .credential-list .credential-row-actions button { min-height: 27px; font-size: 10px; padding: 4px 8px; }
 .settings-grid .credential-list li.is-editing-key > .credential-inline-field { grid-column: 2; grid-row: 1 / 3; }
 @media (max-width: 600px) { .settings-about-heading { align-items: start; } .settings-legal-links { width: 100%; } .settings-legal-links .settings-link-button { flex: 1 1 auto; } }
@@ -677,8 +677,10 @@ html[data-theme="dark"] .statistics-custom-period input { color-scheme:dark; }
 .settings-grid .provider-status:disabled { cursor: not-allowed; opacity: .6; }
 .settings-grid .credential-list li,
 .settings-grid .settings-reputation.is-editing-credentials .credential-list li { grid-template-columns: 24px minmax(0, 1fr) 78px; }
-.settings-grid .credential-list .credential-row-actions button { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; min-height: 26px; padding: 6px; border-radius: 6px; }
-.settings-grid .credential-row-actions button svg { width: 12px; height: 12px; flex: none; }
+.settings-grid .credential-list .credential-row-actions button { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; min-height: 30px; margin: 0; padding: 8px; border: 1px solid transparent; border-radius: 7px; background: transparent; color: var(--night-secondary, #607870); box-shadow: none; transition: color .15s, background .15s, border-color .15s; }
+.settings-grid .credential-list .credential-row-actions button:hover { background: var(--night-subtle, #edf4f0); border-color: var(--night-border, #dce8e1); color: var(--night-accent, #187566); transform: none; box-shadow: none; }
+.settings-grid .credential-list .credential-row-actions .remove-reputation-key:hover { color: var(--night-danger, #a44843); background: var(--night-danger-surface, #fcf0ee); border-color: transparent; }
+.settings-grid .credential-row-actions button svg { width: 12px; height: 12px; flex: none; stroke-width: 1.65; }
 .settings-grid .settings-updates-row h2 { min-width: 0; }
 .settings-grid [data-check-app-updates] { flex: none; white-space: nowrap; }
 .settings-grid .credential-row-actions button:focus-visible { outline: 2px solid var(--night-accent, #16816d); outline-offset: 3px; }

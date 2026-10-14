@@ -546,3 +546,53 @@ html[data-theme="dark"] .statistics-custom-period input { color-scheme:dark; }
 /* Features retained for a future account-enabled release. */
 .provider:disabled, .nav-item:disabled { opacity: .45; cursor: not-allowed; }
 .provider:disabled:hover { transform: none; }
+
+/* Settings: short descriptions, clear groups and expandable reference material. */
+.settings-grid { grid-template-columns: minmax(0, 1.12fr) minmax(0, 1fr); gap: 24px; align-items: start; }
+.settings-column { gap: 20px; }
+.settings-grid .settings-card { padding: 24px; }
+.settings-grid .settings-card h2 { font-size: 19px; margin-bottom: 8px; }
+.settings-grid .settings-card-heading { margin-bottom: 8px; }
+.settings-description { margin: 0 0 20px; color: var(--night-muted, #6b807c); font-size: 12px; line-height: 1.55; }
+.settings-subheading { margin: 22px 0 10px; color: var(--night-secondary, #55756c); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; }
+.settings-details { margin: 14px 0; padding-top: 12px; border-top: 1px solid var(--night-border, #e3ece8); color: var(--night-secondary, #55756c); font-size: 12px; line-height: 1.65; }
+.settings-details summary { cursor: pointer; font-size: 11px; font-weight: 650; }
+.settings-details summary:focus-visible { outline: 2px solid #32a984; outline-offset: 4px; border-radius: 3px; }
+.settings-details p { margin: 12px 0; font-size: 12px; line-height: 1.65; }
+.settings-details ul { padding-left: 18px; display: grid; gap: 9px; }
+.settings-grid .settings-local-only { margin: 0 0 8px; padding: 16px; background: var(--night-subtle, #eef6f2); border-color: var(--night-border, #cfe3d8); }
+.settings-local-only span { flex: 1; min-width: 0; }
+.settings-grid .credential-list li { grid-template-columns: 24px minmax(0, 1fr) auto; gap: 10px; min-height: 64px; padding: 12px; }
+.settings-grid .credential-list strong { font-size: 12px; }
+.settings-grid .credential-list small { font-size: 10px; margin-top: 3px; }
+.settings-grid .credential-list li > b { font-size: 9px; padding: 5px 7px; }
+.settings-grid .credential-row-actions { grid-column: 2 / -1; justify-self: start; }
+.settings-grid .credential-row-actions .edit-reputation-key { font-size: 10px; padding: 5px 9px; }
+.settings-grid .credential-row-actions .remove-reputation-key { grid-column: auto; }
+.settings-grid .settings-reputation.is-editing-credentials .credential-list li { grid-template-columns: 24px minmax(0, 1fr) auto; }
+.settings-grid .settings-reputation li.is-editing-key .credential-inline-field { grid-column: 2; min-width: 0; }
+.settings-grid .settings-reputation li.is-editing-key .credential-inline-field input { width: 100%; min-width: 0; box-sizing: border-box; }
+.settings-grid .settings-preference-list { gap: 8px; }
+.settings-grid .settings-preference-list .fine-tuned-model-toggle { padding: 12px; }
+.settings-grid .settings-preference-list small { font-size: 11px; line-height: 1.5; }
+.settings-license-note { font-size: 11px; line-height: 1.65; color: var(--night-muted, #6b807c); }
+.settings-grid .ai-mode-picker { gap: 8px; margin-top: 0; }
+.settings-grid .ai-mode-picker > label { padding: 13px; }
+.settings-grid .machine-profile dl > div { grid-template-columns: 68px minmax(0, 1fr); }
+.settings-grid .machine-profile .machine-model-row { grid-template-columns: 1fr; gap: 8px; }
+.settings-grid .machine-model-heading { gap: 8px; }
+.settings-grid .machine-model-identity { min-width: 0; }
+.settings-grid .machine-model-identity strong { font-size: 13px; overflow-wrap: anywhere; }
+.settings-grid .settings-device-details { margin: 16px 0; }
+.settings-grid .settings-app-updates .settings-updates-row { flex-wrap: wrap; gap: 12px; }
+@media (max-width: 1080px) { .settings-grid { grid-template-columns: minmax(0, 1fr); max-width: 760px; } }
+@media (max-width: 600px) { .settings-grid .settings-card { padding: 18px; } .settings-grid .ai-mode-picker { grid-template-columns: 1fr; } }
+
+@media (max-width: 1080px) {
+  .settings-grid .settings-column { display: contents; }
+  .settings-grid .ollama-lab { order: 0; }
+  .settings-grid .settings-reputation { order: 1; }
+  .settings-grid .settings-preferences { order: 2; }
+  .settings-grid .settings-app-updates { order: 3; }
+  .settings-grid .settings-license { order: 4; }
+}

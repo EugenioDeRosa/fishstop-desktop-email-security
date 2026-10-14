@@ -3475,9 +3475,9 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       return false;
     }
     if (!managedModelStatus || !installManagedQwen || !removeManagedQwen) return false;
-    managedModelStatus.hidden = false;
     const installing = managedModelOperation.phase === "installing";
-    installManagedQwen.hidden = !installing;
+    managedModelStatus.hidden = installing;
+    installManagedQwen.hidden = true;
     installManagedQwen.disabled = true;
     installManagedQwen.textContent = t("Installing AI model…");
     removeManagedQwen.hidden = installing;

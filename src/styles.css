@@ -724,3 +724,14 @@ html[data-theme="dark"] .statistics-custom-period input { color-scheme:dark; }
 .shell .hero-copy h1 { font-weight: 650; letter-spacing: -.055em; line-height: 1.08; }
 .shell .hero-copy h1 em { font-family: inherit; font-style: normal; font-weight: inherit; }
 .shell .login-switch-thumb, .shell .login-language-option { font-family: inherit; }
+
+/* Give an active model download its own full-width, stable progress layout. */
+.settings-grid .machine-profile .machine-model-row.is-busy { grid-template-columns: minmax(0, 1fr); gap: 8px; padding: 12px; }
+.settings-grid .machine-model-row.is-busy > dd { min-width: 0; gap: 10px; }
+.settings-grid .machine-model-row.is-busy .machine-model-identity { flex: 1; }
+.settings-grid .machine-model-row.is-busy .machine-model-identity > strong { overflow-wrap: normal; }
+.settings-grid .machine-model-row.is-busy .model-status-badge { white-space: nowrap; }
+.settings-grid .managed-model-progress { min-width: 0; padding: 10px 12px; gap: 9px; }
+.settings-grid .managed-model-progress > div:first-child { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; font-family: inherit; font-size: 10px; line-height: 1.4; }
+.settings-grid #managed-model-progress-label { min-width: 0; overflow-wrap: anywhere; }
+.settings-grid #managed-model-progress-value { white-space: nowrap; font-variant-numeric: tabular-nums; text-align: right; }

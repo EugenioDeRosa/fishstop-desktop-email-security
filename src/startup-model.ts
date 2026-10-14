@@ -13,7 +13,7 @@ export async function ensureStartupModel<T extends ModelStatus>(services: {
   const status = await services.select();
   if (status.model_ready) return status;
   if (!status.model_download_available) throw new Error('The selected AI model is currently unavailable for download.');
-  const name = /1\.7b/i.test(status.model) ? 'Fast' : 'Performance';
+  const name = /1\.7b/i.test(status.model) ? 'Fast' : 'Pro';
   const detail = t("{0} mode · You only need to download this model once.", [name]);
   services.update(t("Downloading AI model"), detail);
   const unsubscribe = await services.subscribe(progress => {

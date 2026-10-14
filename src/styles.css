@@ -677,8 +677,10 @@ html[data-theme="dark"] .statistics-custom-period input { color-scheme:dark; }
 .settings-grid .provider-status:disabled { cursor: not-allowed; opacity: .6; }
 .settings-grid .credential-list li,
 .settings-grid .settings-reputation.is-editing-credentials .credential-list li { grid-template-columns: 24px minmax(0, 1fr) 78px; }
-.settings-grid .credential-list .credential-row-actions button { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; min-height: 28px; padding: 6px; border-radius: 7px; }
-.settings-grid .credential-row-actions button svg { width: 14px; height: 14px; flex: none; }
+.settings-grid .credential-list .credential-row-actions button { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; min-height: 26px; padding: 6px; border-radius: 6px; }
+.settings-grid .credential-row-actions button svg { width: 12px; height: 12px; flex: none; }
+.settings-grid .settings-updates-row h2 { min-width: 0; }
+.settings-grid [data-check-app-updates] { flex: none; white-space: nowrap; }
 .settings-grid .credential-row-actions button:focus-visible { outline: 2px solid var(--night-accent, #16816d); outline-offset: 3px; }
 .settings-grid .credential-row-actions button[aria-busy="true"] { opacity: .45; cursor: wait; }
 .settings-grid .credential-row-actions button[hidden] { display: none; }

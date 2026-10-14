@@ -24,7 +24,7 @@ for (const model of ['fishstop-fast:1.7b-finetuned-lite-v2-q4_k_m', 'fishstop-qw
   assert.equal(installs, 1);
   assert.equal(releases, 1);
   assert.equal(messages[0][0], 'Downloading AI model');
-  assert.ok(messages[0][1].startsWith(model.includes('1.7b') ? 'Fast mode' : 'Performance mode'));
+  assert.ok(messages[0][1].startsWith(model.includes('1.7b') ? 'Fast mode' : 'Pro mode'));
   assert.equal(messages[1][2], 50, 'Progress comes from actual download bytes');
   services.install = async () => { throw new Error('Offline'); };
   await assert.rejects(ensureStartupModel(services), /Offline/);

@@ -615,3 +615,27 @@ html[data-theme="dark"] .statistics-custom-period input { color-scheme:dark; }
 .settings-legal-links a span { margin-left: 3px; opacity: .65; }
 .settings-license > .settings-details { border-top: 0; padding-top: 0; margin: 14px 0 0; }
 .settings-license-text { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 20rem; overflow: auto; padding: 16px; background: var(--night-subtle, #f1f6f3); border-radius: 8px; font-size: 11px; line-height: 1.6; }
+
+/* Settings navigation uses consistent button surfaces. */
+.settings-legal-links { gap: 8px; }
+.settings-legal-links .settings-link-button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 36px; padding: 0 12px; border: 1px solid var(--night-border, #d6e4dd); border-radius: 8px; background: var(--night-surface, #fff); color: var(--night-secondary, #45675a); font-size: 11px; font-weight: 650; text-decoration: none; transition: background .15s, border-color .15s; }
+.settings-legal-links .settings-link-button:hover { background: var(--night-subtle, #edf6f1); border-color: var(--night-accent-border, #97b9a7); text-decoration: none; }
+.settings-legal-links .settings-link-button:focus-visible { outline: 2px solid #32a984; outline-offset: 3px; }
+/* Selected model: name and status first, version on its own line. */
+.settings-grid .machine-profile .machine-model-row > dt { min-height: 0; font-size: 10px; color: var(--night-muted, #71857d); }
+.settings-grid .machine-model-heading { align-items: start; gap: 12px; }
+.settings-grid .machine-model-identity { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 7px 10px; }
+.settings-grid .machine-model-identity > strong { grid-column: 1; grid-row: 1; display: block; font-size: 15px; line-height: 1.4; }
+.settings-grid .machine-model-identity > .model-status-badge { grid-column: 2; grid-row: 1; }
+.settings-grid .machine-model-identity > .model-finetune-version { grid-column: 1 / -1; grid-row: 2; display: block; margin: 0; font-size: 11px; line-height: 1.55; }
+.settings-grid .machine-model-heading > button { align-self: start; min-height: 32px; }
+/* API actions align under the status, at the right of each row. */
+.settings-grid .credential-list li,
+.settings-grid .settings-reputation.is-editing-credentials .credential-list li { grid-template-columns: 24px minmax(0, 1fr) 116px; row-gap: 7px; }
+.settings-grid .credential-list li > .toggle-reputation-provider { grid-column: 1; grid-row: 1 / 3; align-self: center; }
+.settings-grid .credential-list li > .credential-static-copy { grid-column: 2; grid-row: 1 / 3; align-self: center; }
+.settings-grid .credential-list li > b { grid-column: 3; grid-row: 1; justify-self: end; align-self: end; }
+.settings-grid .credential-list .credential-row-actions { grid-column: 3; grid-row: 2; justify-self: end; gap: 5px; }
+.settings-grid .credential-list .credential-row-actions button { min-height: 27px; font-size: 10px; padding: 4px 8px; }
+.settings-grid .credential-list li.is-editing-key > .credential-inline-field { grid-column: 2; grid-row: 1 / 3; }
+@media (max-width: 600px) { .settings-about-heading { align-items: start; } .settings-legal-links { width: 100%; } .settings-legal-links .settings-link-button { flex: 1 1 auto; } }

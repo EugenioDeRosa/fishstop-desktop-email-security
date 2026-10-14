@@ -603,3 +603,15 @@ html[data-theme="dark"] .statistics-custom-period input { color-scheme:dark; }
   .settings-grid .settings-reputation { order: 0; }
   .settings-grid .ollama-lab { order: 1; }
 }
+
+/* Legal information stays in a quiet footer, below the working controls. */
+.settings-grid > .settings-license { padding: 20px 4px 0; background: transparent; border: 0; border-top: 1px solid var(--night-border, #dde8e2); border-radius: 0; box-shadow: none; }
+.settings-about-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 14px 24px; }
+.settings-grid .settings-about-heading h2 { margin: 0 0 5px; font-size: 13px; }
+.settings-about-heading p { margin: 0; font-size: 11px; color: var(--night-muted, #71857d); }
+.settings-legal-links { display: flex; flex-wrap: wrap; gap: 18px; }
+.settings-legal-links a { color: var(--night-secondary, #55756c); font-size: 11px; font-weight: 600; text-decoration: none; }
+.settings-legal-links a:hover { text-decoration: underline; text-underline-offset: 3px; }
+.settings-legal-links a span { margin-left: 3px; opacity: .65; }
+.settings-license > .settings-details { border-top: 0; padding-top: 0; margin: 14px 0 0; }
+.settings-license-text { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 20rem; overflow: auto; padding: 16px; background: var(--night-subtle, #f1f6f3); border-radius: 8px; font-size: 11px; line-height: 1.6; }

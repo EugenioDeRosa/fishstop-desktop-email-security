@@ -3075,12 +3075,15 @@ function contentFor(section: Section, user: AuthUser): string {
           </section>
         </div>
           <section class="settings-card settings-license" aria-labelledby="software-license-title">
-            <h2 id="software-license-title">License</h2>
-            <p class="settings-description">GPLv3 · Free and open source.</p>
-            <p class="settings-license-note">© 2026 Eugenio De Rosa. You may modify and redistribute FishStop under GPL-3.0-or-later. No warranty, to the extent permitted by law.</p>
-            <details class="settings-details"><summary>Read full license</summary><pre style="white-space:pre-wrap;overflow-wrap:anywhere;max-height:20rem;overflow:auto">${escapeHtml(gplLicenseText)}</pre></details>
-            <p><a href="https://github.com/EugenioDeRosa/fishstop-desktop-email-security" target="_blank" rel="noopener noreferrer">Source code and build instructions</a></p>
-            <details class="settings-details"><summary>Service terms & data sharing</summary><p>Services receive selected URLs, domains, IP addresses or file hashes, never the full email or attachments. URLs may contain personal identifiers.</p><ul><li>VirusTotal Public: 4 requests/minute, 500/day. Commercial products/services and business workflows without file contributions are excluded.</li><li>Free OTX: non-commercial use.</li><li>Spamhaus public DNSBL: non-commercial fair use and a supported resolver are required.</li><li>AbuseIPDB and ipwho.is: plan limits and data-reuse restrictions apply.</li></ul><p>Your keys do not override provider terms. Provider data is not licensed under FishStop’s GPL.</p></details>
+            <div class="settings-about-heading">
+              <div><h2 id="software-license-title">About FishStop</h2><p>© 2026 Eugenio De Rosa · Free and open source</p></div>
+              <nav class="settings-legal-links" aria-label="FishStop information">
+                <a href="https://fishstop-eml.streamlit.app/?page=privacy" target="_blank" rel="noopener noreferrer">Privacy <span aria-hidden="true">↗</span></a>
+                <a href="https://fishstop-eml.streamlit.app/?page=terms" target="_blank" rel="noopener noreferrer">Terms & license <span aria-hidden="true">↗</span></a>
+              </nav>
+            </div>
+            <details class="settings-details"><summary>GPLv3 license · Available offline</summary><p>You may modify and redistribute FishStop under GPL-3.0-or-later. No warranty, to the extent permitted by law.</p><pre class="settings-license-text">${escapeHtml(gplLicenseText)}</pre><p><a href="https://github.com/EugenioDeRosa/fishstop-desktop-email-security" target="_blank" rel="noopener noreferrer">Source code ↗</a></p></details>
+            <details class="settings-details"><summary>External service conditions</summary><p>Your API keys do not override provider terms. VirusTotal Public excludes commercial products/services and business workflows without file contributions. Free OTX and public Spamhaus have non-commercial conditions. AbuseIPDB and ipwho.is apply their own plan and data-reuse limits.</p><p>Services receive selected indicators, never the full email or attachments. Indicators may contain personal identifiers. See the website for privacy and service information.</p></details>
           </section>
       </div>`;
   }

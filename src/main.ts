@@ -981,8 +981,9 @@ function searchIconMarkup(): string {
   return html`<svg class="search-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="10.5" cy="10.5" r="6.25"></circle><path d="m15.1 15.1 4.4 4.4"></path></svg>`;
 }
 
-function credentialActionIcon(action: "add" | "edit" | "remove"): string {
+function credentialActionIcon(action: "add" | "edit" | "remove" | "close"): string {
   const paths = {
+    close: '<path d="m6 6 12 12M18 6 6 18"/>',
     add: localizeHtml("<path d=\"M12 5v14M5 12h14\"/>"),
     edit: localizeHtml("<path d=\"m16 3 5 5-12 12-6 1 1-6L16 3Z\"/><path d=\"m13 6 5 5\"/>"),
     remove: localizeHtml("<path d=\"M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7\"/>"),
@@ -3044,7 +3045,7 @@ function contentFor(section: Section, user: AuthUser): string {
   if (section === "settings") {
     const keys = reputationKeys(user);
     const providerStatus = (provider: string, name: string, ready: boolean) => html`<button class="provider-status" type="button" data-toggle-provider="${provider}" aria-label="${t("Enable {0}", [name])}" aria-pressed="${!disabledReputationProviders(user).includes(provider)}" ${localOnlyEnabled(user) ? "disabled" : ""}>${disabledReputationProviders(user).includes(provider) ? t("Disabled") : ready ? t("Ready") : t("Required")}</button>`;
-    const keyRow = (provider: "virustotal" | "abuseipdb" | "otx", name: string, value: boolean) => html`<li class="${value ? "ready" : "missing"} ${disabledReputationProviders(user).includes(provider) ? "provider-disabled" : ""}" data-reputation-provider="${provider}"><button class="toggle-reputation-provider" type="button" data-toggle-provider="${provider}" ${localOnlyEnabled(user) ? "disabled" : ""} aria-label="Enable ${name.replace(" API key", "")}" aria-pressed="${!disabledReputationProviders(user).includes(provider)}">${disabledReputationProviders(user).includes(provider) ? "—" : "✓"}</button><div class="credential-static-copy"><strong>${name.replace(" API key", "")}</strong><small>${value ? t("Stored in the system keychain") : t("Key not configured")}</small></div><label class="credential-inline-field"><span>${t(name)}</span><input form="reputation-settings" name="${provider}" type="password" autocomplete="new-password" aria-label="${t(name)}" placeholder="${value ? t("Enter a new key or leave unchanged") : t("Enter the {0} token", [provider === "otx" ? "OTX" : provider === "virustotal" ? "VirusTotal" : "AbuseIPDB"])}" /></label>${providerStatus(provider, name.replace(" API key", ""), value)}<div class="credential-row-actions"><button class="soft-action edit-reputation-key" type="button" data-edit-reputation-key="${provider}" aria-label="${value ? t("Edit") : t("Add")} ${t(name)}" title="${value ? t("Edit") : t("Add")} ${t(name)}" aria-expanded="false">${credentialActionIcon(value ? "edit" : "add")}</button><button class="remove-reputation-key" type="button" data-remove-reputation-key="${provider}" aria-label="Remove ${t(name)}" title="Remove ${t(name)}" ${value ? "" : "hidden"}>${credentialActionIcon("remove")}</button></div></li>`;
+    const keyRow = (provider: "virustotal" | "abuseipdb" | "otx", name: string, value: boolean) => html`<li class="${value ? "ready" : "missing"} ${disabledReputationProviders(user).includes(provider) ? "provider-disabled" : ""}" data-reputation-provider="${provider}"><button class="toggle-reputation-provider" type="button" data-toggle-provider="${provider}" ${localOnlyEnabled(user) ? "disabled" : ""} aria-label="Enable ${name.replace(" API key", "")}" aria-pressed="${!disabledReputationProviders(user).includes(provider)}">${disabledReputationProviders(user).includes(provider) ? "—" : "✓"}</button><div class="credential-static-copy"><strong>${name.replace(" API key", "")}</strong><small>${value ? t("Stored in the system keychain") : t("Key not configured")}</small></div><label class="credential-inline-field"><span>${t(name)}</span><input form="reputation-settings" name="${provider}" type="password" autocomplete="new-password" aria-label="${t(name)}" placeholder="${value ? t("Enter a new key or leave unchanged") : t("Enter the {0} token", [provider === "otx" ? "OTX" : provider === "virustotal" ? "VirusTotal" : "AbuseIPDB"])}" /></label>${providerStatus(provider, name.replace(" API key", ""), value)}<div class="credential-row-actions"><button class="soft-action edit-reputation-key" type="button" data-edit-reputation-key="${provider}" aria-label="${value ? t("Edit") : t("Add")} ${t(name)}" title="${value ? t("Edit") : t("Add")} ${t(name)}" aria-expanded="false">${credentialActionIcon(value ? "edit" : "add")}</button><button class="remove-reputation-key" type="button" data-remove-reputation-key="${provider}" aria-label="Remove ${t(name)}" title="Remove ${t(name)}" ${value ? "" : "hidden"}>${credentialActionIcon("remove")}</button><button class="credential-close-edit" type="button" aria-label="${t("Cancel")}" title="${t("Cancel")}">${credentialActionIcon("close")}</button></div></li>`;
     return html`<div class="page-heading"><div><p class="page-kicker">LOCAL CONFIGURATION</p><h1>Settings</h1><p>Choose how FishStop works on this device.</p></div></div>
       <div class="settings-grid">
 
@@ -3348,6 +3349,13 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
     const status = document.querySelector<HTMLElement>("#settings-status");
     if (status) status.textContent = "";
   });
+  document.querySelectorAll<HTMLButtonElement>(".credential-close-edit").forEach(button => button.addEventListener("click", () => {
+    const trigger = button.closest("li")?.querySelector<HTMLButtonElement>(".edit-reputation-key");
+    closeCredentialEditor();
+    const status = document.querySelector<HTMLElement>("#settings-status");
+    if (status) status.textContent = "";
+    trigger?.focus();
+  }));
   document.querySelector<HTMLFormElement>("#reputation-settings")?.addEventListener("submit", (event) => {
     event.preventDefault();
     const inlineValue = (provider: "virustotal" | "abuseipdb" | "otx") => String(document.querySelector<HTMLInputElement>(`.credential-inline-field input[name="${provider}"]`)?.value || "").trim();

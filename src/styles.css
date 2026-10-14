@@ -686,6 +686,10 @@ html[data-theme="dark"] .statistics-custom-period input { color-scheme:dark; }
 .settings-grid .credential-row-actions button:focus-visible { outline: 2px solid var(--night-accent, #16816d); outline-offset: 3px; }
 .settings-grid .credential-row-actions button[aria-busy="true"] { opacity: .45; cursor: wait; }
 .settings-grid .credential-row-actions button[hidden] { display: none; }
+.settings-grid .credential-list .credential-row-actions .credential-close-edit { display: none; }
+.settings-grid .settings-reputation li.is-editing-key .credential-row-actions { display: flex; }
+.settings-grid .settings-reputation li.is-editing-key .credential-row-actions > button { display: none; }
+.settings-grid .settings-reputation li.is-editing-key .credential-row-actions > .credential-close-edit { display: inline-flex; }
 @media (max-width: 1080px) {
   .settings-grid { grid-template-columns: minmax(0, 1fr); grid-template-areas: "reputation" "ollama" "updates" "preferences" "about"; grid-template-rows: auto; }
 }

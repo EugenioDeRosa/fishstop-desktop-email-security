@@ -596,3 +596,10 @@ html[data-theme="dark"] .statistics-custom-period input { color-scheme:dark; }
   .settings-grid .settings-app-updates { order: 3; }
   .settings-grid .settings-license { order: 4; }
 }
+
+.settings-grid > .settings-license { grid-column: 1 / -1; }
+.toggle-reputation-provider:disabled { cursor: not-allowed; opacity: .45; }
+@media (max-width: 1080px) {
+  .settings-grid .settings-reputation { order: 0; }
+  .settings-grid .ollama-lab { order: 1; }
+}

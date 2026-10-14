@@ -718,3 +718,9 @@ html[data-theme="dark"] .statistics-custom-period input { color-scheme:dark; }
 @media (max-width: 700px) {
   .settings-grid .settings-preference-list { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* Match the landing page typography throughout the login screen. */
+.shell { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Inter", sans-serif; }
+.shell .hero-copy h1 { font-weight: 650; letter-spacing: -.055em; line-height: 1.08; }
+.shell .hero-copy h1 em { font-family: inherit; font-style: normal; font-weight: inherit; }
+.shell .login-switch-thumb, .shell .login-language-option { font-family: inherit; }

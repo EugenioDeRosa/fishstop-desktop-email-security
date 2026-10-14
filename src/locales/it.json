@@ -341,7 +341,7 @@
   "FishSTOP {0} is available (current version: {1}).": "È disponibile FishSTOP {0} (versione attuale: {1}).",
   "FishSTOP {0} is available.": "È disponibile FishSTOP {0}.",
   "FishSTOP AI v5 is not yet available for download in this version.": "FishSTOP AI v5 non è ancora scaricabile in questa versione.",
-  "FishStop analyses email files, links and attachments on your device. A clear view of the signals that deserve attention, without sending the content to a server.": "FishStop analizza file email, link e allegati sul tuo dispositivo. Una lettura chiara dei segnali che meritano attenzione, senza inviare il contenuto a un server.",
+  "An unexpected email. A link you are unsure about. Before you trust it, uncover suspicious signals in the message, links and attachments. FishStop’s AI runs on your device, keeping your email content local.": "Un’email inattesa. Un link che non ti convince. Prima di fidarti, scopri i segnali sospetti nel messaggio, nei link e negli allegati. L’AI di FishStop lavora sul tuo dispositivo: il contenuto delle tue email resta locale.",
   "FishStop analysis timing (ms)": "Tempi di analisi FishStop (ms)",
   "FishStop could not start.": "Impossibile avviare FishStop.",
   "FishStop found {0} messages in {1}. Select the messages that should receive a verdict.": "FishStop ha trovato {0} messaggi in {1}. Seleziona quelli da valutare.",

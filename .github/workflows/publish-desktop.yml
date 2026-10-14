@@ -1,0 +1,185 @@
+name: Publish desktop installers
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: desktop-release-main
+  cancel-in-progress: true
+
+jobs:
+  prepare-release:
+    name: Prepare rolling release
+    runs-on: ubuntu-latest
+    outputs:
+      release_id: ${{ steps.release.outputs.release_id }}
+      release_tag: ${{ steps.release.outputs.release_tag }}
+      release_version: ${{ steps.release.outputs.release_version }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Check update signing configuration
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if test -z "${TAURI_SIGNING_PRIVATE_KEY}"; then
+            echo "Missing TAURI_SIGNING_PRIVATE_KEY repository secret. Configure it before publishing signed updates."
+            exit 1
+          fi
+      - name: Remove drafts left by interrupted builds
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh api --paginate "repos/${GH_REPO}/releases" \
+            --jq '.[] | select(.draft and (.tag_name | startswith("continuous-"))) | .id' |
+          while read -r release_id; do
+            test -z "${release_id}" || gh api --method DELETE "repos/${GH_REPO}/releases/${release_id}"
+          done
+      - name: Create release draft for this commit
+        id: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          release_version="$(node -p "require('./package.json').version")"
+          release_tag="continuous-${GITHUB_SHA:0:12}"
+          release_id="$(gh api --method POST "repos/${GH_REPO}/releases" \
+            -f tag_name="${release_tag}" \
+            -f target_commitish="${GITHUB_SHA}" \
+            -f name="FishSTOP ${release_version}" \
+            -f body="Build automatica del commit ${GITHUB_SHA}." \
+            -F draft=true \
+            -F prerelease=false \
+            --jq '.id')"
+          echo "release_id=${release_id}" >> "${GITHUB_OUTPUT}"
+          echo "release_tag=${release_tag}" >> "${GITHUB_OUTPUT}"
+          echo "release_version=${release_version}" >> "${GITHUB_OUTPUT}"
+
+  publish:
+    needs: prepare-release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            tauri_args: --target x86_64-apple-darwin --bundles app,dmg
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            tauri_args: --target aarch64-apple-darwin --bundles app,dmg
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            # A single NSIS installer is enough for Windows. It includes the
+            # NVIDIA CUDA runtime; Vulkan remains available for other GPUs.
+            tauri_args: --target x86_64-pc-windows-msvc --bundles nsis
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: lts/*
+          cache: npm
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ./src-tauri -> target
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Check frontend regressions
+        run: node --test scripts/test_*.mjs
+      - name: Package the Python analysis engine
+        env:
+          FISHSTOP_TARGET_TRIPLE: ${{ matrix.target }}
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r src-python/requirements.txt pyinstaller
+          python scripts/build_sidecar.py
+      - name: Package the native MLX runtime
+        if: matrix.target == 'aarch64-apple-darwin'
+        env:
+          FISHSTOP_TARGET_TRIPLE: ${{ matrix.target }}
+        run: |
+          python -m pip install -r src-python/requirements-mlx.txt pyinstaller
+          python scripts/build_mlx_sidecar.py
+      - name: Bundle the Ollama runtime
+        env:
+          FISHSTOP_TARGET_TRIPLE: ${{ matrix.target }}
+        run: python scripts/download_ollama_runtime.py
+      - name: Publish the on-demand NVIDIA runtime
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.prepare-release.outputs.release_tag }}
+        shell: bash
+        run: |
+          gh release upload "${RELEASE_TAG}" \
+            build/fishstop-ollama-cuda.zip \
+            build/fishstop-ollama-cuda.zip.sha256 \
+            --clobber
+      - name: Prepare Google OAuth desktop credential
+        env:
+          FISHSTOP_GOOGLE_CLIENT_SECRET: ${{ secrets.FISHSTOP_GOOGLE_CLIENT_SECRET }}
+        run: python -c "from pathlib import Path; import os; secret=os.environ.get('FISHSTOP_GOOGLE_CLIENT_SECRET', '').strip(); assert secret, 'Missing required FISHSTOP_GOOGLE_CLIENT_SECRET repository secret'; Path('src-tauri/resources/google-oauth-client-secret').write_text(secret, encoding='utf-8')"
+      - uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          releaseId: ${{ needs.prepare-release.outputs.release_id }}
+          tagName: ${{ needs.prepare-release.outputs.release_tag }}
+          releaseDraft: true
+          uploadUpdaterJson: true
+          updaterJsonPreferNsis: true
+          prerelease: false
+          args: ${{ matrix.tauri_args }}
+
+  publish-release:
+    name: Publish completed release
+    needs: [prepare-release, publish]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify updater manifest before publishing
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.prepare-release.outputs.release_tag }}
+        run: |
+          gh release download "${RELEASE_TAG}" --pattern latest.json
+          node -e 'const m=require("./latest.json"); for(const p of ["windows-x86_64","darwin-x86_64","darwin-aarch64"]) { if(!m.platforms[p]?.signature || !m.platforms[p]?.url) throw new Error("Missing signed update: "+p); }'
+      - name: Publish this build as the latest release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.prepare-release.outputs.release_tag }}
+        run: |
+          gh release edit "${RELEASE_TAG}" \
+            --repo "${GH_REPO}" \
+            --target "${GITHUB_SHA}" \
+            --title "FishSTOP ${{ needs.prepare-release.outputs.release_version }}" \
+            --notes "Build automatica del commit ${GITHUB_SHA}. Scarica l'installer adatto al tuo sistema operativo." \
+            --draft=false \
+            --latest
+      - name: Remove superseded rolling releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.prepare-release.outputs.release_tag }}
+        run: |
+          gh release list --repo "${GH_REPO}" --limit 100 --json tagName \
+            --jq '.[].tagName | select(startswith("continuous-"))' |
+          while read -r old_tag; do
+            if test -n "${old_tag}" && test "${old_tag}" != "${RELEASE_TAG}"; then
+              gh release delete "${old_tag}" --repo "${GH_REPO}" --cleanup-tag --yes
+            fi
+          done

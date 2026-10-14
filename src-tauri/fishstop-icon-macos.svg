@@ -1,0 +1,35 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <!-- Legacy ICNS fallback for Tauri: a 1024px canvas with an 824px tile
+       leaves room for the subtle depth used by native macOS app icons. -->
+  <defs>
+    <filter id="macosTileShadow" x="48" y="48" width="928" height="952" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="14" stdDeviation="10" flood-color="#000000" flood-opacity="0.3"/>
+    </filter>
+    <linearGradient id="macosTileBackground" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#17413E"/>
+      <stop offset="48%" stop-color="#123331"/>
+      <stop offset="100%" stop-color="#0E2B2A"/>
+    </linearGradient>
+    <clipPath id="roundedSquareMacos">
+      <rect width="512" height="512" rx="96" ry="96"/>
+    </clipPath>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="154.5" fill="#123331" filter="url(#macosTileShadow)"/>
+  <g transform="translate(100 100) scale(1.609375)">
+    <g clip-path="url(#roundedSquareMacos)">
+      <rect width="512" height="512" fill="url(#macosTileBackground)"/>
+      <g transform="translate(96,86)">
+        <rect width="320" height="220" rx="28" fill="#7FE0C4" stroke="#123331" stroke-width="12"/>
+        <path d="M10 18 L160 140 L310 18" fill="none" stroke="#123331" stroke-width="14" stroke-linecap="round" stroke-linejoin="round"/>
+      </g>
+      <g transform="translate(300,232)">
+        <circle cx="58" cy="58" r="58" fill="#FFFFFF" stroke="#123331" stroke-width="10"/>
+        <path d="M32 60 L50 78 L86 36" fill="none" stroke="#123331" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/>
+      </g>
+      <text x="256" y="435" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-weight="800" font-size="68" letter-spacing="-1">
+        <tspan fill="#FFFFFF">fish</tspan><tspan fill="#7FE0C4">stop</tspan>
+      </text>
+      <rect x="1" y="1" width="510" height="510" rx="95" ry="95" fill="none" stroke="#FFFFFF" stroke-opacity="0.14" stroke-width="2"/>
+    </g>
+  </g>
+</svg>

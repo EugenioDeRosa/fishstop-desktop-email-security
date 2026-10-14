@@ -1,0 +1,21 @@
+<svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <clipPath id="roundedSquare">
+      <rect width="512" height="512" rx="96" ry="96"/>
+    </clipPath>
+  </defs>
+  <g clip-path="url(#roundedSquare)">
+    <rect width="512" height="512" fill="#123331"/>
+    <g transform="translate(96,86)">
+      <rect width="320" height="220" rx="28" fill="#7FE0C4" stroke="#123331" stroke-width="12"/>
+      <path d="M10 18 L160 140 L310 18" fill="none" stroke="#123331" stroke-width="14" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+    <g transform="translate(300,232)">
+      <circle cx="58" cy="58" r="58" fill="#FFFFFF" stroke="#123331" stroke-width="10"/>
+      <path d="M32 60 L50 78 L86 36" fill="none" stroke="#123331" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+    <text x="256" y="435" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-weight="800" font-size="68" letter-spacing="-1">
+      <tspan fill="#FFFFFF">fish</tspan><tspan fill="#7FE0C4">stop</tspan>
+    </text>
+  </g>
+</svg>

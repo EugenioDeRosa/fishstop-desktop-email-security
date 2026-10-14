@@ -1,0 +1,57 @@
+
+# Dipendenze e build
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/binaries/
+src-tauri/resources/ollama/*
+!src-tauri/resources/ollama/.gitkeep
+src-tauri/resources/google-oauth-client-secret
+build/
+.venv/
+.venv-mlx/
+__pycache__/
+*.py[cod]
+
+# Segreti e dati locali
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+.DS_Store
+
+# Email e storico locale potenzialmente sensibili
+/training/
+/evaluation/
+/output/
+/AUDIT-*.md
+/FishStop_*_Colab.ipynb
+*.eml
+!test-fixtures/*.eml
+*.gguf
+*.safetensors
+*.pt
+*.pth
+*.onnx
+data/raw/
+/evaluation/qwen-light-testset-v1/
+/evaluation/qwen-light-testset-v1.zip
+/output/local-email-inventory.json
+/output/local-email-candidates.json
+
+# Materiale locale della tesi: non fa parte del software pubblicato
+/*.docx
+/.codex_docx_work/
+/.docx-qa-*/
+/deliverables/
+/rendered_chapter*/
+/tmp/
+/build_thesis_outline.py
+/draft_section_*.py
+/replace_chapter*.py
+/section_*.txt
+/scripts/finalize_thesis_corrections.py
+/scripts/remove_repetitions.py
+/scripts/revise_thesis_bibliography.py
+/scripts/update_manual_toc_pages.py

@@ -1,0 +1,31 @@
+{
+  "name": "fishstop",
+  "private": true,
+  "version": "1.2.0",
+  "type": "module",
+  "dependencies": {
+    "@tauri-apps/api": "^2.0.0",
+    "@tauri-apps/plugin-dialog": "^2.7.2",
+    "@tauri-apps/plugin-process": "^2.4.0",
+    "@tauri-apps/plugin-updater": "^2.13.3",
+    "d3-geo": "^3.1.1",
+    "motion": "^13.1.1",
+    "topojson-client": "^3.1.0",
+    "world-atlas": "^2.0.2"
+  },
+  "scripts": {
+    "dev": "vite",
+    "dev:tauri": "node scripts/dev_frontend.mjs",
+    "build": "tsc && vite build",
+    "mlx:serve": ".venv-mlx/bin/python scripts/run_mlx_server.py",
+    "tauri:mlx": "FISHSTOP_LLM_PROVIDER=mlx npm run tauri -- dev",
+    "tauri": "tauri"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.0.0",
+    "@types/d3-geo": "^3.1.1",
+    "@types/topojson-client": "^3.1.5",
+    "typescript": "^5.6.3",
+    "vite": "^6.0.0"
+  }
+}

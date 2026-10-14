@@ -1,0 +1,18 @@
+.app-update-dialog { width: min(460px, calc(100vw - 48px)); padding: 28px; border: 1px solid #d5dfeb; border-radius: 20px; background: #fff; color: #182b46; box-shadow: 0 24px 90px #101e3b40; }
+.app-update-dialog::backdrop { background: #101e3b70; backdrop-filter: blur(5px); }
+.app-update-dialog h2 { margin: 0 0 16px; font-size: 23px; }
+.app-update-dialog p { line-height: 1.6; overflow-wrap: anywhere; }
+.app-update-dialog [data-update-notes] { white-space: pre-wrap; max-height: 180px; overflow-y: auto; font-size: 14px; }
+.app-update-dialog progress { width: 100%; accent-color: #247cdb; }
+.app-update-actions { display: flex; justify-content: flex-end; gap: 12px; margin-top: 24px; }
+.app-update-actions button { padding: 11px 16px; border: 1px solid #d5dfeb; border-radius: 10px; cursor: pointer; background: #f1f5fa; color: inherit; font: inherit; }
+.app-update-actions [data-update-install], .app-update-actions [data-update-restart] { background: #176bca; color: white; border-color: #176bca; }
+.app-update-actions button:disabled { opacity: .55; cursor: wait; }
+.app-update-dialog [hidden] { display: none; }
+html[data-theme="dark"] .app-update-dialog { background: #17243a; color: #eaf1fb; border-color: #344864; }
+html[data-theme="dark"] .app-update-actions button { background: #283b56; border-color: #445b79; }
+.settings-card.settings-app-updates { padding: 14px 18px; }
+.settings-updates-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.settings-app-updates .settings-updates-row h2 { margin: 0; font-size: 13px; letter-spacing: -.2px; }
+.settings-app-updates .soft-action { padding: 7px 10px; font-size: 10px; white-space: nowrap; }
+.settings-app-updates [data-app-update-check-status] { margin: 7px 0 0; color: var(--night-secondary, #658078); font-size: 11px; line-height: 1.5; }

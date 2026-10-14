@@ -1,3 +1,4 @@
+import './i18n-test-runtime.mjs';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
@@ -8,7 +9,7 @@ const names = ['localDateValue', 'statisticsDateBounds', 'statisticsCustomRange'
 const functions = source.statements.filter(node => ts.isFunctionDeclaration(node) && names.includes(node.name?.text)).map(node => node.getText(source)).join('\n');
 const values = new Map();
 const user = { sub: 'one', email: 'test@example.com' };
-const context = vm.createContext({
+const context = vm.createContext({ ...globalThis.__fishstopI18n,
   Date, Intl, STATISTICS_PERIOD_PREFIX: 'fishstop.statistics-period.',
   localStorage: { getItem: key => values.get(key) ?? null },
   escapeHtml: value => value, readAnalysisHistory: () => [

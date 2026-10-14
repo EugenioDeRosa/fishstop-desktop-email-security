@@ -1,3 +1,4 @@
+import './i18n-test-runtime.mjs';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
@@ -13,7 +14,7 @@ assert.ok(closeHandler);
 const compiled = ts.transpileModule(`globalThis.cancel = ${closeHandler};`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
 for (const mode of ['fast', 'performance']) {
   const calls = [], errors = [];
-  const context = vm.createContext({
+  const context = vm.createContext({ ...globalThis.__fishstopI18n,
     previousInstalledMode: mode, downloadConfirmed: false, aiModeChanging: false,
     aiModeControls: [{ disabled: false }, { disabled: false }],
     invoke: async (command, args) => calls.push({ command, mode: args.mode }),

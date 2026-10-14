@@ -1,3 +1,4 @@
+import './i18n-test-runtime.mjs';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import ts from 'typescript';
@@ -20,6 +21,7 @@ async function harness() {
   const document = { querySelectorAll:()=>[inlineStatus], hidden:false, createElement:()=>dialog, body:{append(){}}, addEventListener:(name, fn)=>listeners[name]=fn };
   const exports = {};
   new Function('exports','require','document','window','setInterval','setTimeout', compiled)(exports, name => {
+    if (name === './i18n') return globalThis.__fishstopI18n;
     if (name.includes('/core')) return { isTauri:()=>true };
     if (name.includes('plugin-updater')) return { check:async()=>{checks++; if(next instanceof Error) throw next; return next;} };
     if (name.includes('plugin-process')) return { relaunch:async()=>{relaunches++;} };
@@ -65,7 +67,8 @@ assert.match(h.updateCheckFailure('platform `darwin-aarch64` was not found'),/No
 assert.match(h.updateCheckFailure('unexpected response'),/temporarily unavailable/);
 const main=readFileSync(new URL('../src/main.ts', import.meta.url),'utf8');
 const settings=main.slice(main.indexOf('if (section === "settings")'),main.indexOf('const dashboardHighRiskCount'));
-assert.ok(settings.indexOf('settings-right-column') < settings.indexOf('ollama-lab'));
+assert.ok(settings.indexOf('settings-reputation') < settings.indexOf('ollama-lab'));
+assert.ok(settings.indexOf('settings-app-updates') < settings.indexOf('settings-preferences'));
 assert.ok(settings.indexOf('ollama-lab') < settings.indexOf('settings-app-updates'));
 assert.equal((settings.match(/data-check-app-updates/g)||[]).length,1);
 console.log('App update checks passed: discovery, explicit consent, postponement, busy guard, safe notes, resource cleanup, install/restart and error recovery.');

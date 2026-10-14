@@ -1,3 +1,4 @@
+import { t } from "./i18n";
 type NotificationTone = 'success' | 'error' | 'info';
 const dismissals: Array<() => void> = [];
 
@@ -11,7 +12,7 @@ export function notify(message: string, tone: NotificationTone = 'success'): voi
   if (!host) {
     host = document.createElement('div');
     host.className = 'app-notifications';
-    host.setAttribute('aria-label', 'Notifications');
+    host.setAttribute('aria-label', t("Notifications"));
     document.body.append(host);
   }
   if (dismissals.length >= 2) dismissals[0]();
@@ -28,7 +29,7 @@ export function notify(message: string, tone: NotificationTone = 'success'): voi
   text.textContent = message;
   const close = document.createElement('button');
   close.type = 'button';
-  close.setAttribute('aria-label', 'Dismiss notification');
+  close.setAttribute('aria-label', t("Dismiss notification"));
   close.textContent = '×';
   let timer: ReturnType<typeof setTimeout>;
   let hovered = false;

@@ -1,3 +1,4 @@
+import './i18n-test-runtime.mjs';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import ts from 'typescript';

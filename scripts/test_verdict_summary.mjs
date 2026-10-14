@@ -1,3 +1,4 @@
+import './i18n-test-runtime.mjs';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
@@ -7,7 +8,7 @@ const source = ts.createSourceFile('main.ts', readFileSync(new URL('../src/main.
 const names = ['writtenVerdictSummary', 'aiThreatLabels', 'confirmedMaliciousIndicators', 'highSeverityStaticReason', 'incompleteAnalysisReason', 'attachmentInspectionIncomplete', 'verdictRationale'];
 const functions = source.statements.filter(node => ts.isFunctionDeclaration(node) && names.includes(node.name?.text));
 assert.equal(functions.length, names.length);
-const context = vm.createContext({
+const context = vm.createContext({ ...globalThis.__fishstopI18n,
   verdictFlags: () => [], safeGeneratedSummary: value => value,
   escapeHtml: value => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;'),
 });

@@ -1,3 +1,4 @@
+import './i18n-test-runtime.mjs';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
@@ -5,7 +6,7 @@ import ts from 'typescript';
 
 const source=ts.createSourceFile('main.ts',readFileSync(new URL('../src/main.ts',import.meta.url),'utf8'),ts.ScriptTarget.Latest,true);
 const functions=source.statements.filter(ts.isFunctionDeclaration);
-const context=vm.createContext({console,URL,URLSearchParams,TextEncoder,TextDecoder});
+const context=vm.createContext({ ...globalThis.__fishstopI18n,console,URL,URLSearchParams,TextEncoder,TextDecoder});
 vm.runInContext(ts.transpileModule(functions.map(n=>n.getText(source)).join('\n'),{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText,context);
 const informational={phi4_analysis:{status:'ok',analysis:{final_verdict:'legitimate',content_risk:'benign',requested_action:'informational',identity_risk:'uncertain',technical_risk:'clean'}}};
 for(const status of ['timeout','fail','permerror','temperror']){
@@ -30,3 +31,19 @@ const logo={...informational,attachments:[{filename:'logo.png',actionable:false,
 assert.equal(context.assessment(logo).tone,'safe','an unrequested presentation image is not an incomplete attachment action');
 assert.equal(context.structuredReportData(logo).attachments[0].inspection.content_inspected,false,'uninspected presentation resources retain their metadata');
 console.log('Audit verdict regressions passed');
+
+for (const report of [informational, settings, partial, logo]) {
+  const original = JSON.stringify(report);
+  globalThis.__fishstopI18n.setLanguage('en');
+  const tone = context.assessment(report).tone;
+  const baseline = context.structuredReportData(report);
+  delete baseline.event.exported_at;
+  const exported = JSON.stringify(baseline);
+  globalThis.__fishstopI18n.setLanguage('it');
+  assert.equal(context.assessment(report).tone, tone, 'Language must never change a security verdict');
+  const translated = context.structuredReportData(report);
+  delete translated.event.exported_at;
+  assert.equal(JSON.stringify(translated), exported, 'Technical JSON exports keep canonical labels and identifiers');
+  assert.equal(JSON.stringify(report), original, 'Changing language must not mutate original report evidence');
+}
+globalThis.__fishstopI18n.setLanguage('en');

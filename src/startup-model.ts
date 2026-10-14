@@ -1,3 +1,4 @@
+import { t } from "./i18n";
 type ModelStatus = { model_ready: boolean; model_download_available: boolean; model: string };
 type ModelProgress = { status: string; total?: number; completed?: number };
 
@@ -13,21 +14,21 @@ export async function ensureStartupModel<T extends ModelStatus>(services: {
   if (status.model_ready) return status;
   if (!status.model_download_available) throw new Error('The selected AI model is currently unavailable for download.');
   const name = /1\.7b/i.test(status.model) ? 'Fast' : 'Performance';
-  const detail = `${name} mode · You only need to download this model once.`;
-  services.update('Downloading AI model', detail);
+  const detail = t("{0} mode · You only need to download this model once.", [name]);
+  services.update(t("Downloading AI model"), detail);
   const unsubscribe = await services.subscribe(progress => {
     const percentage = progress.total && progress.completed !== undefined
       ? Math.max(0, Math.min(100, Math.round(progress.completed / progress.total * 100))) : undefined;
     const phase = (progress.status || '').toLowerCase();
-    const message = /verif|checking/.test(phase) ? 'Verifying AI model'
-      : percentage === 100 || /install|import|creat|writing/.test(phase) ? 'Installing AI model'
-      : percentage !== undefined || /download|pull/.test(phase) ? 'Downloading AI model'
-      : 'Preparing AI model';
+    const message = /verif|checking/.test(phase) ? t("Verifying AI model")
+      : percentage === 100 || /install|import|creat|writing/.test(phase) ? t("Installing AI model")
+      : percentage !== undefined || /download|pull/.test(phase) ? t("Downloading AI model")
+      : t("Preparing AI model");
     services.update(message, detail, percentage);
   });
   try {
     await services.install();
-    services.update('Finalizing AI setup', `${name} mode · Checking that your model is ready.`);
+    services.update(t("Finalizing AI setup"), t("{0} mode · Checking that your model is ready.", [name]));
     const installed = await services.refresh();
     if (!installed.model_ready) throw new Error('The AI model could not be verified after installation.');
     return installed;

@@ -1,3 +1,4 @@
+import './i18n-test-runtime.mjs';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
@@ -22,7 +23,7 @@ const runtime = {
 let saved = JSON.stringify(runtime), queries = 0;
 const element = () => ({ textContent: '', hidden: false, disabled: false, classList: { add() {}, remove() {}, toggle() {} }, removeAttribute() {} });
 const availability = { fast: element(), performance: element() };
-const context = vm.createContext({
+const context = vm.createContext({ ...globalThis.__fishstopI18n,
   RUNTIME_SNAPSHOT_KEY: 'runtime', localStorage: { getItem: () => saved },
   machineProfile: { isConnected: true }, runtimeStatusCache: { peek: () => runtime }, ollamaRuntimeSnapshot: null,
   backgroundChecks: { paused: true, run(task) { if (this.paused) return Promise.resolve(); return task(); } },

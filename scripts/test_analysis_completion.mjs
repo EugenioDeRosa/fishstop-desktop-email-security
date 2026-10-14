@@ -1,3 +1,4 @@
+import './i18n-test-runtime.mjs';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
@@ -34,7 +35,7 @@ async function verifyCompletion(cancelled = false, preparationOutcome = 'success
   let timingsRecorded = 0;
   const splash = { style: { setProperty() {} }, classList: { add() {} }, querySelector: () => ({ textContent: '' }) };
   const report = { phi4_analysis: { status: 'ok', performance: { wall_duration_ms: 100 } } };
-  const context = vm.createContext({
+  const context = vm.createContext({ ...globalThis.__fishstopI18n,
     uploadStatus: { textContent: '' }, user: { sub: 'test' }, section: 'analyse', activeAnalysis: null,
     crypto: { randomUUID: () => 'test-analysis' }, performance: { now: () => now }, console: { info() {}, error() {}, warn() {} },
     document: { querySelector: (selector) => selector === '#analysis-result .analysis-loading' ? splash : null, createElement: () => ({}) },

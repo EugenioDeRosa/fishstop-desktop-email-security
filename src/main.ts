@@ -1,3 +1,4 @@
+import { t, html, localizeHtml, locale, currentLanguage, initializeLanguage, setLanguage, engineText, withLanguage, formatNumber } from "./i18n";
 import { startAppUpdates } from "./app-updates";
 import gplLicenseText from "../LICENSE?raw";
 import { invoke } from "@tauri-apps/api/core";
@@ -25,7 +26,7 @@ type AuthUser = { sub: string; name?: string; email: string; picture?: string; p
 type MailboxStatus = { connected: boolean; provider: "google" | "microsoft"; email: string };
 type MailboxMessage = { id: string; subject: string; sender: string; received_at: string; snippet: string; has_attachments: boolean; is_read: boolean };
 const ACCOUNT_ACCESS_ENABLED = false;
-const GUEST_USER: AuthUser = { sub: "guest:local-v1", name: "Guest", email: "guest@local.invalid", provider: "guest" };
+const GUEST_USER: AuthUser = { sub: "guest:local-v1", name: t("Guest"), email: "guest@local.invalid", provider: "guest" };
 
 type Section = "dashboard" | "analyse" | "inbox" | "history" | "statistics" | "settings";
 type SocFlag = { level: "HIGH" | "MEDIUM" | "LOW" | "INFO"; field: string; message: string };
@@ -266,15 +267,15 @@ function analysisTimeMarkup(user: AuthUser, durationMs?: number): string {
   const seconds = Math.round(durationMs / 100) / 10;
   const wholeSeconds = Math.round(seconds);
   const duration = seconds < 60
-    ? `${seconds.toFixed(1)} s`
+    ? `${formatNumber(seconds, 1)} s`
     : `${Math.floor(wholeSeconds / 60)} min ${wholeSeconds % 60} s`;
-  return `<span class="analysis-turnaround" aria-label="Analysis time: ${duration}" title="Total analysis time">${duration}</span>`;
+  return html`<span class="analysis-turnaround" aria-label="Analysis time: ${duration}" title="Total analysis time">${duration}</span>`;
 }
 
 function analysisModeMarkup(report?: AnalysisReport): string {
   const model = report?.phi4_analysis?.model || "";
   const mode = /1\.7b/i.test(model) ? "Fast" : /4b/i.test(model) ? "Performance" : "";
-  return mode ? `<span class="analysis-mode" title="Analysis mode used for this email">${mode}</span>` : "";
+  return mode ? html`<span class="analysis-mode" title="Analysis mode used for this email">${mode}</span>` : "";
 }
 
 function historyStorageKey(user: AuthUser): string { return `${HISTORY_STORAGE_PREFIX}${user.sub}`; }
@@ -344,13 +345,14 @@ async function refreshReputationSettingsNow(user: AuthUser, force = false): Prom
       const edit = row.querySelector<HTMLButtonElement>(".edit-reputation-key");
       if (edit) {
         edit.innerHTML = credentialActionIcon(ready ? "edit" : "add");
-        edit.title = `${ready ? "Edit" : "Add"} ${provider === "otx" ? "OTX" : provider === "virustotal" ? "VirusTotal" : "AbuseIPDB"} API key`;
+        edit.title = t("{0} {1} API key", [ready ? t("Edit") : t("Add"), provider === "otx" ? "OTX" : provider === "virustotal" ? "VirusTotal" : "AbuseIPDB"]);
         edit.setAttribute("aria-label", edit.title);
       }
       const icon = row.querySelector<HTMLButtonElement>(".toggle-reputation-provider");
       if (icon) { icon.disabled = localOnlyEnabled(user); icon.textContent = disabled ? "—" : "✓"; icon.setAttribute("aria-pressed", String(!disabled)); }
-      const detail = row.querySelector(".credential-static-copy small"); if (detail) detail.textContent = ready ? "Stored in the system keychain" : "Key not configured";
-      const status = row.querySelector(":scope > b"); if (status) status.textContent = disabled ? "Disabled" : ready ? "Ready" : "Required";
+      const detail = row.querySelector(".credential-static-copy small"); if (detail) detail.textContent = ready ? t("Stored in the system keychain") : t("Key not configured");
+      const status = row.querySelector<HTMLButtonElement>(".provider-status");
+      if (status) { status.textContent = disabled ? t("Disabled") : ready ? t("Ready") : t("Required"); status.disabled = localOnlyEnabled(user); status.setAttribute("aria-pressed", String(!disabled)); }
       const remove = row.querySelector<HTMLButtonElement>(".remove-reputation-key");
       if (remove) {
         remove.hidden = !ready;
@@ -358,18 +360,18 @@ async function refreshReputationSettingsNow(user: AuthUser, force = false): Prom
         remove.innerHTML = credentialActionIcon("remove");
       }
       const input = row.querySelector<HTMLInputElement>("input");
-      if (input) input.placeholder = ready ? "Enter a new key or leave unchanged" : `Enter the ${provider === "otx" ? "OTX" : provider === "virustotal" ? "VirusTotal" : "AbuseIPDB"} token`;
+      if (input) input.placeholder = ready ? t("Enter a new key or leave unchanged") : t("Enter the {0} token", [provider === "otx" ? "OTX" : provider === "virustotal" ? "VirusTotal" : "AbuseIPDB"]);
     });
   } catch (error) {
     const status = card.querySelector<HTMLElement>("#settings-status");
     console.error("Secure storage unavailable", error);
-    if (status) status.textContent = "Secure storage is currently unavailable. Please try again.";
+    if (status) status.textContent = t("Secure storage is currently unavailable. Please try again.");
   }
 }
 
 function setProtectionStatus(element: HTMLElement, tone: ProtectionTone, message: string): void {
   element.className = `top-status top-status-${tone}`;
-  element.querySelector("span")!.textContent = message;
+  element.querySelector("span")!.textContent = engineText(message);
 }
 
 async function resolveProtectionStatus(user: AuthUser, force = false): Promise<ProtectionStatusSnapshot> {
@@ -405,11 +407,11 @@ async function refreshProtectionStatus(user: AuthUser, force = false): Promise<v
   if (!element) return;
   const cached = protectionStatusSnapshot?.userSub === user.sub ? protectionStatusSnapshot : null;
   if (cached) setProtectionStatus(element, cached.tone, cached.message);
-  else if (backgroundChecks.paused) setProtectionStatus(element, "checking", "Analysis in progress");
+  else if (backgroundChecks.paused) setProtectionStatus(element, "checking", t("Analysis in progress"));
   if (backgroundChecks.paused || document.hidden) return;
   await backgroundChecks.run(async () => {
     if (force || !cached) {
-      if (!cached) setProtectionStatus(element, "checking", "Checking protection…");
+      if (!cached) setProtectionStatus(element, "checking", t("Checking protection…"));
       const request = protectionStatusRequest ?? resolveProtectionStatus(user, force);
       protectionStatusRequest = request;
       const snapshot = await request;
@@ -684,22 +686,22 @@ function showExternalLinkDialog(url: string, label: string): void {
     dialog.className = "external-link-dialog";
     document.body.appendChild(dialog);
   }
-  let host = "External website";
+  let host = t("External website");
   try { host = new URL(url).host; } catch { /* The native command validates it before opening. */ }
-  dialog.innerHTML = `<form method="dialog"><p class="page-kicker">EXTERNAL WEBSITE</p><h2>${escapeHtml(label || "Open external report")}</h2><p>This report opens outside FishStop.</p><code>${escapeHtml(host)}</code><small>${escapeHtml(url)}</small><div class="dialog-actions"><button value="cancel" type="submit">Cancel</button><button value="copy" type="button" data-copy-external>Copy link</button><button type="button" data-open-external>Open in browser ↗</button></div><span class="external-link-status" aria-live="polite"></span></form>`;
+  dialog.innerHTML = html`<form method="dialog"><p class="page-kicker">EXTERNAL WEBSITE</p><h2>${escapeHtml(label || t("Open external report"))}</h2><p>This report opens outside FishStop.</p><code>${escapeHtml(host)}</code><small>${escapeHtml(url)}</small><div class="dialog-actions"><button value="cancel" type="submit">Cancel</button><button value="copy" type="button" data-copy-external>Copy link</button><button type="button" data-open-external>Open in browser ↗</button></div><span class="external-link-status" aria-live="polite"></span></form>`;
   dialog.querySelector<HTMLButtonElement>("[data-copy-external]")?.addEventListener("click", async () => {
     const copied = await copyIndicator(url);
     const status = dialog?.querySelector<HTMLElement>(".external-link-status");
-    if (status) status.textContent = copied ? "Link copied." : "Could not copy the link.";
+    if (status) status.textContent = copied ? t("Link copied.") : t("Could not copy the link.");
   });
   dialog.querySelector<HTMLButtonElement>("[data-open-external]")?.addEventListener("click", async () => {
     const status = dialog?.querySelector<HTMLElement>(".external-link-status");
-    if (status) status.textContent = "Opening external browser…";
+    if (status) status.textContent = t("Opening external browser…");
     try {
       await invoke("open_external_url", { url });
       dialog?.close();
     } catch (error) {
-      if (status) status.textContent = String(error || "Could not open the external browser.");
+      if (status) status.textContent = String(error || t("Could not open the external browser."));
     }
   });
   if (!dialog.open) {
@@ -714,7 +716,7 @@ document.addEventListener("click", (event) => {
   const link = target.closest<HTMLAnchorElement>('a[target="_blank"][href]');
   if (!link) return;
   event.preventDefault();
-  showExternalLinkDialog(link.href, link.textContent?.trim() || "Open external report");
+  showExternalLinkDialog(link.href, link.textContent?.trim() || t("Open external report"));
 });
 
 function statisticsPeriod(user: AuthUser): StatisticsPeriod {
@@ -774,24 +776,24 @@ function isInStatisticsPeriod(value: string, period: StatisticsPeriod, range?: S
 
 function formatDuration(milliseconds?: number): string {
   if (!milliseconds || milliseconds < 0) return "—";
-  return milliseconds >= 60000 ? `${(milliseconds / 60000).toFixed(1)} min` : `${(milliseconds / 1000).toFixed(1)} s`;
+  return milliseconds >= 60000 ? `${formatNumber(milliseconds / 60000, 1)} min` : `${formatNumber(milliseconds / 1000, 1)} s`;
 }
 
 function formatAnalysisDate(value: string): string {
-  try { return new Intl.DateTimeFormat("en-GB", { dateStyle: "medium", timeStyle: "short" }).format(new Date(value)); }
+  try { return new Intl.DateTimeFormat(locale(), { dateStyle: "medium", timeStyle: "short" }).format(new Date(value)); }
   catch { return value; }
 }
 
 function dashboardGreeting(now = new Date()): string {
   const hour = now.getHours();
-  if (hour >= 5 && hour < 12) return "Good morning";
-  if (hour >= 12 && hour < 18) return "Good afternoon";
-  return "Good evening";
+  if (hour >= 5 && hour < 12) return t("Good morning");
+  if (hour >= 12 && hour < 18) return t("Good afternoon");
+  return t("Good evening");
 }
 
 function formatAttachmentSize(size?: number): string {
-  if (size === undefined || !Number.isFinite(size) || size < 0) return "size unavailable";
-  return `${(size / 1_000_000).toFixed(2)} MB`;
+  if (size === undefined || !Number.isFinite(size) || size < 0) return t("size unavailable");
+  return `${formatNumber(size / 1_000_000, 2)} MB`;
 }
 
 function compactObject<T>(value: T): T {
@@ -839,6 +841,10 @@ function publicReputation(result?: ReputationResult): Record<string, unknown> | 
 }
 
 function structuredReportData(report: AnalysisReport): SiemReport {
+  return withLanguage("en", () => buildStructuredReportData(report));
+}
+
+function buildStructuredReportData(report: AnalysisReport): SiemReport {
   const verdict = assessment(report);
   const semantic = report.phi4_analysis?.analysis;
   const severity = verdict.tone === "danger" ? "high" : verdict.tone === "review" ? "medium" : "low";
@@ -882,7 +888,7 @@ function structuredReportData(report: AnalysisReport): SiemReport {
   }));
   (report.lookalike_alerts || []).forEach((alert, index) => findings.push(compactObject({
     id: `identity.lookalike.${index + 1}`, severity: (alert.level || "HIGH").toLowerCase(), category: "identity",
-    field: "domain", description: alert.detail || `Possible lookalike domain for ${alert.matched_brand || "a known brand"}.`,
+    field: "domain", description: alert.detail || t("Possible lookalike domain for {0}.", [alert.matched_brand || t("a known brand")]),
     evidence: { domain: alert.registered_domain || alert.host, matched_brand: alert.matched_brand, technique: alert.technique, edit_distance: alert.edit_distance },
   })));
 
@@ -972,52 +978,52 @@ function orderedReceivedHops(hops: ReceivedHop[] = []): ReceivedHop[] {
 }
 
 function searchIconMarkup(): string {
-  return `<svg class="search-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="10.5" cy="10.5" r="6.25"></circle><path d="m15.1 15.1 4.4 4.4"></path></svg>`;
+  return html`<svg class="search-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="10.5" cy="10.5" r="6.25"></circle><path d="m15.1 15.1 4.4 4.4"></path></svg>`;
 }
 
 function credentialActionIcon(action: "add" | "edit" | "remove"): string {
   const paths = {
-    add: '<path d="M12 5v14M5 12h14"/>',
-    edit: '<path d="m16 3 5 5-12 12-6 1 1-6L16 3Z"/><path d="m13 6 5 5"/>',
-    remove: '<path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"/>',
+    add: localizeHtml("<path d=\"M12 5v14M5 12h14\"/>"),
+    edit: localizeHtml("<path d=\"m16 3 5 5-12 12-6 1 1-6L16 3Z\"/><path d=\"m13 6 5 5\"/>"),
+    remove: localizeHtml("<path d=\"M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7\"/>"),
   };
-  return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${paths[action]}</svg>`;
+  return html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${paths[action]}</svg>`;
 }
 
 function inboxIconMarkup(): string {
-  return `<svg class="inbox-nav-icon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false" style="display:block;overflow:visible"><rect x="3.25" y="5.25" width="17.5" height="13.5" rx="2.4"></rect><path d="m4.35 7.05 6.05 4.65a2.6 2.6 0 0 0 3.2 0l6.05-4.65"></path></svg>`;
+  return html`<svg class="inbox-nav-icon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false" style="display:block;overflow:visible"><rect x="3.25" y="5.25" width="17.5" height="13.5" rx="2.4"></rect><path d="m4.35 7.05 6.05 4.65a2.6 2.6 0 0 0 3.2 0l6.05-4.65"></path></svg>`;
 }
 
 function homeIconMarkup(): string {
-  return `<svg class="home-nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M3.5 10.25 12 3.6l8.5 6.65"></path><path d="M5.5 9.4v10h13v-10"></path><path d="M9.5 19.4v-6h5v6"></path></svg>`;
+  return html`<svg class="home-nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M3.5 10.25 12 3.6l8.5 6.65"></path><path d="M5.5 9.4v10h13v-10"></path><path d="M9.5 19.4v-6h5v6"></path></svg>`;
 }
 
-function analysisLoadingMarkup(fileName: string, completedChecks: number[] = [], progressMessage = "Each signal is processed on this device.", heuristicProgress = 0): string {
-  const checks = ["Reading the message and checking technical signals", "Preparing local analysis", "Understanding content and intent", "Preparing the safety assessment"];
+function analysisLoadingMarkup(fileName: string, completedChecks: number[] = [], progressMessage = t("Each signal is processed on this device."), heuristicProgress = 0): string {
+  const checks = [t("Reading the message and checking technical signals"), t("Preparing local analysis"), t("Understanding content and intent"), t("Preparing the safety assessment")];
   const completed = new Set(completedChecks);
   const completedCount = checks.filter((_, index) => completed.has(index)).length;
   const percentage = Math.max(0, Math.min(100, heuristicProgress));
-  return `<section class="analysis-loading" aria-live="polite" role="progressbar" aria-label="Analysis progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percentage}" style="--analysis-progress:${percentage}%"><div class="analysis-progress-surface" aria-hidden="true"><div class="analysis-progress-glow"></div></div><div class="loading-orbit"><i></i><b aria-hidden="true">${searchIconMarkup()}</b></div><div><p class="page-kicker">LOCAL ANALYSIS IN PROGRESS</p><h2>Checking ${escapeHtml(fileName)}</h2><p class="loading-copy">${escapeHtml(progressMessage)}</p><small class="loading-estimate">${escapeHtml(activeAnalysis?.progressHint || "Estimating analysis time for this model and computer…")}</small></div><ol>${checks.map((label, index) => `<li data-loading-check="${index}" class="${completed.has(index) ? "done" : index === completedCount ? "active" : ""}"><span>✓</span>${label}</li>`).join("")}</ol></section>`;
+  return html`<section class="analysis-loading" aria-live="polite" role="progressbar" aria-label="Analysis progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percentage}" style="--analysis-progress:${percentage}%"><div class="analysis-progress-surface" aria-hidden="true"><div class="analysis-progress-glow"></div></div><div class="loading-orbit"><i></i><b aria-hidden="true">${searchIconMarkup()}</b></div><div><p class="page-kicker">LOCAL ANALYSIS IN PROGRESS</p><h2>Checking ${escapeHtml(fileName)}</h2><p class="loading-copy">${escapeHtml(engineText(progressMessage))}</p><small class="loading-estimate">${escapeHtml(activeAnalysis?.progressHint || t("Estimating analysis time for this model and computer…"))}</small></div><ol>${checks.map((label, index) => html`<li data-loading-check="${index}" class="${completed.has(index) ? "done" : index === completedCount ? "active" : ""}"><span>✓</span>${label}</li>`).join("")}</ol></section>`;
 }
 
 function conversationInspectionMarkup(fileName: string): string {
-  return `<section class="conversation-inspection-loading" aria-live="polite"><span class="inbox-spinner" aria-hidden="true"></span><div><p class="page-kicker">CONVERSATION DISCOVERY</p><h2>Reading ${escapeHtml(fileName)}</h2><p>Identifying forwarded messages and quoted replies before security analysis.</p></div></section>`;
+  return html`<section class="conversation-inspection-loading" aria-live="polite"><span class="inbox-spinner" aria-hidden="true"></span><div><p class="page-kicker">CONVERSATION DISCOVERY</p><h2>Reading ${escapeHtml(fileName)}</h2><p>Identifying forwarded messages and quoted replies before security analysis.</p></div></section>`;
 }
 
 function conversationSegmentMarkup(segment: ConversationSegment): string {
-  const kind = segment.kind === "delivered" ? "Delivered email" : segment.kind === "forwarded" ? "Forwarded message" : "Quoted message";
+  const kind = segment.kind === "delivered" ? t("Delivered email") : segment.kind === "forwarded" ? t("Forwarded message") : t("Quoted message");
   const authAvailable = segment.authentication_status === "available";
-  const sender = segment.from || "Sender not recovered";
+  const sender = segment.from || t("Sender not recovered");
   const meta = [segment.date, segment.subject].filter(Boolean).join(" · ");
   const selected = segment.recommended_role === "target";
-  return `<article class="conversation-turn ${segment.kind === "delivered" ? "conversation-turn-outer" : ""}" data-conversation-segment="${escapeHtml(segment.id)}" data-selected="${selected}"><span class="conversation-node" aria-hidden="true"></span><div class="conversation-turn-copy"><div class="conversation-turn-heading"><div><span class="conversation-kind">${kind}</span><strong>${escapeHtml(sender)}</strong></div></div>${meta ? `<small>${escapeHtml(meta)}</small>` : ""}<p>${escapeHtml(segment.preview || "No preview available.")}</p>${segment.locked_technical_analysis ? `<em>Routing and authentication stay with this envelope; MIME and attachments stay with the complete file.</em>` : ""}</div><div class="conversation-turn-choice">${selected ? '<b>Suggested target</b>' : ""}<button class="conversation-target-action" type="button" data-conversation-target="${escapeHtml(segment.id)}" aria-label="Analyse message from ${escapeHtml(sender)}" aria-pressed="${selected}">Analyse</button><span class="conversation-auth ${authAvailable ? "available" : "unavailable"}">${authAvailable ? "Authentication available" : "Authentication unavailable"}</span></div></article>`;
+  return html`<article class="conversation-turn ${segment.kind === "delivered" ? "conversation-turn-outer" : ""}" data-conversation-segment="${escapeHtml(segment.id)}" data-selected="${selected}"><span class="conversation-node" aria-hidden="true"></span><div class="conversation-turn-copy"><div class="conversation-turn-heading"><div><span class="conversation-kind">${kind}</span><strong>${escapeHtml(sender)}</strong></div></div>${meta ? html`<small>${escapeHtml(meta)}</small>` : ""}<p>${escapeHtml(segment.preview || t("No preview available."))}</p>${segment.locked_technical_analysis ? html`<em>Routing and authentication stay with this envelope; MIME and attachments stay with the complete file.</em>` : ""}</div><div class="conversation-turn-choice">${selected ? localizeHtml("<b>Suggested target</b>") : ""}<button class="conversation-target-action" type="button" data-conversation-target="${escapeHtml(segment.id)}" aria-label="Analyse message from ${escapeHtml(sender)}" aria-pressed="${selected}">Analyse</button><span class="conversation-auth ${authAvailable ? "available" : "unavailable"}">${authAvailable ? t("Authentication available") : t("Authentication unavailable")}</span></div></article>`;
 }
 
 function conversationSelectorMarkup(fileName: string, manifest: ConversationManifest): string {
   const visible = manifest.segments.slice(0, 4).map(conversationSegmentMarkup).join("");
   const older = manifest.segments.slice(4).map(conversationSegmentMarkup).join("");
   const selectedCount = manifest.segments.filter((segment) => segment.recommended_role === "target").length;
-  return `<section class="conversation-selector"><header><div><p class="page-kicker">CONVERSATION DETECTED</p><h2>Choose what to analyse</h2><p>FishStop found ${manifest.message_count} messages in ${escapeHtml(fileName)}. Select the messages that should receive a verdict.</p></div><span>${manifest.message_count} turns</span></header><aside><strong>What FishStop can assess</strong><p>${escapeHtml(manifest.technical_scope_message)}</p></aside><div class="conversation-list-actions"><div><strong>Messages to analyse</strong><span data-list-selected-count>${selectedCount} of ${manifest.message_count} selected</span></div><button id="toggle-all-conversation" type="button" aria-pressed="false">Select all</button></div><div class="conversation-timeline">${visible}${older ? `<details><summary>Show ${manifest.segments.length - 4} older messages</summary><div>${older}</div></details>` : ""}</div><div class="conversation-context-options" role="group" aria-label="Optional conversation context"><button type="button" data-context-direction="earlier" aria-pressed="false"><i aria-hidden="true">✓</i><span><strong>Include earlier messages</strong><small>Add messages sent before the selected target as prior context.</small></span></button><button type="button" data-context-direction="later" aria-pressed="false"><i aria-hidden="true">✓</i><span><strong>Include later replies</strong><small>Add replies sent after the selected target as follow-up context.</small></span></button></div><p class="conversation-selection-error" id="conversation-selection-error" role="alert"></p><footer><button class="conversation-selected-action" id="start-conversation-analysis" type="button"><span>Analyse selected</span><small data-selected-count>${selectedCount} selected</small><b aria-hidden="true">→</b></button></footer></section>`;
+  return html`<section class="conversation-selector"><header><div><p class="page-kicker">CONVERSATION DETECTED</p><h2>Choose what to analyse</h2><p>FishStop found ${manifest.message_count} messages in ${escapeHtml(fileName)}. Select the messages that should receive a verdict.</p></div><span>${manifest.message_count} turns</span></header><aside><strong>What FishStop can assess</strong><p>${escapeHtml(manifest.technical_scope_message)}</p></aside><div class="conversation-list-actions"><div><strong>Messages to analyse</strong><span data-list-selected-count>${selectedCount} of ${manifest.message_count} selected</span></div><button id="toggle-all-conversation" type="button" aria-pressed="false">Select all</button></div><div class="conversation-timeline">${visible}${older ? html`<details><summary>Show ${manifest.segments.length - 4} older messages</summary><div>${older}</div></details>` : ""}</div><div class="conversation-context-options" role="group" aria-label="Optional conversation context"><button type="button" data-context-direction="earlier" aria-pressed="false"><i aria-hidden="true">✓</i><span><strong>Include earlier messages</strong><small>Add messages sent before the selected target as prior context.</small></span></button><button type="button" data-context-direction="later" aria-pressed="false"><i aria-hidden="true">✓</i><span><strong>Include later replies</strong><small>Add replies sent after the selected target as follow-up context.</small></span></button></div><p class="conversation-selection-error" id="conversation-selection-error" role="alert"></p><footer><button class="conversation-selected-action" id="start-conversation-analysis" type="button"><span>Analyse selected</span><small data-selected-count>${selectedCount} selected</small><b aria-hidden="true">→</b></button></footer></section>`;
 }
 
 function setAnalysisProgressVisual(session: ActiveAnalysis, percentage: number): void {
@@ -1051,14 +1057,14 @@ function authFromEmlHeader(report: AnalysisReport, protocol: "SPF" | "DKIM" | "D
     return {
       status: "unavailable",
       identity: "",
-      raw: "This embedded message does not contain independently verifiable authentication headers.",
-      source: "Selected embedded message",
+      raw: t("This embedded message does not contain independently verifiable authentication headers."),
+      source: t("Selected embedded message"),
       all_results: [],
     };
   }
   const effective = report.effective_auth_results?.[protocol];
   if (effective) {
-    const source = effective.source || "Authentication headers";
+    const source = effective.source || t("Authentication headers");
     const sourceRaw = source === "ARC-Authentication-Results"
       ? (report.arc_authentication_results || "")
       : source === "Received-SPF" ? (report.received_spf_raw || "")
@@ -1074,7 +1080,7 @@ function authFromEmlHeader(report: AnalysisReport, protocol: "SPF" | "DKIM" | "D
     return { status, identity: "", raw: report.received_spf_raw, source: "Received-SPF", all_results: [] };
   }
   if (protocol === "DKIM" && report.dkim_signature_raw) return { status: "present", identity: "", raw: report.dkim_signature_raw, source: "DKIM-Signature", all_results: [] };
-  return { status: "none", identity: "", raw: "", source: "Header EML", all_results: [] };
+  return { status: "none", identity: "", raw: "", source: t("Header EML"), all_results: [] };
 }
 
 function confirmedMaliciousIndicators(report: AnalysisReport): string[] {
@@ -1087,15 +1093,15 @@ function confirmedMaliciousIndicators(report: AnalysisReport): string[] {
     .map(([url]) => `URL ${url}`);
   const files = (report.attachments || [])
     .filter((attachment) => malicious(attachment.file_reputation))
-    .map((attachment) => `attachment ${attachment.filename || attachment.hash_sha256 || "unnamed"}`);
+    .map((attachment) => t("attachment {0}", [attachment.filename || attachment.hash_sha256 || "unnamed"]));
   return [...links, ...files];
 }
 
 function highSeverityStaticReason(report: AnalysisReport): string | null {
   const confirmed = confirmedMaliciousIndicators(report);
-  if (confirmed.length) return `VirusTotal detected ${confirmed.length === 1 ? confirmed[0] : `${confirmed.length} indicators`} as malicious.`;
+  if (confirmed.length) return t("VirusTotal detected {0} as malicious.", [confirmed.length === 1 ? confirmed[0] : t("{0} indicators", [confirmed.length])]);
   if ((report.attachments || []).some(attachment => attachment.html_security?.risk_level === "high")) {
-    return "An HTML attachment contains sensitive credential fields submitting to an unrelated or unsafe destination.";
+    return t("An HTML attachment contains sensitive credential fields submitting to an unrelated or unsafe destination.");
   }
 
   const highFlags = verdictFlags(report).filter((flag) => flag.level === "HIGH");
@@ -1105,18 +1111,18 @@ function highSeverityStaticReason(report: AnalysisReport): string | null {
     return priority(right) - priority(left);
   })[0];
   if (/pdf/i.test(decisive.field)) {
-    return "The PDF contains high-risk features, such as redirects or external actions.";
+    return t("The PDF contains high-risk features, such as redirects or external actions.");
   }
   if (
     /attachment/i.test(decisive.field)
     && /high-risk attachment|executable|script|bidirectional|double extension/i.test(decisive.message)
   ) {
-    return "An attachment contains an executable, script, or disguised high-risk file type.";
+    return t("An attachment contains an executable, script, or disguised high-risk file type.");
   }
   if (/attachment/i.test(decisive.field) && /(?:content-type|magic bytes|filename|extension)/i.test(decisive.message)) {
-    return "An attachment's name and detected file type do not match.";
+    return t("An attachment's name and detected file type do not match.");
   }
-  return `An important message check found a problem: ${decisive.field} — ${decisive.message}`;
+  return t("An important message check found a problem: {0} — {1}", [decisive.field, decisive.message]);
 }
 
 function normalizedDomain(value?: string): string {
@@ -1298,7 +1304,7 @@ function safeGeneratedSummary(value?: string): string {
   if (retained.length === sentences.length) return summary;
   return [
     ...retained,
-    "If you need to verify the event, open the service independently using its official app or a previously known address, not a link in the email.",
+    t("If you need to verify the event, open the service independently using its official app or a previously known address, not a link in the email."),
   ].join(" ");
 }
 
@@ -1318,7 +1324,7 @@ function unverifiedRequestedResourceReason(report: AnalysisReport): string | nul
   // local model overlooks the link instruction; this is uncertainty, not a
   // phishing verdict, so legitimate forwards are not reported as malicious.
   if (unauthenticatedForwardedLinkRequest) {
-    return "The message forwards a link request, but the embedded sender is not authenticated by the available headers and the requested destination could not be verified.";
+    return t("The message forwards a link request, but the embedded sender is not authenticated by the available headers and the requested destination could not be verified.");
   }
   const intent = normalizedIntentText(semantic?.intent_evidence);
   const requestMatchesLink = intent.length >= 4 && requestedLinks.some(link => {
@@ -1344,7 +1350,7 @@ function unverifiedRequestedResourceReason(report: AnalysisReport): string | nul
       !isAuthenticatedFirstPartyLink(report, link)
       && (!benignLegitimateContext || structurallySuspiciousLink(link)),
     )) {
-      return "The message asks you to open a link, but its reputation could not be verified.";
+      return t("The message asks you to open a link, but its reputation could not be verified.");
     }
   }
   const benignAlignedSpfContext = (semantic?.final_verdict || "").toLowerCase() === "legitimate"
@@ -1370,7 +1376,7 @@ function unverifiedRequestedResourceReason(report: AnalysisReport): string | nul
     && cannotVerify(attachment.file_reputation)
     && !(benignAlignedSpfContext && locallyCleanAttachment(attachment))
   )) {
-    return "The message asks you to open an attachment, but its reputation could not be verified.";
+    return t("The message asks you to open an attachment, but its reputation could not be verified.");
   }
   return null;
 }
@@ -1382,8 +1388,8 @@ function authenticationReviewReason(report: AnalysisReport): string | null {
       authFromEmlHeader(report, protocol).status.toLowerCase(),
     ),
   );
-  if (failed.length === protocols.length) return "SPF, DKIM, and DMARC failed according to the message headers. Verify the sender through an independent channel before taking action.";
-  if (failed.length) return `${failed.join(", ")} did not pass according to the message headers. Verify the sender before taking action.`;
+  if (failed.length === protocols.length) return t("SPF, DKIM, and DMARC failed according to the message headers. Verify the sender through an independent channel before taking action.");
+  if (failed.length) return t("{0} did not pass according to the message headers. Verify the sender before taking action.", [failed.join(", ")]);
   return null;
 }
 
@@ -1407,14 +1413,14 @@ function attachmentInspectionIncomplete(attachment: NonNullable<AnalysisReport["
 function incompleteAnalysisReason(report: AnalysisReport): string | null {
   const reasons: string[] = [];
   if (report.body_analysis_incomplete) {
-    reasons.push("Only part of the email body was inspected because it exceeded the analysis budget.");
+    reasons.push(t("Only part of the email body was inspected because it exceeded the analysis budget."));
   }
   if (report.phi4_analysis?.status !== "ok"
     || !["legitimate", "review", "phishing"].includes((report.phi4_analysis?.analysis?.final_verdict || "").toLowerCase())) {
-    reasons.push("The local AI analysis did not complete, so the message content could not be fully assessed.");
+    reasons.push(t("The local AI analysis did not complete, so the message content could not be fully assessed."));
   }
   if ((report.attachments || []).some(attachmentInspectionIncomplete)) {
-    reasons.push("One or more attachments could not be fully inspected. Check the attachment details before taking action.");
+    reasons.push(t("One or more attachments could not be fully inspected. Check the attachment details before taking action."));
   }
   return reasons.length ? reasons.join(" ") : null;
 }
@@ -1434,30 +1440,30 @@ function writtenVerdictSummary(report: AnalysisReport, fallback: string): string
     if (label === "Impersonation") {
       const identity = report.identity_analysis?.impersonation;
       evidence.push(identity?.status === "inconsistent"
-        ? `Identity checks detected possible impersonation${identity.claimed_identity ? ` of ${identity.claimed_identity}` : ""}.`
-        : `The local AI detected possible impersonation${analysis?.claimed_brand ? ` of ${analysis.claimed_brand}` : ""}.`);
+        ? t("Identity checks detected possible impersonation{0}.", [identity.claimed_identity ? t(" of {0}", [identity.claimed_identity]) : ""])
+        : t("The local AI detected possible impersonation{0}.", [analysis?.claimed_brand ? t(" of {0}", [analysis.claimed_brand]) : ""]));
     } else if (label === "AI risk signal") {
-      evidence.push("The local AI detected potentially malicious behaviour in the message content.");
+      evidence.push(t("The local AI detected potentially malicious behaviour in the message content."));
     } else {
-      evidence.push(`The local AI detected indicators of ${label.toLowerCase()}.`);
+      evidence.push(t("The local AI detected indicators of {0}.", [label.toLowerCase()]));
     }
   }
   const actionDescriptions: Record<string, string> = {
-    visit_link: "follow a link",
-    open_attachment: "open an attachment",
-    provide_credentials: "provide login credentials",
-    provide_information: "provide information",
-    pay_or_transfer: "make a payment or transfer money",
-    verify_account: "verify an account",
-    change_account_settings: "change account settings",
-    bypass_procedure: "bypass the normal procedure",
-    reply: "reply to the email",
-    claim_reward: "claim a reward",
+    visit_link: t("follow a link"),
+    open_attachment: t("open an attachment"),
+    provide_credentials: t("provide login credentials"),
+    provide_information: t("provide information"),
+    pay_or_transfer: t("make a payment or transfer money"),
+    verify_account: t("verify an account"),
+    change_account_settings: t("change account settings"),
+    bypass_procedure: t("bypass the normal procedure"),
+    reply: t("reply to the email"),
+    claim_reward: t("claim a reward"),
   };
   const action = actionDescriptions[(analysis?.requested_action || "").toLowerCase()];
   if (action) {
     const viaLink = analysis?.action_channel === "supplied_link" && analysis?.requested_action !== "visit_link";
-    evidence.push(`The local AI identified a request to ${action}${viaLink ? " through a link in the email" : ""}.`);
+    evidence.push(t("The local AI identified a request to {0}{1}.", [action, viaLink ? t(" through a link in the email") : ""]));
   }
   const incomplete = incompleteAnalysisReason(report);
   if (incomplete) evidence.push(incomplete);
@@ -1501,23 +1507,23 @@ function assessment(report: AnalysisReport): { tone: "safe" | "review" | "danger
   // The Ollama policy receives static, reputation and identity evidence: when available,
   // it is the final synthesis. Confirmed external detections and strong static
   // findings can never be downgraded by an unavailable or disagreeing model.
-  if (staticReason) return result("danger", "HIGH RISK", staticReason);
-  if (phi === "phishing") return result("danger", "HIGH RISK", conciseAiVerdict(report, "Risk indicators were found. Do not interact with this message."));
+  if (staticReason) return result("danger", t("HIGH RISK"), staticReason);
+  if (phi === "phishing") return result("danger", t("HIGH RISK"), conciseAiVerdict(report, t("Risk indicators were found. Do not interact with this message.")));
   const incomplete = incompleteAnalysisReason(report);
-  if (incomplete) return result("review", "ANALYSIS INCOMPLETE", incomplete);
-  if (unverifiedRequestedResource) return result("review", "REVIEW REQUIRED", unverifiedRequestedResource);
-  if (high) return result("danger", "HIGH RISK", "A high-severity static check failed. Do not interact with this message.");
+  if (incomplete) return result("review", t("ANALYSIS INCOMPLETE"), incomplete);
+  if (unverifiedRequestedResource) return result("review", t("REVIEW REQUIRED"), unverifiedRequestedResource);
+  if (high) return result("danger", t("HIGH RISK"), t("A high-severity static check failed. Do not interact with this message."));
   // A first-party account notice is not suspicious merely because it contains
   // a security CTA. Require independent aligned authentication, same-party
   // destinations and the complete absence of sensitive-data or static risk.
-  if (trustedSecurityNotice) return result("safe", "LIKELY LEGITIMATE", conciseAiVerdict(report, "The account notification is strongly authenticated and its requested destination belongs to the sender's domain."));
+  if (trustedSecurityNotice) return result("safe", t("LIKELY LEGITIMATE"), conciseAiVerdict(report, t("The account notification is strongly authenticated and its requested destination belongs to the sender's domain.")));
   // A missing DKIM signature alone is common in exports, forwarded mail, and
   // legitimate routing. Let an explicit benign, informational intent prevail
   // when there is no sender inconsistency or actionable external request.
-  if (aiClearsInformationalMessage) return result("safe", "LIKELY LEGITIMATE", conciseAiVerdict(report, "The message is informational and no meaningful risk indicator was found."));
-  if (phi === "review" || medium) return result("review", "REVIEW REQUIRED", authenticationReview || conciseAiVerdict(report, "Anomalies were found. Verify the message before taking any action."));
-  if (phi === "legitimate") return result("safe", "LIKELY LEGITIMATE", conciseAiVerdict(report, "No relevant technical or content indicators were found."));
-  return result("review", "ANALYSIS INCOMPLETE", "A complete assessment is not available. Review the message before taking action.");
+  if (aiClearsInformationalMessage) return result("safe", t("LIKELY LEGITIMATE"), conciseAiVerdict(report, t("The message is informational and no meaningful risk indicator was found.")));
+  if (phi === "review" || medium) return result("review", t("REVIEW REQUIRED"), authenticationReview || conciseAiVerdict(report, t("Anomalies were found. Verify the message before taking any action.")));
+  if (phi === "legitimate") return result("safe", t("LIKELY LEGITIMATE"), conciseAiVerdict(report, t("No relevant technical or content indicators were found.")));
+  return result("review", t("ANALYSIS INCOMPLETE"), t("A complete assessment is not available. Review the message before taking action."));
 }
 
 function verdictRationale(report: AnalysisReport): string {
@@ -1530,14 +1536,14 @@ function verdictRationale(report: AnalysisReport): string {
   const corroboration = semantic?.corroboration?.details || [];
   const aiSummary = verdict.detail;
   const indicators = [
-    ...confirmedMaliciousIndicators(report).map((indicator) => ({ level: "HIGH", message: `VirusTotal: ${indicator} detected as malicious.` })),
+    ...confirmedMaliciousIndicators(report).map((indicator) => ({ level: "HIGH", message: t("VirusTotal: {0} detected as malicious.", [indicator]) })),
     ...findings.map((flag) => ({ level: flag.level, message: `${flag.field} · ${flag.message}` })),
-    ...corroboration.map((message) => ({ level: "CHECK", message })),
+    ...corroboration.map((message) => ({ level: t("CHECK"), message })),
   ].filter((item, index, items) => items.findIndex((other) => other.message === item.message) === index).slice(0, 6);
   const technical = indicators.length
-    ? indicators.map((item) => `<li><b>${escapeHtml(item.level)}</b><span>${escapeHtml(item.message)}</span></li>`).join("")
-    : "<li class=\"clear\"><b>CHECK</b><span>No high-priority technical indicators were found.</span></li>";
-  return `<section class="verdict-rationale"><div><p class="page-kicker">WHY THIS RESULT</p><p>${escapeHtml(aiSummary)}</p></div><div class="rationale-indicators"><span>INDICATORS CONSIDERED</span><ul>${technical}</ul></div></section>`;
+    ? indicators.map((item) => html`<li><b>${escapeHtml(engineText(item.level))}</b><span>${escapeHtml(engineText(item.message))}</span></li>`).join("")
+    : localizeHtml("<li class=\"clear\"><b>CHECK</b><span>No high-priority technical indicators were found.</span></li>");
+  return html`<section class="verdict-rationale"><div><p class="page-kicker">WHY THIS RESULT</p><p>${escapeHtml(aiSummary)}</p></div><div class="rationale-indicators"><span>INDICATORS CONSIDERED</span><ul>${technical}</ul></div></section>`;
 }
 
 type CheckTone = "pass" | "warn" | "fail" | "neutral";
@@ -1555,21 +1561,21 @@ function authCheckTone(status: string): CheckTone {
 
 function authCheckLabel(status: string): string {
   const value = status.trim().toLowerCase();
-  if (["none", "unknown", "present", "unavailable"].includes(value)) return "Unavailable";
+  if (["none", "unknown", "present", "unavailable"].includes(value)) return t("Unavailable");
   const tone = authCheckTone(status);
-  return tone === "pass" ? "Passed" : tone === "fail" ? "Failed" : tone === "warn" ? "Review required" : "Unavailable";
+  return tone === "pass" ? "Passed" : tone === "fail" ? "Failed" : tone === "warn" ? t("Review required") : t("Unavailable");
 }
 
 function staticCheckItem(tone: CheckTone, title: string, detail: string, status?: string): string {
   const summary = status ? `${status} · ${detail}` : detail;
-  return `<li class="static-check static-check-${tone}"><strong>${escapeHtml(title)}</strong><small>${escapeHtml(summary)}</small></li>`;
+  return html`<li class="static-check static-check-${tone}"><strong>${escapeHtml(title)}</strong><small>${escapeHtml(summary)}</small></li>`;
 }
 
 function senderConsistencyItem(tone: CheckTone, title: string, detail: string, status: string, address = ""): string {
   const addressAction = address
-    ? `<div class="consistency-address"><code>${escapeHtml(address)}</code><button type="button" data-copy-address="${escapeHtml(address)}">Copy address</button></div>`
+    ? html`<div class="consistency-address"><code>${escapeHtml(address)}</code><button type="button" data-copy-address="${escapeHtml(address)}">Copy address</button></div>`
     : "";
-  return `<li class="static-check static-check-${tone} sender-consistency-item"><div><strong>${escapeHtml(title)}</strong><b>${escapeHtml(status)}</b></div><small>${escapeHtml(detail)}</small>${addressAction}</li>`;
+  return html`<li class="static-check static-check-${tone} sender-consistency-item"><div><strong>${escapeHtml(title)}</strong><b>${escapeHtml(engineText(status))}</b></div><small>${escapeHtml(engineText(detail))}</small>${addressAction}</li>`;
 }
 
 function mailboxAddress(value: string): string {
@@ -1612,18 +1618,18 @@ function abuseIpDbAvailable(result?: ReputationResult): boolean {
 function abuseIpDbSummary(result?: ReputationResult): string {
   if (abuseIpDbAvailable(result)) {
     const reports = result?.totalReports ?? 0;
-    return `AbuseIPDB · ${result?.abuseConfidenceScore}/100 · ${reports} ${reports === 1 ? "report" : "reports"}`;
+    return t("AbuseIPDB · {0}/100 · {1} {2}", [result?.abuseConfidenceScore, reports, reports === 1 ? t("report") : t("reports")]);
   }
   const spamhaus = result?.spamhaus;
   const categories = (spamhaus?.categories || []).join(", ");
-  if (spamhaus?.status === "clean") return "Spamhaus ZEN · not listed";
-  if (spamhaus?.status === "listed" && spamhaus.classification === "threat") return `Spamhaus ZEN · threat listing${categories ? ` (${categories})` : ""}`;
-  if (spamhaus?.status === "listed" && spamhaus.classification === "policy") return `Spamhaus ZEN · policy listing${categories ? ` (${categories})` : ""} · not treated as a threat`;
-  if (spamhaus?.status === "listed") return `Spamhaus ZEN · listing with unknown classification${categories ? ` (${categories})` : ""}`;
+  if (spamhaus?.status === "clean") return t("Spamhaus ZEN · not listed");
+  if (spamhaus?.status === "listed" && spamhaus.classification === "threat") return t("Spamhaus ZEN · threat listing{0}", [categories ? ` (${categories})` : ""]);
+  if (spamhaus?.status === "listed" && spamhaus.classification === "policy") return t("Spamhaus ZEN · policy listing{0} · not treated as a threat", [categories ? ` (${categories})` : ""]);
+  if (spamhaus?.status === "listed") return t("Spamhaus ZEN · listing with unknown classification{0}", [categories ? ` (${categories})` : ""]);
   // A skipped fallback is internal provider bookkeeping, not a reputation result.
   // Preserve the primary reason (for example, a non-public IP) in saved reports too.
   if (spamhaus?.status === "error" && spamhaus.message) return spamhaus.message;
-  return result?.message || "IP reputation unavailable";
+  return result?.message || t("IP reputation unavailable");
 }
 
 function normalizedOtxUrl(value?: string): string {
@@ -1691,7 +1697,7 @@ function otxPulseLinks(pulses: OtxPulseSummary[], limit = 2): string {
     if (!/^[0-9a-f]{24}$/i.test(id) || seen.has(id.toLowerCase())) return [];
     seen.add(id.toLowerCase());
     const href = `https://otx.alienvault.com/pulse/${id}`;
-    return [`<a href="${href}" target="_blank" rel="noopener noreferrer">${escapeHtml(pulse.name || "Open OTX Pulse")} ↗</a>`];
+    return [html`<a href="${href}" target="_blank" rel="noopener noreferrer">${escapeHtml(pulse.name || t("Open OTX Pulse"))} ↗</a>`];
   }).slice(0, limit).join("");
 }
 
@@ -1701,9 +1707,9 @@ function otxInlineEvidence(matches: OtxMatch[]): string {
   const pulses = matches.flatMap((match) => match.pulses || []);
   const pulseLinks = otxPulseLinks(pulses);
   const pulseCount = Math.max(0, ...matches.map((match) => Number(match.pulse_count || 0)));
-  const detail = `${pulseCount || matches.length} OTX Pulse${(pulseCount || matches.length) === 1 ? "" : "s"}`;
-  const label = strong ? "Reported as malicious by OTX" : "Related OTX threat report";
-  return `<em class="inline-otx inline-otx-${strong ? "strong" : "supporting"}"><b>${label}</b><span>${pulseLinks || escapeHtml(detail)}</span></em>`;
+  const detail = t((pulseCount || matches.length) === 1 ? "{0} OTX Pulse" : "{0} OTX Pulses", [pulseCount || matches.length]);
+  const label = strong ? t("Reported as malicious by OTX") : t("Related OTX threat report");
+  return html`<em class="inline-otx inline-otx-${strong ? "strong" : "supporting"}"><b>${label}</b><span>${pulseLinks || escapeHtml(engineText(detail))}</span></em>`;
 }
 
 function hopCheckTone(results: ReputationResult[]): CheckTone {
@@ -1732,7 +1738,7 @@ function reportMarkup(report: AnalysisReport): string {
   const high = flags.filter((flag) => flag.level === "HIGH").length;
   const medium = flags.filter((flag) => flag.level === "MEDIUM").length;
   const aiThreatBadges = aiThreatLabels(report)
-    .map((label) => `<span class="ai-threat" title="Detected by local AI content analysis">${escapeHtml(label)}</span>`)
+    .map((label) => html`<span class="ai-threat" title="Detected by local AI content analysis">${escapeHtml(label)}</span>`)
     .join("");
   const verdict = assessment(report);
   const risk = verdict.label;
@@ -1740,9 +1746,9 @@ function reportMarkup(report: AnalysisReport): string {
   const details = flags.length
     ? flags.map((flag) => {
       const { tone, label } = signalPresentation(report, flag);
-      return `<li class="static-check static-check-${tone}"><b>${escapeHtml(label)}</b><span><strong>${escapeHtml(flag.field)}</strong>${escapeHtml(flag.message)}</span></li>`;
+      return html`<li class="static-check static-check-${tone}"><b>${escapeHtml(label)}</b><span><strong>${escapeHtml(engineText(flag.field))}</strong>${escapeHtml(engineText(flag.message))}</span></li>`;
     }).join("")
-    : "<li class=\"risk-info\"><b>INFO</b><span>No static indicators were found.</span></li>";
+    : localizeHtml("<li class=\"risk-info\"><b>INFO</b><span>No static indicators were found.</span></li>");
   const authEvidence = (["SPF", "DKIM", "DMARC"] as const).map((protocol) => [protocol, authFromEmlHeader(report, protocol)] as const);
   const auth = authEvidence.map(([protocol, result]) => {
     const tone = authCheckTone(result.status);
@@ -1751,58 +1757,58 @@ function reportMarkup(report: AnalysisReport): string {
   const authDetails = authEvidence.map(([protocol, result]) => {
     const tone = authCheckTone(result.status);
     const rawEvidence = result.raw || (targetAuthUnavailable
-      ? "This embedded message has no independently verifiable authentication evidence."
-      : "No evidence in the EML header.");
+      ? t("This embedded message has no independently verifiable authentication evidence.")
+      : t("No evidence in the EML header."));
     const senderBoundarySelected = Boolean(result.sender_boundary_selected);
     const pathConflict = Boolean(result.path_conflict) || result.status.toLowerCase() === "mixed";
     const pathFacts = senderBoundarySelected
-      ? `<span><b>Sender boundary</b>${escapeHtml((result.origin_status || result.status || "unknown").toUpperCase())}</span><span><b>Final receiver</b>${escapeHtml((result.delivery_status || "unknown").toUpperCase())}</span>`
+      ? html`<span><b>Sender boundary</b>${escapeHtml((result.origin_status || result.status || "unknown").toUpperCase())}</span><span><b>Final receiver</b>${escapeHtml((result.delivery_status || "unknown").toUpperCase())}</span>`
       : "";
     const selection = pathConflict
-      ? "Sender-boundary SPF selected; final receiver differs"
-      : senderBoundarySelected ? "Sender-boundary SPF selected"
-      : result.all_results.length > 1 ? `${result.all_results.length} results · least favourable shown` : "";
-    return `<section class="auth-evidence static-surface-${tone}"><header class="auth-evidence-heading"><h4>${protocol}</h4><span class="auth-status auth-status-${tone}">${authCheckLabel(result.status)}</span></header><div class="auth-evidence-facts"><span><b>Status</b>${escapeHtml(result.status.toUpperCase())}</span><span><b>Source</b>${escapeHtml(result.source)}</span>${result.identity ? `<span><b>Identity</b><code>${escapeHtml(result.identity)}</code></span>` : ""}${pathFacts}${selection ? `<span><b>Selection</b>${escapeHtml(selection)}</span>` : ""}</div><div class="auth-raw-evidence"><b>Header evidence</b><code tabindex="0" aria-label="${protocol} raw authentication evidence">${escapeHtml(rawEvidence)}</code></div></section>`;
+      ? t("Sender-boundary SPF selected; final receiver differs")
+      : senderBoundarySelected ? t("Sender-boundary SPF selected")
+      : result.all_results.length > 1 ? t("{0} results · least favourable shown", [result.all_results.length]) : "";
+    return html`<section class="auth-evidence static-surface-${tone}"><header class="auth-evidence-heading"><h4>${protocol}</h4><span class="auth-status auth-status-${tone}">${authCheckLabel(result.status)}</span></header><div class="auth-evidence-facts"><span><b>Status</b>${escapeHtml(result.status.toUpperCase())}</span><span><b>Source</b>${escapeHtml(result.source)}</span>${result.identity ? html`<span><b>Identity</b><code>${escapeHtml(result.identity)}</code></span>` : ""}${pathFacts}${selection ? html`<span><b>Selection</b>${escapeHtml(selection)}</span>` : ""}</div><div class="auth-raw-evidence"><b>Header evidence</b><code tabindex="0" aria-label="${protocol} raw authentication evidence">${escapeHtml(rawEvidence)}</code></div></section>`;
   }).join("");
-  const injectionIp = targetAuthUnavailable ? "Unavailable" : report.injection_sender_ip || "Unavailable";
-  const routingSummary = `<div class="routing-stat routing-stat-ip"><span>Injection IP</span><strong>${escapeHtml(injectionIp)}</strong></div>`;
+  const injectionIp = targetAuthUnavailable ? t("Unavailable") : report.injection_sender_ip || t("Unavailable");
+  const routingSummary = html`<div class="routing-stat routing-stat-ip"><span>Injection IP</span><strong>${escapeHtml(injectionIp)}</strong></div>`;
   const conversation = report.conversation_analysis;
   const selectedTargets = new Set(conversation?.selection?.target_ids || []);
   const selectedContexts = new Set(conversation?.selection?.context_ids || []);
   const conversationRows = (conversation?.segments || []).filter((segment) => selectedTargets.has(segment.id) || selectedContexts.has(segment.id)).map((segment) => staticCheckItem(
     selectedTargets.has(segment.id) ? "warn" : "neutral",
-    `${selectedTargets.has(segment.id) ? "Analysed" : "Context"} · ${segment.from || "Unknown sender"}`,
-    segment.preview || "No preview available.",
-    segment.authentication_status === "available" ? "Outer authentication available" : "Embedded identity · authentication unavailable",
+    `${selectedTargets.has(segment.id) ? t("Analysed") : t("Context")} · ${segment.from || t("Unknown sender")}`,
+    segment.preview || t("No preview available."),
+    segment.authentication_status === "available" ? t("Outer authentication available") : t("Embedded identity · authentication unavailable"),
   )).join("");
   const conversationScopeDetails = conversation?.selection
-    ? `<section class="html-form-inspection conversation-report-scope static-surface-neutral"><div><p class="page-kicker">ANALYSIS SCOPE</p><h3>Selected conversation</h3><p>${escapeHtml(conversation.technical_scope_message)}</p></div><ul>${conversationRows}</ul>${report.conversation_excluded_link_count ? `<small>${report.conversation_excluded_link_count} link(s) from excluded turns were not used in this verdict.</small>` : ""}</section>`
+    ? html`<section class="html-form-inspection conversation-report-scope static-surface-neutral"><div><p class="page-kicker">ANALYSIS SCOPE</p><h3>Selected conversation</h3><p>${escapeHtml(conversation.technical_scope_message)}</p></div><ul>${conversationRows}</ul>${report.conversation_excluded_link_count ? html`<small>${report.conversation_excluded_link_count} link(s) from excluded turns were not used in this verdict.</small>` : ""}</section>`
     : "";
   const conversationAuthBoundary = conversation?.selection
-    ? `<aside class="conversation-auth-boundary"><strong>Sender verification</strong><p>${escapeHtml(targetAuthUnavailable ? "This message was forwarded, so its original sender cannot be independently verified. Delivery information from the outer message is not used for this assessment." : report.selected_target_authentication_scope === "mixed_outer_and_embedded" ? "Sender verification is available for the delivered message only. Forwarded messages cannot be independently verified." : conversation.technical_scope_message)}</p></aside>`
+    ? html`<aside class="conversation-auth-boundary"><strong>Sender verification</strong><p>${escapeHtml(targetAuthUnavailable ? t("This message was forwarded, so its original sender cannot be independently verified. Delivery information from the outer message is not used for this assessment.") : report.selected_target_authentication_scope === "mixed_outer_and_embedded" ? t("Sender verification is available for the delivered message only. Forwarded messages cannot be independently verified.") : conversation.technical_scope_message)}</p></aside>`
     : "";
   const formAnalysis = report.html_form_analysis;
   const formTone: CheckTone = formAnalysis?.status === "suspicious" ? "fail" : formAnalysis?.status === "review" ? "warn" : formAnalysis?.status === "clean" ? "pass" : "neutral";
   const formRows = (formAnalysis?.forms || []).map((form, index) => {
     const tone: CheckTone = form.risk === "high" ? "fail" : form.risk === "medium" ? "warn" : "pass";
-    const target = form.action_host || (form.action_kind === "missing" ? "No action declared" : form.action_kind === "relative" ? "Relative action" : "No resolvable destination");
-    const sensitive = form.sensitive_fields?.length ? `Sensitive fields: ${form.sensitive_fields.join(", ")}.` : "";
-    return staticCheckItem(tone, `Form ${index + 1} · ${form.method || "GET"}`, `${target} · ${form.message || ""} ${sensitive}`.trim(), form.risk === "high" ? "Credential harvesting risk" : form.risk === "medium" ? "Review required" : "No sensitive fields");
+    const target = form.action_host || (form.action_kind === "missing" ? t("No action declared") : form.action_kind === "relative" ? t("Relative action") : t("No resolvable destination"));
+    const sensitive = form.sensitive_fields?.length ? t("Sensitive fields: {0}.", [form.sensitive_fields.join(", ")]) : "";
+    return staticCheckItem(tone, t("Form {0} · {1}", [index + 1, form.method || "GET"]), `${target} · ${engineText(form.message || "")} ${sensitive}`.trim(), form.risk === "high" ? t("Credential harvesting risk") : form.risk === "medium" ? t("Review required") : t("No sensitive fields"));
   }).join("");
   const htmlFormDetails = formAnalysis?.status === "clean" && !formRows && !formAnalysis.form_count
     ? ""
-    : `<section class="html-form-inspection static-surface-${formTone}"><div><p class="page-kicker">LOCAL HTML INSPECTION</p><h3>Form and credential harvesting</h3><p>${escapeHtml(formAnalysis?.message || "This analysis is not available in older reports.")}</p></div><ul>${formRows || staticCheckItem(formTone, formAnalysis?.status === "clean" ? "No HTML forms" : "Form inspection unavailable", formAnalysis?.message || "No form data is available.", formAnalysis?.status === "clean" ? "Passed" : "Unavailable")}</ul></section>`;
+    : html`<section class="html-form-inspection static-surface-${formTone}"><div><p class="page-kicker">LOCAL HTML INSPECTION</p><h3>Form and credential harvesting</h3><p>${escapeHtml(engineText(formAnalysis?.message || t("This analysis is not available in older reports.")))}</p></div><ul>${formRows || staticCheckItem(formTone, formAnalysis?.status === "clean" ? t("No HTML forms") : t("Form inspection unavailable"), formAnalysis?.message || t("No form data is available."), formAnalysis?.status === "clean" ? "Passed" : t("Unavailable"))}</ul></section>`;
   const copyAnalysis = report.html_copy_deception;
   const copyTone: CheckTone = copyAnalysis?.status === "suspicious" ? "fail" : copyAnalysis?.status === "review" ? "warn" : copyAnalysis?.status === "clean" ? "pass" : "neutral";
   const copyRows = (copyAnalysis?.findings || []).map((finding, index) => {
     const tone: CheckTone = finding.severity === "high" ? "fail" : "warn";
-    const visible = finding.visible_text ? `Shown: ${finding.visible_text}` : "No separate visible decoy was resolved.";
-    const substituted = finding.hidden_text ? `Copied: ${finding.hidden_text}` : (finding.dangerous_paths || []).join(", ");
-    return staticCheckItem(tone, `Copy/paste finding ${index + 1}`, `${finding.message || "Deceptive copied content detected."} ${visible}${substituted ? ` · ${substituted}` : ""}`, finding.severity === "high" ? "Hidden executable path" : "Review required");
+    const visible = finding.visible_text ? t("Shown: {0}", [finding.visible_text]) : t("No separate visible decoy was resolved.");
+    const substituted = finding.hidden_text ? t("Copied: {0}", [finding.hidden_text]) : (finding.dangerous_paths || []).join(", ");
+    return staticCheckItem(tone, t("Copy/paste finding {0}", [index + 1]), `${engineText(finding.message || t("Deceptive copied content detected."))} ${visible}${substituted ? ` · ${substituted}` : ""}`, finding.severity === "high" ? t("Hidden executable path") : t("Review required"));
   }).join("");
   const copyDeceptionDetails = copyAnalysis?.status === "clean" && !copyRows && !copyAnalysis.finding_count
     ? ""
-    : `<section class="html-form-inspection static-surface-${copyTone}"><div><p class="page-kicker">HTML PRESENTATION SAFETY</p><h3>Copy/paste deception</h3><p>${escapeHtml(copyAnalysis?.message || "This analysis is not available in older reports.")}</p></div><ul>${copyRows || staticCheckItem(copyTone, copyAnalysis?.status === "clean" ? "No copy deception" : "Copy inspection unavailable", copyAnalysis?.message || "No copy/paste inspection data is available.", copyAnalysis?.status === "clean" ? "Passed" : "Unavailable")}</ul></section>`;
+    : html`<section class="html-form-inspection static-surface-${copyTone}"><div><p class="page-kicker">HTML PRESENTATION SAFETY</p><h3>Copy/paste deception</h3><p>${escapeHtml(engineText(copyAnalysis?.message || t("This analysis is not available in older reports.")))}</p></div><ul>${copyRows || staticCheckItem(copyTone, copyAnalysis?.status === "clean" ? t("No copy deception") : t("Copy inspection unavailable"), copyAnalysis?.message || t("No copy/paste inspection data is available."), copyAnalysis?.status === "clean" ? "Passed" : t("Unavailable"))}</ul></section>`;
   const displayNameSpoofing = String(report.display_name_spoofing || "").trim();
   const displayNameSpoofed = Boolean(displayNameSpoofing && !["none", "false", "no"].includes(displayNameSpoofing.toLowerCase()));
   const replyToAddress = mailboxAddress(String(report.reply_to || "").trim());
@@ -1812,30 +1818,30 @@ function reportMarkup(report: AnalysisReport): string {
   const returnPathDmarcFailed = ["fail", "softfail", "temperror", "permerror", "policy", "reject", "quarantine"].includes(returnPathDmarcStatus);
   const returnPathTone: CheckTone = !report.return_path_domain_mismatch || returnPathDmarcPassed ? "pass" : returnPathDmarcFailed ? "fail" : "warn";
   const returnPathDetail = !report.return_path_domain_mismatch
-    ? "No mismatch detected between the envelope and visible sender."
+    ? t("No mismatch detected between the envelope and visible sender.")
     : returnPathDmarcPassed
-      ? "The envelope sender differs from the visible sender domain, but DMARC passed; this mismatch is excluded from the verdict."
+      ? t("The envelope sender differs from the visible sender domain, but DMARC passed; this mismatch is excluded from the verdict.")
       : returnPathDmarcFailed
-        ? `The envelope sender differs from the visible sender domain and DMARC did not pass (${returnPathDmarcStatus.toUpperCase()}).`
-        : "The envelope sender differs from the visible sender domain. DMARC is unavailable, so this is weak evidence to correlate with other signals.";
+        ? t("The envelope sender differs from the visible sender domain and DMARC did not pass ({0}).", [returnPathDmarcStatus.toUpperCase()])
+        : t("The envelope sender differs from the visible sender domain. DMARC is unavailable, so this is weak evidence to correlate with other signals.");
   const senderInconsistencies = targetAuthUnavailable
     ? [
-      senderConsistencyItem("neutral", "Reply-To address", "No independent Reply-To header is available for this embedded message.", "Unavailable"),
-      senderConsistencyItem("neutral", "Return-Path domain", "No independent envelope sender is available for this embedded message.", "Unavailable"),
-      senderConsistencyItem("neutral", "Display name", "The recovered display name is quoted content and cannot be authenticated.", "Unverified"),
+      senderConsistencyItem("neutral", t("Reply-To address"), t("No independent Reply-To header is available for this embedded message."), t("Unavailable")),
+      senderConsistencyItem("neutral", t("Return-Path domain"), t("No independent envelope sender is available for this embedded message."), t("Unavailable")),
+      senderConsistencyItem("neutral", t("Display name"), t("The recovered display name is quoted content and cannot be authenticated."), t("Unverified")),
     ].join("")
     : [
-      senderConsistencyItem(report.reply_to_mismatch ? "fail" : "pass", "Reply-To address", report.reply_to_mismatch ? "The reply destination differs from the sender identity." : "No mismatch detected between the sender and reply destination.", report.reply_to_mismatch ? "Mismatch detected" : "Aligned", report.reply_to_mismatch ? replyToAddress : ""),
-      senderConsistencyItem(returnPathTone, "Return-Path domain", returnPathDetail, report.return_path_domain_mismatch ? returnPathDmarcPassed ? "Mismatch · DMARC passed" : returnPathDmarcFailed ? "Technical mismatch" : "Weak mismatch" : "Aligned", report.return_path_domain_mismatch ? returnPathAddress : ""),
-      senderConsistencyItem(displayNameSpoofed ? "fail" : "pass", "Display name", displayNameSpoofed ? displayNameSpoofing : "No display-name impersonation detected.", displayNameSpoofed ? "Impersonation detected" : "Aligned"),
+      senderConsistencyItem(report.reply_to_mismatch ? "fail" : "pass", t("Reply-To address"), report.reply_to_mismatch ? t("The reply destination differs from the sender identity.") : t("No mismatch detected between the sender and reply destination."), report.reply_to_mismatch ? t("Mismatch detected") : t("Aligned"), report.reply_to_mismatch ? replyToAddress : ""),
+      senderConsistencyItem(returnPathTone, t("Return-Path domain"), returnPathDetail, report.return_path_domain_mismatch ? returnPathDmarcPassed ? t("Mismatch · DMARC passed") : returnPathDmarcFailed ? t("Technical mismatch") : t("Weak mismatch") : t("Aligned"), report.return_path_domain_mismatch ? returnPathAddress : ""),
+      senderConsistencyItem(displayNameSpoofed ? "fail" : "pass", t("Display name"), displayNameSpoofed ? displayNameSpoofing : t("No display-name impersonation detected."), displayNameSpoofed ? t("Impersonation detected") : t("Aligned")),
     ].join("");
   const riskyLookalikeAlerts = (report.lookalike_alerts || []).filter(isRiskyLookalikeAlert);
   const informationalIdnAlerts = (report.lookalike_alerts || []).filter((alert) => !isRiskyLookalikeAlert(alert));
   const lookalikeHosts = new Set(riskyLookalikeAlerts.map((alert) => (alert.host || "").toLowerCase()));
-  const sourceLabel: Record<string, string> = { html_href: "HTML link", html_button: "HTML button", html_text: "HTML text", plain_text: "Email text", attachment: "Attachment URL", attachment_qr: "Attachment QR code" };
+  const sourceLabel: Record<string, string> = { html_href: t("HTML link"), html_button: t("HTML button"), html_text: t("HTML text"), plain_text: t("Email text"), attachment: t("Attachment URL"), attachment_qr: t("Attachment QR code") };
   const techniqueLabel: Record<string, string> = {
-    edit_distance: "Edit distance", homoglyph: "Unicode homoglyphs", unicode_homoglyph: "Confusable Unicode characters",
-    punycode_idna: "Internationalized IDN domain", punycode_invalid: "Invalid Punycode / IDNA domain", mixed_script_idn: "Mixed-script IDN domain", punycode_homograph: "Punycode homograph", typosquatting: "Typosquatting",
+    edit_distance: t("Edit distance"), homoglyph: t("Unicode homoglyphs"), unicode_homoglyph: t("Confusable Unicode characters"),
+    punycode_idna: t("Internationalized IDN domain"), punycode_invalid: t("Invalid Punycode / IDNA domain"), mixed_script_idn: t("Mixed-script IDN domain"), punycode_homograph: t("Punycode homograph"), typosquatting: "Typosquatting",
   };
   const links = (report.links || []).filter((link) => (link.scheme || "").toLowerCase() !== "mailto").map((link) => {
     const signatureTracking = Boolean(link.signature_tracking_redirect);
@@ -1854,20 +1860,20 @@ function reportMarkup(report: AnalysisReport): string {
       : link.display_mismatch || reputation === "warn" || structuralWarning
         ? "warn"
         : safeSignatureTracking || reputation === "pass" ? "pass" : "neutral";
-    const status = reputation === "fail" ? "Detected by VirusTotal" : invoiceDeliveryMismatch ? (link.dangerous_download ? "Invoice link points to a script/executable" : "Invoice delivery is unrelated to sender domain") : dangerous ? (link.is_ip ? "Direct IP" : link.dangerous_download ? "Executable or script download" : "Lookalike domain") : structuralDanger ? "Hidden destination userinfo" : link.display_mismatch ? "Destination differs from visible text" : strongOtxMatch ? "Exact match under the OTX malicious policy" : reputation === "warn" ? "Review required" : safeSignatureTracking ? "Signature tracking redirect" : reputation === "pass" ? "VirusTotal clean" : link.nested_redirect_count ? "Nested redirect destination" : link.nonstandard_port ? "Non-standard port" : link.unicode_path_or_query ? "Unicode path or query" : "Valid URL structure";
-    const host = link.host || "URL without host";
+    const status = reputation === "fail" ? t("Detected by VirusTotal") : invoiceDeliveryMismatch ? (link.dangerous_download ? t("Invoice link points to a script/executable") : t("Invoice delivery is unrelated to sender domain")) : dangerous ? (link.is_ip ? t("Direct IP") : link.dangerous_download ? t("Executable or script download") : t("Lookalike domain")) : structuralDanger ? t("Hidden destination userinfo") : link.display_mismatch ? t("Destination differs from visible text") : strongOtxMatch ? t("Exact match under the OTX malicious policy") : reputation === "warn" ? t("Review required") : safeSignatureTracking ? t("Signature tracking redirect") : reputation === "pass" ? t("VirusTotal clean") : link.nested_redirect_count ? t("Nested redirect destination") : link.nonstandard_port ? t("Non-standard port") : link.unicode_path_or_query ? t("Unicode path or query") : t("Valid URL structure");
+    const host = link.host || t("URL without host");
     const vtUrl = reputationResult?.permalink || `https://www.virustotal.com/gui/domain/${encodeURIComponent(host)}`;
     const whoisUrl = `https://www.whois.com/whois/${encodeURIComponent(host)}`;
     const isWebLink = ["http", "https"].includes((link.scheme || "").toLowerCase());
     const metadata = [sourceLabel[link.source || ""] || link.source, link.scheme ? link.scheme.toUpperCase() : ""].filter(Boolean).join(" · ");
-    const notes = [htmlCallToAction && "Clickable HTML call-to-action", invoiceDeliveryMismatch && link.context_risk_message, link.dangerous_download && `${link.download_source === "redirect" ? "Redirect download filename" : "Download filename"}: ${link.download_filename || `.${link.download_extension || "unknown"}`}`, signatureTracking && `Final destination: ${(link.redirect_hosts || []).join(", ") || "embedded target"}`, link.display_mismatch && `Visible text: ${link.display_host || link.display_text || "different domain"}`, link.has_credentials && "Username or password is embedded before the destination host", link.has_userinfo && "Userinfo is present before the destination host", link.nonstandard_port && `Port ${link.port}`, !signatureTracking && link.nested_redirect_count && `Redirects to: ${(link.redirect_hosts || []).join(", ") || "embedded target"}`, link.unicode_path_or_query && "Unicode characters in path or query", reputationResult?.detection_ratio && `VirusTotal: ${reputationResult.detection_ratio}`, reputationResult?.last_analysis && `Last analysis: ${reputationResult.last_analysis}`].filter(Boolean).join(" · ");
+    const notes = [htmlCallToAction && t("Clickable HTML call-to-action"), invoiceDeliveryMismatch && link.context_risk_message, link.dangerous_download && `${link.download_source === "redirect" ? t("Redirect download filename") : t("Download filename")}: ${link.download_filename || `.${link.download_extension || "unknown"}`}`, signatureTracking && t("Final destination: {0}", [(link.redirect_hosts || []).join(", ") || t("embedded target")]), link.display_mismatch && t("Visible text: {0}", [link.display_host || link.display_text || t("different domain")]), link.has_credentials && t("Username or password is embedded before the destination host"), link.has_userinfo && t("Userinfo is present before the destination host"), link.nonstandard_port && t("Port {0}", [link.port]), !signatureTracking && link.nested_redirect_count && t("Redirects to: {0}", [(link.redirect_hosts || []).join(", ") || t("embedded target")]), link.unicode_path_or_query && t("Unicode characters in path or query"), reputationResult?.detection_ratio && t("VirusTotal: {0}", [reputationResult.detection_ratio]), reputationResult?.last_analysis && t("Last analysis: {0}", [reputationResult.last_analysis])].filter(Boolean).join(" · ");
     const virusTotalAction = !isWebLink ? ""
       : reputationResult?.status === "not_found"
-      ? `<a class="manual-vt-action" href="https://www.virustotal.com/gui/home/url" target="_blank" rel="noopener noreferrer" data-vt-manual-url="${escapeHtml(link.url || "")}">Copy URL &amp; open VirusTotal ↗</a>`
-      : `<a href="${escapeHtml(vtUrl)}" target="_blank" rel="noopener noreferrer">${reputationResult?.permalink ? "VirusTotal report ↗" : "VirusTotal ↗"}</a>`;
-    const copyAction = (tone === "fail" || link.display_mismatch) && link.url ? `<button class="copy-evidence" type="button" data-copy-ioc="${escapeHtml(link.url)}">Copy URL</button>` : "";
-    return `<li class="static-check static-check-${tone} link-evidence"><div><strong>${escapeHtml(host)}</strong><span>${escapeHtml(status)}</span></div><small>${escapeHtml((link.url || "").replace("://", "[://]").replaceAll(".", "[.]"))}</small>${metadata ? `<em>${escapeHtml(metadata)}</em>` : ""}${notes ? `<em>${escapeHtml(notes)}</em>` : ""}${otxInlineEvidence(otxMatches)}${copyAction}${isWebLink ? `<p>${virusTotalAction}<a href="${escapeHtml(whoisUrl)}" target="_blank" rel="noopener noreferrer">WHOIS ↗</a></p>` : ""}</li>`;
-  }).join("") || staticCheckItem("neutral", "No extracted links", "No URLs are present in the message.", "Not applicable");
+      ? html`<a class="manual-vt-action" href="https://www.virustotal.com/gui/home/url" target="_blank" rel="noopener noreferrer" data-vt-manual-url="${escapeHtml(link.url || "")}">Copy URL &amp; open VirusTotal ↗</a>`
+      : html`<a href="${escapeHtml(vtUrl)}" target="_blank" rel="noopener noreferrer">${reputationResult?.permalink ? t("VirusTotal report ↗") : "VirusTotal ↗"}</a>`;
+    const copyAction = (tone === "fail" || link.display_mismatch) && link.url ? html`<button class="copy-evidence" type="button" data-copy-ioc="${escapeHtml(link.url)}">Copy URL</button>` : "";
+    return html`<li class="static-check static-check-${tone} link-evidence"><div><strong>${escapeHtml(host)}</strong><span>${escapeHtml(engineText(status))}</span></div><small>${escapeHtml((link.url || "").replace("://", "[://]").replaceAll(".", "[.]"))}</small>${metadata ? html`<em>${escapeHtml(metadata)}</em>` : ""}${notes ? html`<em>${escapeHtml(notes)}</em>` : ""}${otxInlineEvidence(otxMatches)}${copyAction}${isWebLink ? html`<p>${virusTotalAction}<a href="${escapeHtml(whoisUrl)}" target="_blank" rel="noopener noreferrer">WHOIS ↗</a></p>` : ""}</li>`;
+  }).join("") || staticCheckItem("neutral", t("No extracted links"), t("No URLs are present in the message."), t("Not applicable"));
   const mailtoGroups = new Map<string, { recipient: string; subjects: string[]; count: number }>();
   (report.links || []).forEach((link) => {
     const action = parseMailtoAction(link.url);
@@ -1879,10 +1885,10 @@ function reportMarkup(report: AnalysisReport): string {
     mailtoGroups.set(key, current);
   });
   const emailActions = [...mailtoGroups.values()].map((action) => {
-    const subjectDetail = action.subjects.length ? `Subject${action.subjects.length === 1 ? "" : "s"}: ${action.subjects.join(" · ")}` : "No subject specified";
-    const countDetail = `${action.count} email action${action.count === 1 ? "" : "s"} found`;
-    return `<li class="static-check static-check-neutral email-action"><div><strong>${escapeHtml(action.recipient)}</strong><span>Email action</span></div><small>${escapeHtml(`${countDetail} · ${subjectDetail}`)}</small><button class="copy-evidence" type="button" data-copy-ioc="${escapeHtml(action.recipient)}">Copy address</button></li>`;
-  }).join("") || staticCheckItem("neutral", "No email actions", "No mailto destinations are present in the message.", "Not applicable");
+    const subjectDetail = action.subjects.length ? t(action.subjects.length === 1 ? "Subject: {0}" : "Subjects: {0}", [action.subjects.join(" · ")]) : t("No subject specified");
+    const countDetail = t(action.count === 1 ? "{0} email action found" : "{0} email actions found", [action.count]);
+    return html`<li class="static-check static-check-neutral email-action"><div><strong>${escapeHtml(action.recipient)}</strong><span>Email action</span></div><small>${escapeHtml(`${countDetail} · ${subjectDetail}`)}</small><button class="copy-evidence" type="button" data-copy-ioc="${escapeHtml(action.recipient)}">Copy address</button></li>`;
+  }).join("") || staticCheckItem("neutral", t("No email actions"), t("No mailto destinations are present in the message."), t("Not applicable"));
   const attachments = (report.attachments || []).map((attachment) => {
     const attachmentRisk = (attachment.attachment_security?.risk_level || "").toLowerCase();
     const pdfRisk = (attachment.pdf_security?.risk_level || "").toLowerCase();
@@ -1900,55 +1906,55 @@ function reportMarkup(report: AnalysisReport): string {
     const otxMatches = otxMatchesForAttachment(report, attachment.hash_sha256);
     const otxMatch = otxMatches.some(isStrongOtxMatch);
     const attachmentSize = attachment.size_bytes ?? attachment.size;
-    const detail = `${attachment.content_type || "unknown type"} · ${formatAttachmentSize(attachmentSize)} · ${attachment.magic_detected_format || "unrecognised format"}`;
-    const archiveMeta = attachment.archive_security ? `${attachment.archive_security.entry_count || 0} entries${attachment.archive_security.nested_archive_count ? ` · ${attachment.archive_security.nested_archive_count} nested` : ""}${attachment.archive_security.encrypted_entry_count ? ` · ${attachment.archive_security.encrypted_entry_count} encrypted` : ""}` : "";
-    const note = (dangerousType ? attachment.attachment_security?.summary : "") || attachment.anomaly || (incomplete || typeOnly ? attachment.inspection?.summary : "") || office?.summary || attachment.pdf_security?.summary || attachment.archive_security?.summary || "File type checks only; content not inspected";
-    const officeDetails = office ? `<em>Office inspection (oletools): ${escapeHtml(office.status || "unknown")} · ${officeIncomplete ? "Incomplete — requires review" : "Completed"}</em>${(office.findings || []).slice(0, 8).map((finding) => `<em>${escapeHtml(`${finding.label || finding.key || "Office finding"}${finding.evidence ? ` · ${finding.evidence}` : ""}`)}</em>`).join("")}` : "";
+    const detail = `${attachment.content_type || t("unknown type")} · ${formatAttachmentSize(attachmentSize)} · ${attachment.magic_detected_format || t("unrecognised format")}`;
+    const archiveMeta = attachment.archive_security ? t("{0} entries{1}{2}", [attachment.archive_security.entry_count || 0, attachment.archive_security.nested_archive_count ? t(" · {0} nested", [attachment.archive_security.nested_archive_count]) : "", attachment.archive_security.encrypted_entry_count ? t(" · {0} encrypted", [attachment.archive_security.encrypted_entry_count]) : ""]) : "";
+    const note = (dangerousType ? attachment.attachment_security?.summary : "") || attachment.anomaly || (incomplete || typeOnly ? attachment.inspection?.summary : "") || office?.summary || attachment.pdf_security?.summary || attachment.archive_security?.summary || t("File type checks only; content not inspected");
+    const officeDetails = office ? html`<em>Office inspection (oletools): ${escapeHtml(office.status || "unknown")} · ${officeIncomplete ? t("Incomplete — requires review") : t("Completed")}</em>${(office.findings || []).slice(0, 8).map((finding) => html`<em>${escapeHtml(`${finding.label || finding.key || t("Office finding")}${finding.evidence ? ` · ${finding.evidence}` : ""}`)}</em>`).join("")}` : "";
     const qr = attachment.qr_inspection;
-    const qrDetails = qr ? `<em>${escapeHtml(qr.urls?.length ? `QR destination: ${qr.urls.join(", ")}` : qr.analysis_complete ? "QR check: no web destination decoded." : "QR check incomplete: destination not confirmed.")}</em>` : "";
+    const qrDetails = qr ? html`<em>${escapeHtml(qr.urls?.length ? t("QR destination: {0}", [qr.urls.join(", ")]) : qr.analysis_complete ? t("QR check: no web destination decoded.") : t("QR check incomplete: destination not confirmed."))}</em>` : "";
     const tone = risky || reputation === "fail" || otxMatch ? "fail" : caution || reputation === "warn" ? "warn" : reputation || "pass";
-    const status = dangerousType ? "High-risk file type" : risky ? "Anomaly detected" : reputation === "fail" ? "Detected by VirusTotal" : otxMatch ? "SHA-256 matched in OTX threat intelligence" : incomplete ? "Not fully inspected" : caution || reputation === "warn" ? "Review required" : reputation === "pass" ? "VirusTotal clean" : typeOnly ? "Type checks only" : "Supported checks completed";
-    const intelligence = [reputationResult?.detection_ratio && `VirusTotal: ${reputationResult.detection_ratio}`, reputationResult?.last_analysis && `Last analysis: ${reputationResult.last_analysis}`].filter(Boolean).join(" · ");
-    const reportLink = reputationResult?.permalink ? `<p><a href="${escapeHtml(reputationResult.permalink)}" target="_blank" rel="noopener noreferrer">VirusTotal report ↗</a></p>` : "";
-    const copyAction = tone === "fail" && attachment.hash_sha256 ? `<button class="copy-evidence" type="button" data-copy-ioc="${escapeHtml(attachment.hash_sha256)}">Copy SHA-256</button>` : "";
-    return `<li class="static-check static-check-${tone}"><strong>${escapeHtml(attachment.filename || "Unnamed attachment")}</strong><small>${escapeHtml(`${status} · ${detail} · ${note}`)}</small>${qrDetails}${officeDetails}${archiveMeta ? `<em>Archive inspection: ${escapeHtml(archiveMeta)}</em>` : ""}${intelligence ? `<em>${escapeHtml(intelligence)}</em>` : ""}${otxInlineEvidence(otxMatches)}${copyAction}${reportLink}</li>`;
-  }).join("") || staticCheckItem("neutral", "No attachments detected", "No MIME files are available to check.", "Not applicable");
+    const status = dangerousType ? t("High-risk file type") : risky ? t("Anomaly detected") : reputation === "fail" ? t("Detected by VirusTotal") : otxMatch ? t("SHA-256 matched in OTX threat intelligence") : incomplete ? t("Not fully inspected") : caution || reputation === "warn" ? t("Review required") : reputation === "pass" ? t("VirusTotal clean") : typeOnly ? t("Type checks only") : t("Supported checks completed");
+    const intelligence = [reputationResult?.detection_ratio && t("VirusTotal: {0}", [reputationResult.detection_ratio]), reputationResult?.last_analysis && t("Last analysis: {0}", [reputationResult.last_analysis])].filter(Boolean).join(" · ");
+    const reportLink = reputationResult?.permalink ? html`<p><a href="${escapeHtml(reputationResult.permalink)}" target="_blank" rel="noopener noreferrer">VirusTotal report ↗</a></p>` : "";
+    const copyAction = tone === "fail" && attachment.hash_sha256 ? html`<button class="copy-evidence" type="button" data-copy-ioc="${escapeHtml(attachment.hash_sha256)}">Copy SHA-256</button>` : "";
+    return html`<li class="static-check static-check-${tone}"><strong>${escapeHtml(attachment.filename || t("Unnamed attachment"))}</strong><small>${escapeHtml(`${status} · ${detail} · ${note}`)}</small>${qrDetails}${officeDetails}${archiveMeta ? html`<em>Archive inspection: ${escapeHtml(archiveMeta)}</em>` : ""}${intelligence ? html`<em>${escapeHtml(intelligence)}</em>` : ""}${otxInlineEvidence(otxMatches)}${copyAction}${reportLink}</li>`;
+  }).join("") || staticCheckItem("neutral", t("No attachments detected"), t("No MIME files are available to check."), t("Not applicable"));
   const lookalikes = (report.lookalike_alerts || []).map((alert) => {
     const risky = isRiskyLookalikeAlert(alert);
     const tone: CheckTone = alert.level === "MEDIUM" ? "warn" : risky ? "fail" : "neutral";
-    const technique = techniqueLabel[alert.technique || ""] || alert.technique || "Suspicious domain";
+    const technique = techniqueLabel[alert.technique || ""] || alert.technique || t("Suspicious domain");
     const brand = alert.matched_brand && alert.matched_brand !== "-" ? ` → ${alert.matched_brand}` : "";
-    const editDistance = alert.edit_distance === undefined || alert.edit_distance === null ? "" : ` · distance ${alert.edit_distance}`;
+    const editDistance = alert.edit_distance === undefined || alert.edit_distance === null ? "" : t(" · distance {0}", [alert.edit_distance]);
     const copyValue = alert.url || alert.host || "";
-    return `<li class="static-check static-check-${tone} lookalike-evidence"><div><strong>${escapeHtml(technique)}</strong><span>${risky ? "Possible impersonation" : "Informational"}</span></div><b>${escapeHtml(`${alert.host || "Domain"}${brand}`)}</b>${editDistance ? `<em>${escapeHtml(editDistance.trim().replace(/^·\s*/, ""))}</em>` : ""}${alert.detail ? `<small>${escapeHtml(alert.detail)}</small>` : ""}${alert.url ? `<code>${escapeHtml(alert.url)}</code>` : ""}${copyValue ? `<button class="copy-evidence" type="button" data-copy-ioc="${escapeHtml(copyValue)}">Copy ${alert.url ? "URL" : "domain"}</button>` : ""}</li>`;
-  }).join("") || staticCheckItem("pass", "No lookalike domains", "No suspicious similarity with monitored brands.", "Passed");
+    return html`<li class="static-check static-check-${tone} lookalike-evidence"><div><strong>${escapeHtml(technique)}</strong><span>${risky ? t("Possible impersonation") : t("Informational")}</span></div><b>${escapeHtml(`${alert.host || t("Domain")}${brand}`)}</b>${editDistance ? html`<em>${escapeHtml(editDistance.trim().replace(/^·\s*/, ""))}</em>` : ""}${alert.detail ? html`<small>${escapeHtml(engineText(alert.detail))}</small>` : ""}${alert.url ? html`<code>${escapeHtml(alert.url)}</code>` : ""}${copyValue ? html`<button class="copy-evidence" type="button" data-copy-ioc="${escapeHtml(copyValue)}">Copy ${alert.url ? "URL" : t("domain")}</button>` : ""}</li>`;
+  }).join("") || staticCheckItem("pass", t("No lookalike domains"), t("No suspicious similarity with monitored brands."), "Passed");
   const lookalikeSummary = riskyLookalikeAlerts.length
-    ? `${riskyLookalikeAlerts.length} possible lookalike domain(s).`
+    ? t("{0} possible lookalike domain(s).", [riskyLookalikeAlerts.length])
     : informationalIdnAlerts.length
-      ? `${informationalIdnAlerts.length} internationalized domain(s) observed; no homograph evidence found.`
-      : "No lookalike domains detected.";
-  const fields = (items: Array<[string, string | undefined | null | boolean]>) => `<dl class="field-list">${items.filter(([, value]) => value !== undefined && value !== null && value !== "").map(([label, value]) => `<div><dt>${label}</dt><dd>${escapeHtml(String(value))}</dd></div>`).join("") || "<div><dd>No data available.</dd></div>"}</dl>`;
-  const menu = [["summary", "Summary"], ["sender", "Sender"], ["auth", "Authentication"], ["links", "Links"], ["files", "Files"], ["content", "Content"], ["technical", "Message details"]];
-  const tabs = menu.map(([id, label], index) => `<button class="report-tab ${index === 0 ? "active" : ""}" data-report-tab="${id}" type="button">${label}</button>`).join("");
+      ? t("{0} internationalized domain(s) observed; no homograph evidence found.", [informationalIdnAlerts.length])
+      : t("No lookalike domains detected.");
+  const fields = (items: Array<[string, string | undefined | null | boolean]>) => html`<dl class="field-list">${items.filter(([, value]) => value !== undefined && value !== null && value !== "").map(([label, value]) => html`<div><dt>${label}</dt><dd>${escapeHtml(String(value))}</dd></div>`).join("") || localizeHtml("<div><dd>No data available.</dd></div>")}</dl>`;
+  const menu = [["summary", t("Summary")], ["sender", t("Sender")], ["auth", t("Authentication")], ["links", t("Links")], ["files", t("Files")], ["content", t("Content")], ["technical", t("Message details")]];
+  const tabs = menu.map(([id, label], index) => html`<button class="report-tab ${index === 0 ? "active" : ""}" data-report-tab="${id}" type="button">${label}</button>`).join("");
   const panel = (id: string, content: string, active = false) => {
     const panelContent = id === "content"
-      ? `<div class="report-grid"><section class="content-detail-card"><h3>Content</h3>${fields([["Source", report.body_source], ["Selection", report.body_context]])}<div class="extracted-body-block"><h4>Extracted body</h4><pre>${escapeHtml((report.body_ai || report.body_clean || "No extractable text.").slice(0, 12000))}</pre></div></section></div>`
+      ? html`<div class="report-grid"><section class="content-detail-card"><h3>Content</h3>${fields([[t("Source"), report.body_source], [t("Selection"), report.body_context]])}<div class="extracted-body-block"><h4>Extracted body</h4><pre>${escapeHtml((report.body_ai || report.body_clean || t("No extractable text.")).slice(0, 12000))}</pre></div></section></div>`
       : content;
     const composedContent = id === "content" ? `${conversationScopeDetails}${copyDeceptionDetails}${panelContent}${htmlFormDetails}` : panelContent;
-    return `<section class="report-panel ${active ? "active" : ""}" data-report-panel="${id}">${composedContent}</section>`;
+    return html`<section class="report-panel ${active ? "active" : ""}" data-report-panel="${id}">${composedContent}</section>`;
   };
   const forwardedIdentity = report.forwarded_identity?.from
-    ? `<section><h3>Forwarded message identity</h3>${fields([["Embedded From", report.forwarded_identity.from], ["Embedded To", report.forwarded_identity.to], ["Embedded Subject", report.forwarded_identity.subject], ["Authentication", "Unavailable for the embedded message"]])}<p class="quiet">SPF, DKIM and DMARC shown in this report authenticate the forwarding message, not this embedded sender.</p></section>`
+    ? html`<section><h3>Forwarded message identity</h3>${fields([[t("Embedded From"), report.forwarded_identity.from], [t("Embedded To"), report.forwarded_identity.to], [t("Embedded Subject"), report.forwarded_identity.subject], [t("Authentication"), t("Unavailable for the embedded message")]])}<p class="quiet">SPF, DKIM and DMARC shown in this report authenticate the forwarding message, not this embedded sender.</p></section>`
     : "";
-  const senderPanelTitle = targetAuthUnavailable ? "Selected message identity" : "Forwarding sender";
-  const authenticationTitle = targetAuthUnavailable ? "Authentication unavailable" : "Authentication";
+  const senderPanelTitle = targetAuthUnavailable ? t("Selected message identity") : t("Forwarding sender");
+  const authenticationTitle = targetAuthUnavailable ? t("Authentication unavailable") : t("Authentication");
   const independentAuthentication = report.domain_authentication
-    ? `<p class="quiet"><strong>Independent sender verification:</strong> ${report.domain_authentication.status === "verified" ? "Verified on the original message." : "Not confirmed. Header PASS results do not establish independent verification."}</p>`
+    ? html`<p class="quiet"><strong>Independent sender verification:</strong> ${report.domain_authentication.status === "verified" ? t("Verified on the original message.") : t("Not confirmed. Header PASS results do not establish independent verification.")}</p>`
     : "";
   const authenticationDescription = targetAuthUnavailable
-    ? "This embedded message has no independent transport or authentication headers."
-    : "SPF, DKIM and DMARC results reported by receiving mail servers. Header PASS results and independent sender verification are separate checks.";
-  return `<section class="analysis-report verdict-${verdict.tone}"><div class="report-summary"><p class="page-kicker">ANALYSIS RESULT</p><h2>${risk}</h2><p class="verdict-detail">${escapeHtml(verdict.detail)}</p>${rationale}<p><strong>${escapeHtml(report.subject || "No subject")}</strong> · ${escapeHtml(report.from_ || "Sender unavailable")}</p><div class="report-stats">${aiThreatBadges}<span>${high} high</span><span>${medium} medium</span><span>${(report.links || []).filter((link) => (link.scheme || "").toLowerCase() !== "mailto").length} web links</span><span>${(report.attachments || []).length} attachments</span></div></div><nav class="report-tabs" aria-label="Report sections"><span class="report-tab-indicator" aria-hidden="true"></span>${tabs}</nav>${panel("summary", `<div class="report-grid"><section><h3>Message</h3>${fields([["From", report.from_], ["To", report.to], ["Subject", report.subject], ["Date", report.date]])}</section><section><h3>Trust checks</h3><ul class="auth-grid">${auth}</ul><p class="quiet">${lookalikeSummary}</p></section></div><div class="report-flags"><h3>All signals</h3><ul>${details}</ul></div>`, true)}${panel("sender", `<div class="report-grid"><section><h3>${senderPanelTitle}</h3>${fields([["From", report.from_], ["Delivered-To", report.delivered_to], ["Return-Path", report.return_path], ["Reply-To", report.reply_to], ["Errors-To", report.errors_to], ["Importance", report.importance]])}</section>${forwardedIdentity}<section class="sender-consistency"><h3>Identity consistency</h3><ul class="auth-grid">${senderInconsistencies}</ul></section></div>`)}${panel("auth", `${conversationAuthBoundary}<section class="authentication-card"><div class="authentication-heading"><div><p class="page-kicker">MESSAGE AUTHENTICATION</p><h3>${authenticationTitle}</h3><p>${authenticationDescription}</p></div><div class="routing-summary" aria-label="Routing summary">${routingSummary}</div></div><div class="auth-evidence-grid">${authDetails}</div>${independentAuthentication}</section>`)}${panel("links", `<div class="report-grid"><section class="evidence-card"><h3>Web links</h3><ul>${links}</ul></section><section class="evidence-card"><h3>Email actions</h3><ul>${emailActions}</ul></section><section class="evidence-card"><h3>Lookalike / Typosquatting</h3><ul>${lookalikes}</ul></section></div>`)}${panel("files", `<section class="evidence-card"><h3>Attachments</h3><ul>${attachments}</ul></section>`)}${panel("content", `<div class="report-grid"><section><h3>Context</h3>${fields([["Source", report.body_source], ["Selection", report.body_context]])}</section><section><h3>Extracted body</h3><pre>${escapeHtml((report.body_ai || report.body_clean || "No extractable text.").slice(0, 12000))}</pre></section></div>`)}${panel("technical", `<section class="technical-report raw-eml-report"><div><h3>Raw EML</h3><p>Read-only source view. Attachment payloads are omitted to keep MIME evidence readable.</p></div><pre tabindex="0" aria-label="Raw EML source with attachment payloads omitted">${escapeHtml(report.raw_eml_preview || report.raw_eml_preview_error || "Raw EML preview unavailable for this saved report. Reanalyse the email to generate it.")}</pre></section><section class="technical-report"><div><h3>Structured report</h3><p>Export technical evidence as JSON, without the raw EML preview or original binary content.</p></div><button id="download-report" type="button">Download JSON</button><pre>${escapeHtml(JSON.stringify(structuredReport, null, 2))}</pre></section>`)}</section>`;
+    ? t("This embedded message has no independent transport or authentication headers.")
+    : t("SPF, DKIM and DMARC results reported by receiving mail servers. Header PASS results and independent sender verification are separate checks.");
+  return html`<section class="analysis-report verdict-${verdict.tone}"><div class="report-summary"><p class="page-kicker">ANALYSIS RESULT</p><h2>${risk}</h2><p class="verdict-detail">${escapeHtml(verdict.detail)}</p>${rationale}<p><strong>${escapeHtml(report.subject || t("No subject"))}</strong> · ${escapeHtml(report.from_ || t("Sender unavailable"))}</p><div class="report-stats">${aiThreatBadges}<span>${high} high</span><span>${medium} medium</span><span>${(report.links || []).filter((link) => (link.scheme || "").toLowerCase() !== "mailto").length} web links</span><span>${(report.attachments || []).length} attachments</span></div></div><nav class="report-tabs" aria-label="Report sections"><span class="report-tab-indicator" aria-hidden="true"></span>${tabs}</nav>${panel("summary", html`<div class="report-grid"><section><h3>Message</h3>${fields([[t("From"), report.from_], [t("To"), report.to], [t("Subject"), report.subject], [t("Date"), report.date]])}</section><section><h3>Trust checks</h3><ul class="auth-grid">${auth}</ul><p class="quiet">${lookalikeSummary}</p></section></div><div class="report-flags"><h3>All signals</h3><ul>${details}</ul></div>`, true)}${panel("sender", html`<div class="report-grid"><section><h3>${senderPanelTitle}</h3>${fields([[t("From"), report.from_], ["Delivered-To", report.delivered_to], ["Return-Path", report.return_path], ["Reply-To", report.reply_to], ["Errors-To", report.errors_to], [t("Importance"), report.importance]])}</section>${forwardedIdentity}<section class="sender-consistency"><h3>Identity consistency</h3><ul class="auth-grid">${senderInconsistencies}</ul></section></div>`)}${panel("auth", html`${conversationAuthBoundary}<section class="authentication-card"><div class="authentication-heading"><div><p class="page-kicker">MESSAGE AUTHENTICATION</p><h3>${authenticationTitle}</h3><p>${authenticationDescription}</p></div><div class="routing-summary" aria-label="Routing summary">${routingSummary}</div></div><div class="auth-evidence-grid">${authDetails}</div>${independentAuthentication}</section>`)}${panel("links", html`<div class="report-grid"><section class="evidence-card"><h3>Web links</h3><ul>${links}</ul></section><section class="evidence-card"><h3>Email actions</h3><ul>${emailActions}</ul></section><section class="evidence-card"><h3>Lookalike / Typosquatting</h3><ul>${lookalikes}</ul></section></div>`)}${panel("files", html`<section class="evidence-card"><h3>Attachments</h3><ul>${attachments}</ul></section>`)}${panel("content", html`<div class="report-grid"><section><h3>Context</h3>${fields([[t("Source"), report.body_source], [t("Selection"), report.body_context]])}</section><section><h3>Extracted body</h3><pre>${escapeHtml((report.body_ai || report.body_clean || t("No extractable text.")).slice(0, 12000))}</pre></section></div>`)}${panel("technical", html`<section class="technical-report raw-eml-report"><div><h3>Raw EML</h3><p>Read-only source view. Attachment payloads are omitted to keep MIME evidence readable.</p></div><pre tabindex="0" aria-label="Raw EML source with attachment payloads omitted">${escapeHtml(report.raw_eml_preview || report.raw_eml_preview_error || t("Raw EML preview unavailable for this saved report. Reanalyse the email to generate it."))}</pre></section><section class="technical-report"><div><h3>Structured report</h3><p>Export technical evidence as JSON, without the raw EML preview or original binary content.</p></div><button id="download-report" type="button">Download JSON</button><pre>${escapeHtml(JSON.stringify(structuredReport, null, 2))}</pre></section>`)}</section>`;
 }
 
 function reputationRows(items: Array<{ title: string; detail: string; result?: ReputationResult; copyValue?: string }>): string {
@@ -1963,22 +1969,22 @@ function reputationRows(items: Array<{ title: string; detail: string; result?: R
       : status === "suspicious" || (score !== undefined && score >= 25) || spamhausThreat ? "review"
         : status === "clean" || (status === "ok" && score !== undefined) || spamhausClean ? "safe" : "neutral";
     const displayStatus = isAbuseIpDb && !abuseIpDbAvailable(result)
-      ? spamhausThreat ? "REVIEW" : spamhausPolicy ? "POLICY" : spamhausClean ? "CLEAN" : "UNAVAILABLE"
-      : status === "ok" && score === 0 ? "CLEAN" : status === "ok" ? (score !== undefined && score < 25 ? "LOW RISK" : "REVIEW") : status === "skipped" && result?.message?.startsWith("Domain resolution") ? "UNRESOLVED" : status.toUpperCase();
+      ? spamhausThreat ? "REVIEW" : spamhausPolicy ? t("POLICY") : spamhausClean ? "CLEAN" : "UNAVAILABLE"
+      : status === "ok" && score === 0 ? "CLEAN" : status === "ok" ? (score !== undefined && score < 25 ? t("LOW RISK") : "REVIEW") : status === "skipped" && result?.message?.startsWith("Domain resolution") ? "UNRESOLVED" : status.toUpperCase();
     const metrics = isAbuseIpDb && !abuseIpDbAvailable(result)
       ? abuseIpDbSummary(result)
-      : result?.detection_ratio || (result?.abuseConfidenceScore !== undefined ? `${score === 0 ? "No abuse reports · " : ""}Abuse confidence ${result.abuseConfidenceScore}/100 · Reports ${result.totalReports || 0}` : result?.message || "No check available");
-    const extra = [result?.used_parent_fallback && `Fallback indicator analysed: ${result.used_parent_fallback}`, result?.threat_label && `Threat: ${result.threat_label}`, result?.file_type && `Type: ${result.file_type}`, result?.last_analysis && `Last analysis: ${result.last_analysis}`, result?.crowdsourced_context_summary && `Community context: ${result.crowdsourced_context_summary}`, result?.city || result?.country ? `Location: ${[result?.city, result?.region, result?.country].filter(Boolean).join(", ")}` : "", result?.isp && `ISP: ${result.isp}`].filter(Boolean).join(" · ");
+      : result?.detection_ratio || (result?.abuseConfidenceScore !== undefined ? t("{0}Abuse confidence {1}/100 · Reports {2}", [score === 0 ? t("No abuse reports · ") : "", result.abuseConfidenceScore, result.totalReports || 0]) : result?.message || t("No check available"));
+    const extra = [result?.used_parent_fallback && t("Fallback indicator analysed: {0}", [result.used_parent_fallback]), result?.threat_label && t("Threat: {0}", [result.threat_label]), result?.file_type && t("Type: {0}", [result.file_type]), result?.last_analysis && t("Last analysis: {0}", [result.last_analysis]), result?.crowdsourced_context_summary && t("Community context: {0}", [result.crowdsourced_context_summary]), result?.city || result?.country ? t("Location: {0}", [[result?.city, result?.region, result?.country].filter(Boolean).join(", ")]) : "", result?.isp && `ISP: ${result.isp}`].filter(Boolean).join(" · ");
     const external = result?.permalink || (result?.url?.startsWith("https://www.abuseipdb.com/") ? result.url : "");
     const canManuallySearchVirusTotal = status === "not_found" && detail === "VirusTotal URL" && /^https?:\/\//i.test(title);
     const action = external
-      ? `<a href="${escapeHtml(external)}" target="_blank" rel="noopener noreferrer">Open external report ↗</a>`
+      ? html`<a href="${escapeHtml(external)}" target="_blank" rel="noopener noreferrer">Open external report ↗</a>`
       : canManuallySearchVirusTotal
-        ? `<a class="manual-vt-action" href="https://www.virustotal.com/gui/home/url" target="_blank" rel="noopener noreferrer" data-vt-manual-url="${escapeHtml(title)}">Copy URL &amp; open VirusTotal ↗</a>`
+        ? html`<a class="manual-vt-action" href="https://www.virustotal.com/gui/home/url" target="_blank" rel="noopener noreferrer" data-vt-manual-url="${escapeHtml(title)}">Copy URL &amp; open VirusTotal ↗</a>`
         : "";
-    const copyAction = tone === "danger" && copyValue ? `<button class="copy-evidence" type="button" data-copy-ioc="${escapeHtml(copyValue)}">Copy indicator</button>` : "";
-    return `<li class="reputation-${tone}"><strong>${escapeHtml(title)}</strong><small>${escapeHtml(detail)}</small><b>${escapeHtml(displayStatus)} · ${escapeHtml(metrics)}</b>${extra ? `<small>${escapeHtml(extra)}</small>` : ""}${copyAction}${action}</li>`;
-  }).join("") : "<li class=\"reputation-empty\">No indicators available.</li>";
+    const copyAction = tone === "danger" && copyValue ? html`<button class="copy-evidence" type="button" data-copy-ioc="${escapeHtml(copyValue)}">Copy indicator</button>` : "";
+    return html`<li class="reputation-${tone}"><strong>${escapeHtml(title)}</strong><small>${escapeHtml(engineText(detail))}</small><b>${escapeHtml(engineText(displayStatus))} · ${escapeHtml(metrics)}</b>${extra ? html`<small>${escapeHtml(extra)}</small>` : ""}${copyAction}${action}</li>`;
+  }).join("") : localizeHtml("<li class=\"reputation-empty\">No indicators available.</li>");
 }
 
 function safeHtmlPreview(html: string): string {
@@ -2006,7 +2012,7 @@ const HTML_PREVIEW_CSP = [
 ].join("; ");
 
 function safeHtmlPreviewDocument(fragment: string): string {
-  return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${escapeHtml(HTML_PREVIEW_CSP)}"><meta name="referrer" content="no-referrer"></head><body style="margin:0;padding:16px;background-color:white;color:#111827;font-family:Arial,sans-serif;overflow-wrap:anywhere">${fragment}</body></html>`;
+  return html`<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${escapeHtml(HTML_PREVIEW_CSP)}"><meta name="referrer" content="no-referrer"></head><body style="margin:0;padding:16px;background-color:white;color:#111827;font-family:Arial,sans-serif;overflow-wrap:anywhere">${fragment}</body></html>`;
 }
 
 function addReputationPanel(report: AnalysisReport): void {
@@ -2014,32 +2020,32 @@ function addReputationPanel(report: AnalysisReport): void {
   const tabs = shell?.querySelector<HTMLElement>(".report-tabs");
   if (!shell || !tabs || shell.querySelector('[data-report-panel="reputation"]')) return;
   const urls = reputationRows(Object.entries(report.link_reputation || {}).map(([url, result]) => ({ title: url, detail: result.title || "VirusTotal URL", result })));
-  const files = reputationRows((report.attachments || []).filter((item) => item.hash_sha256).map((item) => ({ title: item.filename || item.hash_sha256 || "Attachment", detail: item.hash_sha256 || "", result: item.file_reputation })));
-  const hops = reputationRows(Object.entries(report.hop_reputation || {}).map(([ip, result]) => ({ title: ip, detail: "IP reputation · AbuseIPDB / Spamhaus ZEN", result: { ...result, ...(report.geolocation_results?.[ip] || {}) } })));
+  const files = reputationRows((report.attachments || []).filter((item) => item.hash_sha256).map((item) => ({ title: item.filename || item.hash_sha256 || t("Attachment"), detail: item.hash_sha256 || "", result: item.file_reputation })));
+  const hops = reputationRows(Object.entries(report.hop_reputation || {}).map(([ip, result]) => ({ title: ip, detail: t("IP reputation · AbuseIPDB / Spamhaus ZEN"), result: { ...result, ...(report.geolocation_results?.[ip] || {}) } })));
   const domains = Object.entries(report.domain_reputation || {}).map(([domain, intelligence]) => {
     const infrastructure = intelligence.infrastructure || {};
     const vt = intelligence.virustotal || {};
     const rdap = intelligence.rdap || {};
     const vtTone = reputationCheckTone(vt);
     const tone = vtTone === "fail" ? "fail" : vtTone === "warn" ? "warn" : vtTone === "pass" ? "pass" : "neutral";
-    const vtStatus = vt.status === "clean" ? "VirusTotal clean" : vt.status === "malicious" ? "Detected by VirusTotal" : vt.status === "suspicious" ? "VirusTotal review" : vt.message || "VirusTotal unavailable";
+    const vtStatus = vt.status === "clean" ? t("VirusTotal clean") : vt.status === "malicious" ? t("Detected by VirusTotal") : vt.status === "suspicious" ? t("VirusTotal review") : vt.message || t("VirusTotal unavailable");
     const registration = rdap.registration_date || vt.creation_date;
     const registrationDate = registration ? formatAnalysisDate(/^\d+$/.test(String(registration)) ? new Date(Number(registration) * 1000).toISOString() : String(registration)) : "";
-    const facts = [infrastructure.resolved_ip && `Resolved IP: ${infrastructure.resolved_ip}`, infrastructure.isp && `ISP: ${infrastructure.isp}`, registrationDate && `Registered: ${registrationDate}`, rdap.registrar || vt.registrar].filter(Boolean).join(" · ");
-    const links = [vt.permalink && `<a href="${escapeHtml(vt.permalink)}" target="_blank" rel="noopener noreferrer">VirusTotal report ↗</a>`, rdap.url && `<a href="${escapeHtml(rdap.url)}" target="_blank" rel="noopener noreferrer">RDAP ↗</a>`, infrastructure.url && `<a href="${escapeHtml(infrastructure.url)}" target="_blank" rel="noopener noreferrer">AbuseIPDB ↗</a>`].filter(Boolean).join("");
-    return `<li class="static-check static-check-${tone}"><strong>${escapeHtml(domain)}</strong><small>${escapeHtml(vtStatus)}${facts ? ` · ${escapeHtml(facts)}` : ""}</small>${links ? `<p>${links}</p>` : ""}</li>`;
-  }).join("") || '<li class="reputation-empty">No sender domains available.</li>';
+    const facts = [infrastructure.resolved_ip && t("Resolved IP: {0}", [infrastructure.resolved_ip]), infrastructure.isp && `ISP: ${infrastructure.isp}`, registrationDate && t("Registered: {0}", [registrationDate]), rdap.registrar || vt.registrar].filter(Boolean).join(" · ");
+    const links = [vt.permalink && html`<a href="${escapeHtml(vt.permalink)}" target="_blank" rel="noopener noreferrer">VirusTotal report ↗</a>`, rdap.url && html`<a href="${escapeHtml(rdap.url)}" target="_blank" rel="noopener noreferrer">RDAP ↗</a>`, infrastructure.url && html`<a href="${escapeHtml(infrastructure.url)}" target="_blank" rel="noopener noreferrer">AbuseIPDB ↗</a>`].filter(Boolean).join("");
+    return html`<li class="static-check static-check-${tone}"><strong>${escapeHtml(domain)}</strong><small>${escapeHtml(vtStatus)}${facts ? ` · ${escapeHtml(facts)}` : ""}</small>${links ? html`<p>${links}</p>` : ""}</li>`;
+  }).join("") || localizeHtml("<li class=\"reputation-empty\">No sender domains available.</li>");
   const otx = report.otx_intelligence;
   const otxRows = (otx?.matches || []).map((match) => {
     const strong = isStrongOtxMatch(match);
     const pulseLinks = otxPulseLinks(match.pulses || [], 5);
-    const detail = strong ? "Reported as malicious with high confidence" : "Related threat report found";
-    return `<li class="static-check static-check-${strong ? "fail" : "neutral"}"><strong>${escapeHtml((match.indicator_type || "indicator").toUpperCase())} · ${escapeHtml(match.indicator || "Unknown indicator")}</strong><small>${detail} · ${escapeHtml(match.source || "email evidence")}</small>${pulseLinks ? `<p class="otx-pulse-links">${pulseLinks}</p>` : ""}</li>`;
+    const detail = strong ? t("Reported as malicious with high confidence") : t("Related threat report found");
+    return html`<li class="static-check static-check-${strong ? "fail" : "neutral"}"><strong>${escapeHtml((match.indicator_type || "indicator").toUpperCase())} · ${escapeHtml(match.indicator || t("Unknown indicator"))}</strong><small>${detail} · ${escapeHtml(match.source || t("email evidence"))}</small>${pulseLinks ? html`<p class="otx-pulse-links">${pulseLinks}</p>` : ""}</li>`;
   }).join("");
-  const otxContent = otxRows || `<li class="reputation-empty">${escapeHtml(otx?.message || "Threat intelligence was unavailable for this analysis.")}</li>`;
-  const otxMeta = `${Number(otx?.checked_indicator_count || 0).toLocaleString()} checked · ${Number(otx?.strong_match_count || 0).toLocaleString()} reported as malicious${otx?.failed_indicator_count ? ` · ${Number(otx.failed_indicator_count).toLocaleString()} unavailable` : ""}`;
-  tabs.insertAdjacentHTML("beforeend", '<button class="report-tab" data-report-tab="reputation" type="button">Reputation</button>');
-  shell.insertAdjacentHTML("beforeend", `<section class="report-panel" data-report-panel="reputation"><div class="reputation-intro"><p class="page-kicker">SECURITY INTELLIGENCE</p><h3>Security intelligence</h3><p>Results from the security intelligence services enabled in Settings.</p></div><div class="reputation-grid"><section class="evidence-card"><h3>Links · VirusTotal</h3><ul>${urls}</ul></section><section class="evidence-card"><h3>Attachments · VirusTotal</h3><ul>${files}</ul></section><section class="evidence-card"><h3>Message route</h3><ul>${hops}</ul></section><section class="evidence-card"><h3>Sender domains</h3><ul>${domains}</ul></section><section class="evidence-card reputation-otx"><div class="evidence-card-heading"><h3>OTX threat intelligence</h3><small>${escapeHtml(otxMeta)}</small></div><ul>${otxContent}</ul></section></div></section>`);
+  const otxContent = otxRows || html`<li class="reputation-empty">${escapeHtml(otx?.message || t("Threat intelligence was unavailable for this analysis."))}</li>`;
+  const otxMeta = t("{0} checked · {1} reported as malicious{2}", [Number(otx?.checked_indicator_count || 0).toLocaleString(locale()), Number(otx?.strong_match_count || 0).toLocaleString(locale()), otx?.failed_indicator_count ? t(" · {0} unavailable", [Number(otx.failed_indicator_count).toLocaleString(locale())]) : ""]);
+  tabs.insertAdjacentHTML("beforeend", localizeHtml("<button class=\"report-tab\" data-report-tab=\"reputation\" type=\"button\">Reputation</button>"));
+  shell.insertAdjacentHTML("beforeend", html`<section class="report-panel" data-report-panel="reputation"><div class="reputation-intro"><p class="page-kicker">SECURITY INTELLIGENCE</p><h3>Security intelligence</h3><p>Results from the security intelligence services enabled in Settings.</p></div><div class="reputation-grid"><section class="evidence-card"><h3>Links · VirusTotal</h3><ul>${urls}</ul></section><section class="evidence-card"><h3>Attachments · VirusTotal</h3><ul>${files}</ul></section><section class="evidence-card"><h3>Message route</h3><ul>${hops}</ul></section><section class="evidence-card"><h3>Sender domains</h3><ul>${domains}</ul></section><section class="evidence-card reputation-otx"><div class="evidence-card-heading"><h3>OTX threat intelligence</h3><small>${escapeHtml(otxMeta)}</small></div><ul>${otxContent}</ul></section></div></section>`);
 }
 
 type GlobeHop = { lat: number; lon: number; ip: string; fromHost: string; byHost: string; city: string; country: string; isp: string; score?: number; reports?: number; abuseSummary: string; role: "sender" | "injection" | "relay" | "recipient"; order: number; checkpoints: AuthenticationCheckpoint[]; hasReputation: boolean; strongOtxIpMatch: boolean };
@@ -2080,21 +2086,21 @@ function renderEmailGlobe(report: AnalysisReport): void {
     return entries.flatMap((hop) => hop.checkpoints).filter((checkpoint) => checkpoint.protocol === protocol)
       .sort((left, right) => priority[authCheckTone(right.status)] - priority[authCheckTone(left.status)])[0];
   };
-  const roleLabel: Record<GlobeHop["role"], string> = { sender: "Earliest observed hop", injection: "Observed relay", relay: "Intermediate relay", recipient: "Latest public hop" };
+  const roleLabel: Record<GlobeHop["role"], string> = { sender: t("Earliest observed hop"), injection: t("Observed relay"), relay: t("Intermediate relay"), recipient: t("Latest public hop") };
   const hopFacts = (hop: GlobeHop) => {
     const reputation = report.hop_reputation?.[hop.ip];
     const geo = report.geolocation_results?.[hop.ip];
-    const fact = (label: string, value: string | number) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(String(value))}</dd></div>`;
+    const fact = (label: string, value: string | number) => html`<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(String(value))}</dd></div>`;
     const abuseAvailable = abuseIpDbAvailable(reputation);
     const spamhaus = reputation?.spamhaus;
     const otxMatches = otxMatchesForIp(report, hop.ip);
     const tone = hop.strongOtxIpMatch || (hop.score ?? 0) >= 50 ? "fail" : (hop.score ?? 0) >= 25 || spamhaus?.classification === "threat" ? "warn" : hop.hasReputation ? "pass" : "neutral";
     const facts = [
-      ["clean", "listed"].includes(spamhaus?.status || "") ? fact("Spamhaus ZEN", spamhaus?.status === "clean" ? "Not listed" : `Listed · ${spamhaus?.categories?.join(", ") || spamhaus?.classification || "unknown"}`) : "",
-      geo?.is_hosting === true ? fact("Hosting provider", "Yes") : "",
-      geo?.is_proxy === true ? fact("Proxy", "Yes") : "",
+      ["clean", "listed"].includes(spamhaus?.status || "") ? fact("Spamhaus ZEN", spamhaus?.status === "clean" ? t("Not listed") : t("Listed · {0}", [spamhaus?.categories?.join(", ") || spamhaus?.classification || "unknown"])) : "",
+      geo?.is_hosting === true ? fact(t("Hosting provider"), t("Yes")) : "",
+      geo?.is_proxy === true ? fact("Proxy", t("Yes")) : "",
     ].join("");
-    return `<div class="globe-reputation-summary globe-reputation-${tone}"><strong>IP reputation</strong><span>${escapeHtml(abuseAvailable ? hop.abuseSummary : hop.hasReputation ? "See reputation findings below" : "Reputation unavailable")}</span></div>${facts ? `<dl class="globe-point-facts">${facts}</dl>` : ""}${otxMatches.length ? otxInlineEvidence(otxMatches) : ""}`;
+    return html`<div class="globe-reputation-summary globe-reputation-${tone}"><strong>IP reputation</strong><span>${escapeHtml(abuseAvailable ? hop.abuseSummary : hop.hasReputation ? t("See reputation findings below") : t("Reputation unavailable"))}</span></div>${facts ? html`<dl class="globe-point-facts">${facts}</dl>` : ""}${otxMatches.length ? otxInlineEvidence(otxMatches) : ""}`;
   };
   let selectedOrder = hops[0]?.order || 1;
   let pauseDetailRoute = () => {};
@@ -2104,7 +2110,7 @@ function renderEmailGlobe(report: AnalysisReport): void {
     updateLocationIndicator();
   };
   tooltip.tabIndex = 0;
-  tooltip.setAttribute("aria-label", "Route hops. Use arrow keys or scroll to change hop.");
+  tooltip.setAttribute("aria-label", t("Route hops. Use arrow keys or scroll to change hop."));
   tooltip.innerHTML = received.map((receivedHop, index) => {
     const hop = hops.find(item => item.order === index + 1);
     const ip = hop?.ip || receivedHop.sender_ip || receivedHop.all_ips?.[0] || "";
@@ -2113,19 +2119,19 @@ function renderEmailGlobe(report: AnalysisReport): void {
     const auth = protocols.map(protocol => {
       const checkpoint = checkpoints.find(item => item.protocol === protocol);
       if (!checkpoint || ["unknown", "none", "not_observed"].includes(checkpoint.status.toLowerCase())) return "";
-      return `<i class="auth-${authCheckTone(checkpoint.status)}">${protocol} ${escapeHtml(checkpoint.status.toUpperCase())}</i>`;
+      return html`<i class="auth-${authCheckTone(checkpoint.status)}">${protocol} ${escapeHtml(checkpoint.status.toUpperCase())}</i>`;
     }).join("");
-    const location = [geo?.city, geo?.region, geo?.country].filter(Boolean).join(", ") || geo?.message || "Geographic location unavailable";
-    return `<section class="globe-hop-page" data-detail-hop="${index + 1}" aria-label="Hop ${index + 1} of ${received.length}"><div class="globe-hop-content"><header><b>Hop ${index + 1}${hop ? ` · ${escapeHtml(roleLabel[hop.role])}` : ""}</b><span>${escapeHtml(location)}</span></header><div class="globe-hop-detail"><span class="globe-hop-ip">${escapeHtml(ip || "No IP available")}</span><dl class="globe-point-facts"><div><dt>From</dt><dd>${escapeHtml(receivedHop.from_host || "Unknown source")}</dd></div><div><dt>To</dt><dd>${escapeHtml(receivedHop.by_host || "Unknown destination")}</dd></div><div><dt>Received</dt><dd>${escapeHtml(receivedHop.received_at || "Unavailable")}</dd></div><div><dt>ISP</dt><dd>${escapeHtml(geo?.isp || "Unavailable")}</dd></div></dl><div class="globe-auth-results">${auth}</div>${hop ? hopFacts(hop) : `<div class="globe-reputation-summary"><strong>IP reputation</strong><span>${escapeHtml(ip ? abuseIpDbSummary(report.hop_reputation?.[ip]) : "No IP available")}</span></div>`}</div></div></section>`;
+    const location = [geo?.city, geo?.region, geo?.country].filter(Boolean).join(", ") || geo?.message || t("Geographic location unavailable");
+    return html`<section class="globe-hop-page" data-detail-hop="${index + 1}" aria-label="Hop ${index + 1} of ${received.length}"><div class="globe-hop-content"><header><b>Hop ${index + 1}${hop ? ` · ${escapeHtml(roleLabel[hop.role])}` : ""}</b><span>${escapeHtml(location)}</span></header><div class="globe-hop-detail"><span class="globe-hop-ip">${escapeHtml(ip || t("No IP available"))}</span><dl class="globe-point-facts"><div><dt>From</dt><dd>${escapeHtml(receivedHop.from_host || t("Unknown source"))}</dd></div><div><dt>To</dt><dd>${escapeHtml(receivedHop.by_host || t("Unknown destination"))}</dd></div><div><dt>Received</dt><dd>${escapeHtml(receivedHop.received_at || t("Unavailable"))}</dd></div><div><dt>ISP</dt><dd>${escapeHtml(geo?.isp || t("Unavailable"))}</dd></div></dl><div class="globe-auth-results">${auth}</div>${hop ? hopFacts(hop) : html`<div class="globe-reputation-summary"><strong>IP reputation</strong><span>${escapeHtml(ip ? abuseIpDbSummary(report.hop_reputation?.[ip]) : t("No IP available"))}</span></div>`}</div></div></section>`;
   }).join("");
   tooltip.hidden = false;
   const locationIndicator = document.createElement("div");
   locationIndicator.className = "globe-location-indicator";
-  locationIndicator.innerHTML = `<button type="button" data-hop-prev aria-label="Previous hop">↑</button><span data-hop-position></span><button type="button" data-hop-next aria-label="Next hop">↓</button>`;
+  locationIndicator.innerHTML = html`<button type="button" data-hop-prev aria-label="Previous hop">↑</button><span data-hop-position></span><button type="button" data-hop-next aria-label="Next hop">↓</button>`;
   tooltip.parentElement?.append(locationIndicator);
   const updateLocationIndicator = () => {
     locationIndicator.dataset.order = String(selectedOrder);
-    locationIndicator.querySelector<HTMLElement>("[data-hop-position]")!.textContent = `Hop ${selectedOrder} / ${received.length}`;
+    locationIndicator.querySelector<HTMLElement>("[data-hop-position]")!.textContent = t("Hop {0} / {1}", [selectedOrder, received.length]);
     locationIndicator.querySelector<HTMLButtonElement>("[data-hop-prev]")!.disabled = selectedOrder <= 1;
     locationIndicator.querySelector<HTMLButtonElement>("[data-hop-next]")!.disabled = selectedOrder >= received.length;
   };
@@ -2140,7 +2146,7 @@ function renderEmailGlobe(report: AnalysisReport): void {
   pager.show(selectedOrder - 1, false);
   updateLocationIndicator();
   if (!hops.length) {
-    wrapper.innerHTML = `<div class="globe-empty"><b>Globe unavailable for this report</b><span>The hops have no geographic coordinates. You can still browse the complete route in Location details.</span></div>`;
+    wrapper.innerHTML = html`<div class="globe-empty"><b>Globe unavailable for this report</b><span>The hops have no geographic coordinates. You can still browse the complete route in Location details.</span></div>`;
     toggle.disabled = true; fit.disabled = true;
     return;
   }
@@ -2229,8 +2235,8 @@ function renderEmailGlobe(report: AnalysisReport): void {
   const zoomControls = document.createElement("div");
   zoomControls.className = "globe-zoom-controls";
   zoomControls.setAttribute("role", "group");
-  zoomControls.setAttribute("aria-label", "Globe zoom");
-  zoomControls.innerHTML = `<button type="button" data-zoom-in aria-label="Zoom in" title="Zoom in">+</button><button type="button" data-zoom-out aria-label="Zoom out" title="Zoom out">−</button>`;
+  zoomControls.setAttribute("aria-label", t("Globe zoom"));
+  zoomControls.innerHTML = html`<button type="button" data-zoom-in aria-label="Zoom in" title="Zoom in">+</button><button type="button" data-zoom-out aria-label="Zoom out" title="Zoom out">−</button>`;
   wrapper.append(zoomControls);
   const zoomIn = zoomControls.querySelector<HTMLButtonElement>("[data-zoom-in]")!;
   const zoomOut = zoomControls.querySelector<HTMLButtonElement>("[data-zoom-out]")!;
@@ -2239,7 +2245,7 @@ function renderEmailGlobe(report: AnalysisReport): void {
     zoomOut.disabled = targetZoom <= 1;
   };
   const updateControls = () => {
-    toggle.textContent = rotating ? "Pause route" : finished ? "Replay route" : "Start route";
+    toggle.textContent = rotating ? t("Pause route") : finished ? t("Replay route") : t("Start route");
     toggle.setAttribute("aria-pressed", String(rotating));
     updateZoomControls();
   };
@@ -2420,16 +2426,16 @@ function integrateReputation(report: AnalysisReport): void {
   const sender = panel("sender");
   const domains = reputationRows(Object.entries(report.domain_reputation || {}).map(([domain, intelligence]) => {
     const result = intelligence.virustotal;
-    return { title: `From (${domain})`, detail: "VirusTotal domain reputation", result, copyValue: domain };
+    return { title: t("From ({0})", [domain]), detail: t("VirusTotal domain reputation"), result, copyValue: domain };
   }));
-  sender?.insertAdjacentHTML("beforeend", `<section class="evidence-card inline-reputation"><h3>Sender domain reputation</h3><ul>${domains}</ul></section>`);
+  sender?.insertAdjacentHTML("beforeend", html`<section class="evidence-card inline-reputation"><h3>Sender domain reputation</h3><ul>${domains}</ul></section>`);
   const senderOtx = otxSenderMatches(report);
   if (senderOtx.length) {
     const matches = senderOtx.map((match) => {
-      const label = match.indicator_type === "domain" ? "Sender domain" : "Sender hostname";
-      return `<li class="otx-context-row static-check static-check-${isStrongOtxMatch(match) ? "fail" : "neutral"}"><strong>${escapeHtml(label)} · ${escapeHtml(match.indicator || "unknown indicator")}</strong>${otxInlineEvidence([match])}</li>`;
+      const label = match.indicator_type === "domain" ? t("Sender domain") : t("Sender hostname");
+      return html`<li class="otx-context-row static-check static-check-${isStrongOtxMatch(match) ? "fail" : "neutral"}"><strong>${escapeHtml(label)} · ${escapeHtml(match.indicator || t("unknown indicator"))}</strong>${otxInlineEvidence([match])}</li>`;
     }).join("");
-    sender?.insertAdjacentHTML("beforeend", `<section class="evidence-card inline-reputation inline-otx-card"><h3>Sender · OTX intelligence</h3><p>Exact on-demand Pulse associations; only phishing-tagged domains can affect risk.</p><ul>${matches}</ul></section>`);
+    sender?.insertAdjacentHTML("beforeend", html`<section class="evidence-card inline-reputation inline-otx-card"><h3>Sender · OTX intelligence</h3><p>Exact on-demand Pulse associations; only phishing-tagged domains can affect risk.</p><ul>${matches}</ul></section>`);
   }
   const auth = panel("auth");
   const hops = orderedReceivedHops(report.received_hops).map((hop, index) => {
@@ -2441,18 +2447,18 @@ function integrateReputation(report: AnalysisReport): void {
       const reputation = report.hop_reputation?.[ip] || {};
       const geo = report.geolocation_results?.[ip] || {};
       const otxMatches = otxMatchesForIp(report, ip);
-      const location = [geo.city, geo.region, geo.country].filter(Boolean).join(", ") || geo.message || "Geolocation unavailable";
-      const copyAction = reputationCheckTone(reputation) === "fail" || otxMatches.length ? `<button class="copy-evidence" type="button" data-copy-ioc="${escapeHtml(ip)}">Copy IP</button>` : "";
-      return `<div class="hop-ip-detail"><strong>IP ${escapeHtml(ip)}</strong><small>${escapeHtml(location)} · ISP ${escapeHtml(geo.isp || "—")}</small><b>${escapeHtml(abuseIpDbSummary(reputation))}</b>${otxInlineEvidence(otxMatches)}${copyAction}</div>`;
-    }).join("") || `<p class="hop-empty">No public IP is available for this hop.</p>`;
-    return `<details class="hop-card hop-card-${tone}" data-hop-order="${index + 1}"><summary><span><strong>Hop ${index + 1} · ${escapeHtml(hop.from_host || "unknown source")}</strong><small>${escapeHtml(hop.by_host || "unknown destination")} · ${escapeHtml(hop.received_at || "date unavailable")}</small></span><span class="hop-disclosure" aria-hidden="true"></span></summary><div class="hop-details">${details}${hop.raw ? `<pre>${escapeHtml(hop.raw)}</pre>` : ""}</div></details>`;
-  }).join("") || "<p>No hops available.</p>";
-  auth?.insertAdjacentHTML("beforeend", `<section class="evidence-card geographic-route"><div class="route-heading"><div><h3>Email route</h3><p>Follow the message route. The view zooms automatically for nearby points. Click a point to pause and view its hop. Scroll the details to explore the route.</p></div><div class="globe-actions"><button type="button" data-globe-toggle>Start rotation</button><button type="button" data-globe-fit>Centre route</button></div></div><div class="globe-route-layout"><div class="email-globe-wrap"><canvas data-email-globe aria-label="Chronological email route grouped by approximate location, with IP reputation and authentication results"></canvas><div class="globe-legend"><span><i class="risk-unknown"></i>No reputation</span><span><i class="risk-low"></i>Low IP score</span><span><i class="risk-medium"></i>IP review</span><span><i class="risk-high"></i>IP threat</span><span class="auth-pass-key"><i></i>Auth pass</span><span class="auth-fail-key"><i></i>Auth fail</span><span class="auth-review-key"><i></i>Auth none/review</span><span class="auth-unobserved-key"><i></i>Auth not observed</span></div></div><aside class="globe-point-panel" aria-label="Globe point details"><div class="globe-point-heading"><h4>Location details</h4><p>One hop at a time · scroll or use arrows to explore</p></div><div class="globe-tooltip globe-point-details" data-globe-tooltip><p>Move over a point to see its details.</p></div></aside></div><section class="globe-complete-hops"><h4>All message hops</h4><p>The complete route, including hops without a geographic location.</p><div class="globe-hop-list">${hops}</div></section></section>`);
+      const location = [geo.city, geo.region, geo.country].filter(Boolean).join(", ") || geo.message || t("Geolocation unavailable");
+      const copyAction = reputationCheckTone(reputation) === "fail" || otxMatches.length ? html`<button class="copy-evidence" type="button" data-copy-ioc="${escapeHtml(ip)}">Copy IP</button>` : "";
+      return html`<div class="hop-ip-detail"><strong>IP ${escapeHtml(ip)}</strong><small>${escapeHtml(location)} · ISP ${escapeHtml(geo.isp || "—")}</small><b>${escapeHtml(abuseIpDbSummary(reputation))}</b>${otxInlineEvidence(otxMatches)}${copyAction}</div>`;
+    }).join("") || html`<p class="hop-empty">No public IP is available for this hop.</p>`;
+    return html`<details class="hop-card hop-card-${tone}" data-hop-order="${index + 1}"><summary><span><strong>Hop ${index + 1} · ${escapeHtml(hop.from_host || t("unknown source"))}</strong><small>${escapeHtml(hop.by_host || t("unknown destination"))} · ${escapeHtml(hop.received_at || t("date unavailable"))}</small></span><span class="hop-disclosure" aria-hidden="true"></span></summary><div class="hop-details">${details}${hop.raw ? html`<pre>${escapeHtml(hop.raw)}</pre>` : ""}</div></details>`;
+  }).join("") || localizeHtml("<p>No hops available.</p>");
+  auth?.insertAdjacentHTML("beforeend", html`<section class="evidence-card geographic-route"><div class="route-heading"><div><h3>Email route</h3><p>Follow the message route. The view zooms automatically for nearby points. Click a point to pause and view its hop. Scroll the details to explore the route.</p></div><div class="globe-actions"><button type="button" data-globe-toggle>Start rotation</button><button type="button" data-globe-fit>Centre route</button></div></div><div class="globe-route-layout"><div class="email-globe-wrap"><canvas data-email-globe aria-label="Chronological email route grouped by approximate location, with IP reputation and authentication results"></canvas><div class="globe-legend"><span><i class="risk-unknown"></i>No reputation</span><span><i class="risk-low"></i>Low IP score</span><span><i class="risk-medium"></i>IP review</span><span><i class="risk-high"></i>IP threat</span><span class="auth-pass-key"><i></i>Auth pass</span><span class="auth-fail-key"><i></i>Auth fail</span><span class="auth-review-key"><i></i>Auth none/review</span><span class="auth-unobserved-key"><i></i>Auth not observed</span></div></div><aside class="globe-point-panel" aria-label="Globe point details"><div class="globe-point-heading"><h4>Location details</h4><p>One hop at a time · scroll or use arrows to explore</p></div><div class="globe-tooltip globe-point-details" data-globe-tooltip><p>Move over a point to see its details.</p></div></aside></div><section class="globe-complete-hops"><h4>All message hops</h4><p>The complete route, including hops without a geographic location.</p><div class="globe-hop-list">${hops}</div></section></section>`);
   const content = panel("content");
   const rawHtml = report.body_html_safe || safeHtmlPreview(report.body_html || "");
   if (rawHtml) {
     const previewDocument = safeHtmlPreviewDocument(rawHtml);
-    content?.insertAdjacentHTML("beforeend", `<section class="safe-html-preview"><h3>Safe HTML preview</h3><p>Basic layout, colours and text formatting are preserved. Images, scripts, forms, active links and remote resources are blocked.</p><iframe sandbox="" allow="" csp="${escapeHtml(HTML_PREVIEW_CSP)}" referrerpolicy="no-referrer" loading="lazy" srcdoc="${escapeHtml(previewDocument)}" title="Safe email HTML preview"></iframe></section>`);
+    content?.insertAdjacentHTML("beforeend", html`<section class="safe-html-preview"><h3>Safe HTML preview</h3><p>Basic layout, colours and text formatting are preserved. Images, scripts, forms, active links and remote resources are blocked.</p><iframe sandbox="" allow="" csp="${escapeHtml(HTML_PREVIEW_CSP)}" referrerpolicy="no-referrer" loading="lazy" srcdoc="${escapeHtml(previewDocument)}" title="Safe email HTML preview"></iframe></section>`);
   }
 }
 
@@ -2462,14 +2468,14 @@ function bindReportInteractions(user: AuthUser, report: AnalysisReport): void {
     const copied = await copyIndicator(button.dataset.copyIoc || "");
     if (copied) trackIndicatorCopy(user);
     const previous = button.textContent;
-    button.textContent = copied ? "Copied ✓" : "Copy failed";
+    button.textContent = copied ? t("Copied ✓") : "Copy failed";
     window.setTimeout(() => { button.textContent = previous; }, 1200);
   }));
   document.querySelectorAll<HTMLButtonElement>("[data-copy-address]").forEach((button) => button.addEventListener("click", async () => {
     const copied = await copyIndicator(button.dataset.copyAddress || "");
     if (copied) trackIndicatorCopy(user);
     const previous = button.textContent;
-    button.textContent = copied ? "Copied ✓" : "Copy failed";
+    button.textContent = copied ? t("Copied ✓") : "Copy failed";
     window.setTimeout(() => { button.textContent = previous; }, 1200);
   }));
   document.querySelectorAll<HTMLAnchorElement>("[data-vt-manual-url]").forEach((link) => link.addEventListener("click", () => {
@@ -2478,7 +2484,7 @@ function bindReportInteractions(user: AuthUser, report: AnalysisReport): void {
     const previous = link.textContent;
     void copyIndicator(url).then((copied) => {
       if (copied) trackIndicatorCopy(user);
-      link.textContent = copied ? "URL copied · opening VirusTotal ↗" : "Could not copy URL · opening VirusTotal ↗";
+      link.textContent = copied ? t("URL copied · opening VirusTotal ↗") : t("Could not copy URL · opening VirusTotal ↗");
       window.setTimeout(() => { link.textContent = previous; }, 1400);
     });
   }));
@@ -2498,25 +2504,25 @@ function bindReportInteractions(user: AuthUser, report: AnalysisReport): void {
   }));
   const downloadReport = document.querySelector<HTMLButtonElement>("#download-report");
   if (downloadReport && !document.querySelector("#copy-report")) {
-    downloadReport.insertAdjacentHTML("afterend", `<button id="copy-report" type="button">Copy report</button>`);
+    downloadReport.insertAdjacentHTML("afterend", html`<button id="copy-report" type="button">Copy report</button>`);
   }
   downloadReport?.addEventListener("click", async () => {
-    const destination = await save({ defaultPath: "fishstop-report.json", filters: [{ name: "JSON report", extensions: ["json"] }] });
+    const destination = await save({ defaultPath: "fishstop-report.json", filters: [{ name: t("JSON report"), extensions: ["json"] }] });
     if (!destination) return;
     const previous = downloadReport.textContent;
-    downloadReport.disabled = true; downloadReport.textContent = "Saving…";
+    downloadReport.disabled = true; downloadReport.textContent = t("Saving…");
     try {
       await invoke("save_analysis_report", { path: destination, report: structuredReportData(report) });
-      notify("Report saved.");
+      notify(t("Report saved."));
     } catch (error) {
-      notify("Could not save the report. Please try again.", "error");
+      notify(t("Could not save the report. Please try again."), "error");
     } finally { downloadReport.disabled = false; downloadReport.textContent = previous; }
   });
   document.querySelector<HTMLButtonElement>("#copy-report")?.addEventListener("click", async (event) => {
     const button = event.currentTarget as HTMLButtonElement;
     const previous = button.textContent;
     const copied = await copyIndicator(JSON.stringify(structuredReportData(report), null, 2));
-    button.textContent = copied ? "Copied ✓" : "Copy failed";
+    button.textContent = copied ? t("Copied ✓") : "Copy failed";
     window.setTimeout(() => { button.textContent = previous; }, 1600);
   });
 }
@@ -2524,12 +2530,12 @@ function bindReportInteractions(user: AuthUser, report: AnalysisReport): void {
 function renderAiPanels(container: HTMLElement): void {
   const contentPanel = container.querySelector<HTMLElement>('[data-report-panel="content"]');
   if (!contentPanel) return;
-  contentPanel.insertAdjacentHTML("afterbegin", `<section class="ai-panels"><article data-ai-panel="identity"><h3>Sender identity</h3><p>Verifying the claimed company…</p></article><article data-ai-panel="phi4"><p class="page-kicker">LOCAL AI</p><h3>Semantic analysis</h3><p>Preparing the model…</p></article></section>`);
+  contentPanel.insertAdjacentHTML("afterbegin", html`<section class="ai-panels"><article data-ai-panel="identity"><h3>Sender identity</h3><p>Verifying the claimed company…</p></article><article data-ai-panel="phi4"><p class="page-kicker">LOCAL AI</p><h3>Semantic analysis</h3><p>Preparing the model…</p></article></section>`);
 }
 
 function setAiPanel(container: HTMLElement, engine: "identity" | "phi4", title: string, message: string, state: "loading" | "ok" | "error"): void {
   const panel = container.querySelector<HTMLElement>(`[data-ai-panel="${engine}"]`);
-  if (panel) panel.innerHTML = `<p class="page-kicker">${engine === "identity" ? "SENDER IDENTITY" : "LOCAL AI"}</p><h3>${escapeHtml(title)}</h3><p class="ai-${state}">${escapeHtml(message)}</p>`;
+  if (panel) panel.innerHTML = html`<p class="page-kicker">${engine === "identity" ? t("SENDER IDENTITY") : t("LOCAL AI")}</p><h3>${escapeHtml(title)}</h3><p class="ai-${state}">${escapeHtml(engineText(message))}</p>`;
 }
 
 function isIdentityEvidence(value: string): boolean {
@@ -2543,34 +2549,34 @@ function setIdentityPanel(container: HTMLElement, analysis: NonNullable<Analysis
   const verified = assessment?.status === "consistent" && assessment?.decision === "none";
   const suspicious = assessment?.status === "inconsistent";
   const tone = verified ? "safe" : suspicious ? "danger" : "review";
-  const label = verified ? "Identity verified" : suspicious ? "Possible impersonation" : "Verification unavailable";
+  const label = verified ? t("Identity verified") : suspicious ? t("Possible impersonation") : t("Verification unavailable");
   const brand = assessment?.claimed_identity || analysis.entities?.find(item => item.name)?.name || "";
-  const message = verified ? `${brand || "The sender"} matches the documented company identity.`
-    : suspicious ? `${brand || "The claimed company"} does not match the sender or requested destination.`
-    : brand && ["mention", "third_party"].includes(assessment?.claimed_role || "") ? `${brand} is named as a service or third party. The message does not establish the sender's identity.`
-    : brand ? `${brand} identified. The sender could not be confirmed.` : "The claimed company could not be identified reliably.";
+  const message = verified ? t("{0} matches the documented company identity.", [brand || t("The sender")])
+    : suspicious ? t("{0} does not match the sender or requested destination.", [brand || t("The claimed company")])
+    : brand && ["mention", "third_party"].includes(assessment?.claimed_role || "") ? t("{0} is named as a service or third party. The message does not establish the sender's identity.", [brand])
+    : brand ? t("{0} identified. The sender could not be confirmed.", [brand]) : t("The claimed company could not be identified reliably.");
   const reference = analysis.coherence?.find(item => item.brand === brand);
   const domains = reference?.official_domains || [];
   const findings = Array.from(new Set([
     ...(assessment?.signals?.filter(item => item.polarity === "suspicion").map(item => item.evidence) || []),
     ...(semantic?.intent_signals || []).filter(isIdentityEvidence).map(semanticLabel),
     ...(semantic?.corroboration?.details || []).filter(isIdentityEvidence),
-    ...(semantic?.corroboration?.caveats || []).filter(isIdentityEvidence).map(item => `Note: ${item}`),
+    ...(semantic?.corroboration?.caveats || []).filter(isIdentityEvidence).map(item => t("Note: {0}", [item])),
     ...(semantic?.signal_evidence && isIdentityEvidence(semantic.signal_evidence) ? [semantic.signal_evidence] : []),
   ].filter(item => item.trim())));
   const details = brand || domains.length || findings.length
-    ? `<details class="semantic-details identity-result-details"><summary>Identity reasoning and evidence <span>${findings.length + Number(Boolean(domains.length)) + Number(Boolean(brand))}</span></summary>${domains.length ? `<p>Company domains: ${escapeHtml(domains.slice(0, 3).join(", "))}</p>` : ""}${brand ? `<p>Sender authentication: ${reference?.sender_authentication === "verified" ? "verified" : "not independently verified"}.</p>` : ""}${findings.length ? `<ul>${findings.map(item => `<li>${escapeHtml(item)}</li>`).join("")}</ul>` : ""}</details>` : "";
-  panel.innerHTML = `<p class="page-kicker">SENDER IDENTITY</p><h3>Sender identity</h3><div class="semantic-verdict semantic-${tone}"><strong>${label}</strong></div><p class="semantic-summary">${escapeHtml(message)}</p>${details}`;
+    ? html`<details class="semantic-details identity-result-details"><summary>Identity reasoning and evidence <span>${findings.length + Number(Boolean(domains.length)) + Number(Boolean(brand))}</span></summary>${domains.length ? html`<p>Company domains: ${escapeHtml(domains.slice(0, 3).join(", "))}</p>` : ""}${brand ? html`<p>Sender authentication: ${reference?.sender_authentication === "verified" ? "verified" : t("not independently verified")}.</p>` : ""}${findings.length ? html`<ul>${findings.map(item => html`<li>${escapeHtml(item)}</li>`).join("")}</ul>` : ""}</details>` : "";
+  panel.innerHTML = html`<p class="page-kicker">SENDER IDENTITY</p><h3>Sender identity</h3><div class="semantic-verdict semantic-${tone}"><strong>${label}</strong></div><p class="semantic-summary">${escapeHtml(engineText(message))}</p>${details}`;
 }
 
 function semanticLabel(value: string | undefined): string {
   const labels: Record<string, string> = {
-    phishing: "Likely phishing", legitimate: "Likely legitimate", review: "Review required",
-    provide_credentials: "Credentials", provide_information: "Information", pay_or_transfer: "Payment or transfer",
-    verify_account: "Account verification", change_account_settings: "Change settings", claim_reward: "Claim reward",
-    visit_link: "Open a link", open_attachment: "Open an attachment", reply: "Reply", informational: "No risky action",
-    supplied_link: "Link in the email", supplied_attachment: "Attachment", email_reply: "Email reply", normal_known_procedure: "Known procedure",
-    malicious: "Malicious", suspicious: "Suspicious", clean: "No signals", verified: "Verified identity", uncertain: "Uncertain",
+    phishing: t("Likely phishing"), legitimate: t("Likely legitimate"), review: t("Review required"),
+    provide_credentials: t("Credentials"), provide_information: t("Information"), pay_or_transfer: t("Payment or transfer"),
+    verify_account: t("Account verification"), change_account_settings: t("Change settings"), claim_reward: t("Claim reward"),
+    visit_link: t("Open a link"), open_attachment: t("Open an attachment"), reply: t("Reply"), informational: t("No risky action"),
+    supplied_link: t("Link in the email"), supplied_attachment: t("Attachment"), email_reply: t("Email reply"), normal_known_procedure: t("Known procedure"),
+    malicious: t("Malicious"), suspicious: t("Suspicious"), clean: t("No signals"), verified: t("Verified identity"), uncertain: t("Uncertain"),
   };
   return labels[value || ""] || (value ? value.replaceAll("_", " ") : "—");
 }
@@ -2586,16 +2592,16 @@ function aiThreatLabels(report: AnalysisReport): string[] {
   const requestedAction = (analysis.requested_action || "").toLowerCase();
   const labels = new Set<string>();
   const scamLabels: Record<string, string> = {
-    credential_phishing: "Credential phishing",
-    business_email_compromise: "Business email compromise",
-    invoice_fraud: "Invoice fraud",
-    advance_fee: "Advance-fee scam",
-    investment_scam: "Investment scam",
-    crypto_scam: "Crypto scam",
-    extortion: "Extortion",
-    sextortion: "Sextortion",
-    account_takeover: "Account takeover",
-    other: "Malicious content",
+    credential_phishing: t("Credential phishing"),
+    business_email_compromise: t("Business email compromise"),
+    invoice_fraud: t("Invoice fraud"),
+    advance_fee: t("Advance-fee scam"),
+    investment_scam: t("Investment scam"),
+    crypto_scam: t("Crypto scam"),
+    extortion: t("Extortion"),
+    sextortion: t("Sextortion"),
+    account_takeover: t("Account takeover"),
+    other: t("Malicious content"),
   };
 
   if (scamLabels[scamType]) labels.add(scamLabels[scamType]);
@@ -2605,18 +2611,18 @@ function aiThreatLabels(report: AnalysisReport): string[] {
     || (analysis.intent_signals || []).some((signal) => ["impersonation", "deception"].includes(signal.toLowerCase())),
   );
   const checkedIdentity = report.identity_analysis?.impersonation;
-  if (checkedIdentity ? checkedIdentity.status === "inconsistent" : impersonation && verdict !== "legitimate") labels.add("Impersonation");
+  if (checkedIdentity ? checkedIdentity.status === "inconsistent" : impersonation && verdict !== "legitimate") labels.add(t("Impersonation"));
 
   const aiFoundThreat = verdict === "phishing" || contentRisk === "malicious";
   if (aiFoundThreat && !labels.size) {
     const actionLabels: Record<string, string> = {
-      provide_credentials: "Credential phishing",
-      provide_information: "Data theft",
-      pay_or_transfer: "Financial scam",
-      change_account_settings: "Account takeover",
-      bypass_procedure: "Social engineering",
+      provide_credentials: t("Credential phishing"),
+      provide_information: t("Data theft"),
+      pay_or_transfer: t("Financial scam"),
+      change_account_settings: t("Account takeover"),
+      bypass_procedure: t("Social engineering"),
     };
-    labels.add(actionLabels[requestedAction] || "AI risk signal");
+    labels.add(actionLabels[requestedAction] || t("AI risk signal"));
   }
   return [...labels].slice(0, 3);
 }
@@ -2629,26 +2635,26 @@ function setPhiSemanticPanel(container: HTMLElement, analysis: NonNullable<NonNu
   const corroboration = analysis.corroboration || {};
   const details = Array.from(new Set([
     ...(corroboration.details || []).filter(meaningful).filter(value => !isIdentityEvidence(value)).map((item) => item.trim()),
-    ...(corroboration.caveats || []).filter(meaningful).filter(value => !isIdentityEvidence(value)).map((item) => `Note: ${item.trim()}`),
+    ...(corroboration.caveats || []).filter(meaningful).filter(value => !isIdentityEvidence(value)).map((item) => t("Note: {0}", [item.trim()])),
   ])).slice(0, 5);
   const signalEvidence = meaningful(analysis.signal_evidence) && !isIdentityEvidence(analysis.signal_evidence) ? analysis.signal_evidence.trim() : "";
-  const contentSummary = generatedContentSummary?.replace(/\s+/g, " ").trim() || analysis.content_summary || analysis.explanation || "Content analysis complete.";
+  const contentSummary = generatedContentSummary?.replace(/\s+/g, " ").trim() || analysis.content_summary || analysis.explanation || t("Content analysis complete.");
   const passCount = performance?.llm_calls;
-  const passSummary = passCount ? `${passCount} local ${passCount === 1 ? "pass" : "passes"} · ` : "";
-  panel.innerHTML = `<p class="page-kicker">LOCAL AI</p><h3>Content summary</h3><p class="semantic-summary">${escapeHtml(contentSummary)}</p>${signals.length || details.length || signalEvidence ? `<details class="semantic-details"><summary>Reasoning and evidence <span>${signals.length + details.length + Number(Boolean(signalEvidence))}</span></summary>${signals.length ? `<p><b>Signals:</b> ${escapeHtml(signals.map(semanticLabel).join(" · "))}</p>` : ""}${signalEvidence ? `<p><b>Context:</b> ${escapeHtml(signalEvidence)}</p>` : ""}${details.length ? `<ul>${details.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>` : ""}</details>` : ""}<small class="semantic-meta">${durationMs ? `${(durationMs / 1000).toFixed(1)} s · ` : ""}${passSummary}${corroboration.supports_decision ? "Supporting evidence is available" : "Review the available message details"}</small>`;
+  const passSummary = passCount ? t("{0} local {1} · ", [passCount, passCount === 1 ? t("pass") : t("passes")]) : "";
+  panel.innerHTML = html`<p class="page-kicker">LOCAL AI</p><h3>Content summary</h3><p class="semantic-summary">${escapeHtml(contentSummary)}</p>${signals.length || details.length || signalEvidence ? html`<details class="semantic-details"><summary>Reasoning and evidence <span>${signals.length + details.length + Number(Boolean(signalEvidence))}</span></summary>${signals.length ? html`<p><b>Signals:</b> ${escapeHtml(signals.map(semanticLabel).join(" · "))}</p>` : ""}${signalEvidence ? html`<p><b>Context:</b> ${escapeHtml(signalEvidence)}</p>` : ""}${details.length ? html`<ul>${details.map((item) => html`<li>${escapeHtml(item)}</li>`).join("")}</ul>` : ""}</details>` : ""}<small class="semantic-meta">${durationMs ? `${formatNumber(durationMs / 1000, 1)} s · ` : ""}${passSummary}${corroboration.supports_decision ? t("Supporting evidence is available") : t("Review the available message details")}</small>`;
 }
 
 function localAiErrorMessage(error: unknown): string {
   const detail = String(error instanceof Error ? error.message : error);
   if (/exceed_context_size|exceeds.*context|context.*too small|context_length_exceeded/i.test(detail))
-    return "This message exceeds the local model's context capacity after splitting. A larger AI context is required.";
+    return t("This message exceeds the local model's context capacity after splitting. A larger AI context is required.");
   if (/timeout|timed out|time budget/i.test(detail))
-    return "The local AI exceeded the analysis time limit before completing this message.";
+    return t("The local AI exceeded the analysis time limit before completing this message.");
   if (/unreachable|unavailable|not.*installed|model.*not found/i.test(detail))
-    return "The local AI model is unavailable. Check its installation in Settings.";
+    return t("The local AI model is unavailable. Check its installation in Settings.");
   if (/invalid.*(?:structured|response)|valid JSON/i.test(detail))
-    return "The local AI returned an incomplete assessment for this message.";
-  return "The local AI could not complete this message. The technical checks remain available.";
+    return t("The local AI returned an incomplete assessment for this message.");
+  return t("The local AI could not complete this message. The technical checks remain available.");
 }
 
 async function runAiAnalysis(user: AuthUser, report: AnalysisReport, recordId: string | null, container: HTMLElement, startedAt: number, analysisId: string, isCurrent: () => boolean, onSettled?: (engine: "identity" | "phi4" | "content-summary" | "summary") => void, onRuntime?: (runtime: OllamaRuntimeStatus | null) => void): Promise<void> {
@@ -2659,7 +2665,7 @@ async function runAiAnalysis(user: AuthUser, report: AnalysisReport, recordId: s
   const model = runtime?.model || DEFAULT_OLLAMA_MODEL;
   renderAiPanels(container);
   if (!isCurrent()) return;
-  if (runtime?.model_ready) setAiPanel(container, "phi4", "Preparing AI", "Loading the local model…", "loading");
+  if (runtime?.model_ready) setAiPanel(container, "phi4", t("Preparing AI"), t("Loading the local model…"), "loading");
   if (!isCurrent()) return;
   const phiStartedAt = performance.now();
   await invoke<AiAnalysisResult>("analyze_phi4", { report, analysisId }).then((value) => {
@@ -2676,11 +2682,11 @@ async function runAiAnalysis(user: AuthUser, report: AnalysisReport, recordId: s
     if (!isCurrent()) return;
     console.error("Local AI analysis failed", error);
     const message = localAiErrorMessage(error);
-    report.identity_analysis = { status: "error", message: "Identity verification depends on the AI assessment, which could not be completed." };
-    setAiPanel(container, "identity", "Identity verification unavailable", "Identity verification depends on the AI assessment, which could not be completed.", "error");
+    report.identity_analysis = { status: "error", message: t("Identity verification depends on the AI assessment, which could not be completed.") };
+    setAiPanel(container, "identity", t("Identity verification unavailable"), t("Identity verification depends on the AI assessment, which could not be completed."), "error");
     onSettled?.("identity");
     report.phi4_analysis = { status: "error", message };
-    setAiPanel(container, "phi4", "Analysis unavailable", message, "error");
+    setAiPanel(container, "phi4", t("Analysis unavailable"), message, "error");
     onSettled?.("phi4");
   });
   if (!isCurrent()) return;
@@ -2693,7 +2699,7 @@ async function runAiAnalysis(user: AuthUser, report: AnalysisReport, recordId: s
     report.ai_summary = { status: "ok", summary: policySummary, model, backend: "local-policy" };
     onSettled?.("summary");
   } else {
-    const message = report.phi4_analysis?.message || "Semantic analysis unavailable.";
+    const message = report.phi4_analysis?.message || t("Semantic analysis unavailable.");
     report.ai_content_summary = { status: "error", message, model };
     report.ai_summary = { status: "error", message, model };
     onSettled?.("content-summary");
@@ -2713,12 +2719,12 @@ function restoreAiAnalysis(report: AnalysisReport, container: HTMLElement): void
   const identity = report.identity_analysis;
   if (identity) {
     if (identity.status === "ok") setIdentityPanel(container, identity, report.phi4_analysis?.analysis);
-    else setAiPanel(container, "identity", "Identity verification unavailable", identity.message || "Identity analysis error", "error");
+    else setAiPanel(container, "identity", t("Identity verification unavailable"), identity.message || t("Identity analysis error"), "error");
   }
   const phi4 = report.phi4_analysis;
   if (phi4) {
     if (phi4.status === "ok" && phi4.analysis) setPhiSemanticPanel(container, phi4.analysis, phi4.model || DEFAULT_OLLAMA_MODEL, phi4.duration_ms, report.ai_content_summary?.summary, phi4.performance);
-    else setAiPanel(container, "phi4", "Analysis unavailable", phi4.message || "Local AI error", "error");
+    else setAiPanel(container, "phi4", t("Analysis unavailable"), phi4.message || t("Local AI error"), "error");
   }
 }
 
@@ -2732,18 +2738,18 @@ function storedUser(): AuthUser | null {
 }
 
 function googleLogo(): string {
-  return `<svg viewBox="0 0 18 18" role="img" aria-label="Google"><path fill="#4285F4" d="M17.64 9.205c0-.638-.057-1.252-.164-1.841H9v3.481h4.844a4.14 4.14 0 0 1-1.797 2.716v2.258h2.909c1.702-1.567 2.684-3.875 2.684-6.614Z"/><path fill="#34A853" d="M9 18c2.43 0 4.468-.806 5.956-2.181l-2.91-2.258c-.805.54-1.835.859-3.046.859-2.344 0-4.328-1.585-5.037-3.714H.956v2.332A9 9 0 0 0 9 18Z"/><path fill="#FBBC05" d="M3.963 10.706A5.41 5.41 0 0 1 3.682 9c0-.592.102-1.167.281-1.706V4.962H.956A9 9 0 0 0 0 9c0 1.452.347 2.827.956 4.038l3.007-2.332Z"/><path fill="#EA4335" d="M9 3.58c1.322 0 2.508.455 3.441 1.346l2.582-2.581C13.464.892 11.426 0 9 0A9 9 0 0 0 .956 4.962l3.007 2.332C4.672 5.165 6.656 3.58 9 3.58Z"/></svg>`;
+  return html`<svg viewBox="0 0 18 18" role="img" aria-label="Google"><path fill="#4285F4" d="M17.64 9.205c0-.638-.057-1.252-.164-1.841H9v3.481h4.844a4.14 4.14 0 0 1-1.797 2.716v2.258h2.909c1.702-1.567 2.684-3.875 2.684-6.614Z"/><path fill="#34A853" d="M9 18c2.43 0 4.468-.806 5.956-2.181l-2.91-2.258c-.805.54-1.835.859-3.046.859-2.344 0-4.328-1.585-5.037-3.714H.956v2.332A9 9 0 0 0 9 18Z"/><path fill="#FBBC05" d="M3.963 10.706A5.41 5.41 0 0 1 3.682 9c0-.592.102-1.167.281-1.706V4.962H.956A9 9 0 0 0 0 9c0 1.452.347 2.827.956 4.038l3.007-2.332Z"/><path fill="#EA4335" d="M9 3.58c1.322 0 2.508.455 3.441 1.346l2.582-2.581C13.464.892 11.426 0 9 0A9 9 0 0 0 .956 4.962l3.007 2.332C4.672 5.165 6.656 3.58 9 3.58Z"/></svg>`;
 }
 
 function microsoftLogo(): string {
-  return `<svg viewBox="0 0 23 23" role="img" aria-label="Microsoft"><path fill="#F35325" d="M1 1h10v10H1z"/><path fill="#81BC06" d="M12 1h10v10H12z"/><path fill="#05A6F0" d="M1 12h10v10H1z"/><path fill="#FFBA08" d="M12 12h10v10H12z"/></svg>`;
+  return html`<svg viewBox="0 0 23 23" role="img" aria-label="Microsoft"><path fill="#F35325" d="M1 1h10v10H1z"/><path fill="#81BC06" d="M12 1h10v10H12z"/><path fill="#05A6F0" d="M1 12h10v10H1z"/><path fill="#FFBA08" d="M12 12h10v10H12z"/></svg>`;
 }
 
 function renderLogin(): void {
   clearNotifications();
-  root.innerHTML = `<section class="shell" aria-labelledby="title"><aside class="brand-panel"><div class="brand"><img class="brand-mark" src="${fishstopMailCheckUrl}" alt="" aria-hidden="true" /><span>fish<span>stop</span></span></div><div class="hero-copy"><p class="eyebrow">LOCAL-FIRST EMAIL SECURITY</p><h1>Understand an email<br>before it matters <em>too much.</em></h1><p class="intro">FishStop analyses email files, links and attachments on your device. A clear view of the signals that deserve attention, without sending the content to a server.</p></div><div class="signal"><span class="signal-dot"></span><span>Private by design</span></div><p class="version">FISHSTOP · DESKTOP EDITION</p></aside><section class="login-panel"><div class="login-controls" role="group" aria-label="Language and appearance"><button class="login-switch login-language-switch" type="button" role="switch" aria-label="Italian language" aria-checked="false" disabled title="English · Italian will be available later"><span class="login-language-option" aria-hidden="true">IT</span><span class="login-switch-thumb" aria-hidden="true">EN</span></button><button class="login-switch login-theme-switch" id="login-theme-toggle" type="button" role="switch" aria-label="Dark mode" aria-checked="${currentTheme() === "dark"}" title="Switch between light and dark mode"><span class="login-switch-thumb" aria-hidden="true"><svg class="login-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2m-15-7 1.5 1.5m11 11L20 20M5 19l1.5-1.5M18 6l1.5-1.5"/></svg><svg class="login-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20.5 13A8.5 8.5 0 0 1 11 3.5 8.5 8.5 0 1 0 20.5 13Z"/></svg></span></button></div><div class="login-content"><h2 id="title">Welcome to FishStop</h2><p class="subtitle">Continue as a guest. Your history and preferences stay on this device.</p><div class="auth-options"><button class="provider guest" id="guest-login" type="button"><span class="provider-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="3.5"/><path d="M5 21v-2a7 7 0 0 1 14 0v2"/></svg></span><span>Continue as guest</span><b aria-hidden="true">→</b></button><button class="provider google" id="google-login" type="button" ${ACCOUNT_ACCESS_ENABLED ? "" : "disabled"}><span class="provider-icon" aria-hidden="true">${googleLogo()}</span><span>Continue with Google${ACCOUNT_ACCESS_ENABLED ? "" : " · Coming soon"}</span><b aria-hidden="true">→</b></button><button class="provider microsoft" id="microsoft-login" type="button" ${ACCOUNT_ACCESS_ENABLED ? "" : "disabled"}><span class="provider-icon" aria-hidden="true">${microsoftLogo()}</span><span>Continue with Microsoft${ACCOUNT_ACCESS_ENABLED ? "" : " · Coming soon"}</span><b aria-hidden="true">→</b></button></div><p class="privacy">Account connections and external services are described in the <a href="https://fishstop-eml.streamlit.app/?page=terms" target="_blank" rel="noopener noreferrer">Terms of Service</a> and <a class="settings-link-button" href="https://fishstop-eml.streamlit.app/?page=privacy" target="_blank" rel="noopener noreferrer">Privacy Policy</a>.</p><p class="status" role="status" aria-live="polite"></p></div><footer><span>© 2026 FishStop</span><span>Analyse. Understand. Protect.</span></footer></section></section>`;
+  root.innerHTML = html`<section class="shell" aria-labelledby="title"><aside class="brand-panel"><div class="brand"><img class="brand-mark" src="${fishstopMailCheckUrl}" alt="" aria-hidden="true" /><span>fish<span>stop</span></span></div><div class="hero-copy"><p class="eyebrow">LOCAL-FIRST EMAIL SECURITY</p><h1>Understand an email<br>before it matters <em>too much.</em></h1><p class="intro">FishStop analyses email files, links and attachments on your device. A clear view of the signals that deserve attention, without sending the content to a server.</p></div><div class="signal"><span class="signal-dot"></span><span>Private by design</span></div><p class="version">FISHSTOP · DESKTOP EDITION</p></aside><section class="login-panel"><div class="login-controls" role="group" aria-label="Language and appearance"><button class="login-switch login-language-switch" type="button" role="switch" data-language-toggle aria-label="Italian language" aria-checked="${currentLanguage() === "it"}" title="Switch between English and Italian"><span class="login-language-option" aria-hidden="true">${currentLanguage() === "it" ? "EN" : "IT"}</span><span class="login-switch-thumb" aria-hidden="true">${currentLanguage() === "it" ? "IT" : "EN"}</span></button><button class="login-switch login-theme-switch" id="login-theme-toggle" type="button" role="switch" aria-label="Dark mode" aria-checked="${currentTheme() === "dark"}" title="Switch between light and dark mode"><span class="login-switch-thumb" aria-hidden="true"><svg class="login-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2m-15-7 1.5 1.5m11 11L20 20M5 19l1.5-1.5M18 6l1.5-1.5"/></svg><svg class="login-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20.5 13A8.5 8.5 0 0 1 11 3.5 8.5 8.5 0 1 0 20.5 13Z"/></svg></span></button></div><div class="login-content"><h2 id="title">Welcome to FishStop</h2><p class="subtitle">Continue as a guest. Your history and preferences stay on this device.</p><div class="auth-options"><button class="provider guest" id="guest-login" type="button"><span class="provider-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="3.5"/><path d="M5 21v-2a7 7 0 0 1 14 0v2"/></svg></span><span>Continue as guest</span><b aria-hidden="true">→</b></button><button class="provider google" id="google-login" type="button" ${ACCOUNT_ACCESS_ENABLED ? "" : "disabled"}><span class="provider-icon" aria-hidden="true">${googleLogo()}</span><span>Continue with Google${ACCOUNT_ACCESS_ENABLED ? "" : t(" · Coming soon")}</span><b aria-hidden="true">→</b></button><button class="provider microsoft" id="microsoft-login" type="button" ${ACCOUNT_ACCESS_ENABLED ? "" : "disabled"}><span class="provider-icon" aria-hidden="true">${microsoftLogo()}</span><span>Continue with Microsoft${ACCOUNT_ACCESS_ENABLED ? "" : t(" · Coming soon")}</span><b aria-hidden="true">→</b></button></div><p class="privacy">Account connections and external services are described in the <a href="https://fishstop-eml.streamlit.app/?page=terms&lang=${currentLanguage()}" target="_blank" rel="noopener noreferrer">Terms of Service</a> and <a class="settings-link-button" href="https://fishstop-eml.streamlit.app/?page=privacy&lang=${currentLanguage()}" target="_blank" rel="noopener noreferrer">Privacy Policy</a>.</p><p class="status" role="status" aria-live="polite"></p></div><footer><span>© 2026 FishStop</span><span>Analyse. Understand. Protect.</span></footer></section></section>`;
   document.querySelector<HTMLButtonElement>("#login-theme-toggle")?.addEventListener("click", () => {
-    if (!setTheme(currentTheme() === "dark" ? "light" : "dark")) notify("Appearance changed, but could not be saved on this device.", "error");
+    if (!setTheme(currentTheme() === "dark" ? "light" : "dark")) notify(t("Appearance changed, but could not be saved on this device."), "error");
   });
   const brandPanel = document.querySelector<HTMLElement>(".brand-panel");
   let pointerFrame = 0;
@@ -2772,7 +2778,7 @@ function renderLogin(): void {
     try {
       localStorage.setItem(USER_STORAGE_KEY, JSON.stringify(GUEST_USER));
       await startWorkspace(GUEST_USER);
-    } catch { notify("Could not open the guest workspace. Please try again.", "error"); }
+    } catch { notify(t("Could not open the guest workspace. Please try again."), "error"); }
   });
   const status = document.querySelector<HTMLParagraphElement>(".status");
   const bindLogin = (buttonId: string, provider: string, command: string): void => {
@@ -2782,14 +2788,14 @@ function renderLogin(): void {
       const buttons = [...document.querySelectorAll<HTMLButtonElement>(".provider")];
       buttons.forEach((item) => { item.disabled = true; });
       button.classList.add("loading");
-      if (status) status.textContent = `Opening ${provider} in your browser…`;
+      if (status) status.textContent = t("Opening {0} in your browser…", [provider]);
       try {
         const user = await invoke<AuthUser>(command);
         localStorage.setItem(USER_STORAGE_KEY, JSON.stringify(user));
         await startWorkspace(user);
       } catch (error) {
         console.error("Sign-in failed", error);
-        if (status) status.textContent = "Sign-in could not be completed. Please try again.";
+        if (status) status.textContent = t("Sign-in could not be completed. Please try again.");
         buttons.forEach((item) => { item.disabled = false; item.classList.remove("loading"); });
       }
     });
@@ -2806,8 +2812,8 @@ function riskReasons(report: AnalysisReport): string[] {
   const requestedAction = (semantic?.requested_action || "").toLowerCase();
   const maliciousLink = (result?: ReputationResult) => ["malicious", "suspicious"].includes((result?.status || "").toLowerCase()) || Number(result?.malicious || 0) > 0 || Number(result?.suspicious || 0) > 0;
 
-  if (report.reply_to_mismatch || returnPathMismatchForVerdict(report) || report.display_name_spoofing || /reply-to|return-path|display.?name|sender.*mismatch|spoof/.test(flags)) reasons.add("Sender mismatch");
-  if ((report.links || []).some((link) => link.display_mismatch || link.is_ip || maliciousLink(report.link_reputation?.[link.url || ""])) || /malicious.*url|suspicious.*url|dangerous.*link|lookalike/.test(flags)) reasons.add("Suspicious link");
+  if (report.reply_to_mismatch || returnPathMismatchForVerdict(report) || report.display_name_spoofing || /reply-to|return-path|display.?name|sender.*mismatch|spoof/.test(flags)) reasons.add(t("Sender mismatch"));
+  if ((report.links || []).some((link) => link.display_mismatch || link.is_ip || maliciousLink(report.link_reputation?.[link.url || ""])) || /malicious.*url|suspicious.*url|dangerous.*link|lookalike/.test(flags)) reasons.add(t("Suspicious link"));
   if ((report.attachments || []).some((file) => {
     const anomaly = String(file.anomaly || "").trim().toLowerCase();
     return Boolean(anomaly && anomaly !== "none")
@@ -2815,9 +2821,9 @@ function riskReasons(report: AnalysisReport): string[] {
       || ["medium", "high", "critical", "warning"].includes((file.pdf_security?.risk_level || "").toLowerCase())
       || ["medium", "high", "critical"].includes((file.office_security?.risk_level || "").toLowerCase())
       || maliciousLink(file.file_reputation);
-  }) || /attachment.*(malicious|suspicious)|pdf.*risk/.test(flags)) reasons.add("Suspicious attachment");
-  if (requestedAction === "provide_credentials" || /credential|password|otp|mfa|login|sign.?in/.test(intentSignals)) reasons.add("Credential request");
-  if (semantic?.payment_destination_change || /payment.?destination|payment.?diversion|new.?iban|changed.?iban|beneficiary.?change/.test(intentSignals)) reasons.add("Payment diversion");
+  }) || /attachment.*(malicious|suspicious)|pdf.*risk/.test(flags)) reasons.add(t("Suspicious attachment"));
+  if (requestedAction === "provide_credentials" || /credential|password|otp|mfa|login|sign.?in/.test(intentSignals)) reasons.add(t("Credential request"));
+  if (semantic?.payment_destination_change || /payment.?destination|payment.?diversion|new.?iban|changed.?iban|beneficiary.?change/.test(intentSignals)) reasons.add(t("Payment diversion"));
   return [...reasons];
 }
 
@@ -2849,7 +2855,7 @@ function updateAnalysisProgress(session: ActiveAnalysis, check: number, message?
   const result = document.querySelector<HTMLDivElement>("#analysis-result");
   if (result) markLoadingCheck(result, check);
   const status = document.querySelector<HTMLElement>("#upload-status");
-  if (status && message) status.textContent = message;
+  if (status && message) status.textContent = engineText(message);
 }
 
 function mailboxProvider(user: AuthUser): "google" | "microsoft" {
@@ -2888,14 +2894,14 @@ function mailboxIntakeMarkup(user: AuthUser): string {
   const provider = mailboxProvider(user);
   const name = mailboxProviderName(user);
   const logo = provider === "microsoft" ? microsoftLogo() : googleLogo();
-  return `<section class="inbox-intake" id="inbox-intake"><div class="inbox-intake-heading"><div><p class="page-kicker">READ-ONLY MAILBOX</p><h2>Recent ${name} messages</h2><p>Connect the same account used for FishStop. Only the latest 10 messages are listed; the full EML is downloaded only when you analyse one.</p></div><span class="inbox-provider">${logo}<b>${name}</b></span></div><div class="inbox-state" id="inbox-state" aria-live="polite"><span class="inbox-spinner" aria-hidden="true"></span><p>Checking mailbox connection…</p></div></section>`;
+  return html`<section class="inbox-intake" id="inbox-intake"><div class="inbox-intake-heading"><div><p class="page-kicker">READ-ONLY MAILBOX</p><h2>Recent ${name} messages</h2><p>Connect the same account used for FishStop. Only the latest 10 messages are listed; the full EML is downloaded only when you analyse one.</p></div><span class="inbox-provider">${logo}<b>${name}</b></span></div><div class="inbox-state" id="inbox-state" aria-live="polite"><span class="inbox-spinner" aria-hidden="true"></span><p>Checking mailbox connection…</p></div></section>`;
 }
 
 function mailboxMessageMarkup(message: MailboxMessage): string {
-  const subject = escapeHtml(message.subject || "No subject");
-  const sender = escapeHtml(message.sender || "Sender unavailable");
-  const snippet = escapeHtml(message.snippet || "No preview available.");
-  return `<article class="inbox-message ${message.is_read ? "" : "unread"}"><div class="inbox-message-copy"><div>${message.is_read ? "" : '<span class="inbox-unread-indicator" aria-label="Unread message" title="Unread message"></span>'}<strong title="${subject}">${subject}</strong>${message.has_attachments ? '<span class="inbox-attachment" title="Contains attachments">◇</span>' : ""}</div><small title="${sender}">${sender}</small><p>${snippet}</p></div><div class="inbox-message-action"><time datetime="${escapeHtml(message.received_at)}">${escapeHtml(formatAnalysisDate(message.received_at))}</time><button class="primary-action analyse-inbox-message" data-message-id="${escapeHtml(message.id)}" data-message-subject="${subject}" type="button">Analyse</button></div></article>`;
+  const subject = escapeHtml(message.subject || t("No subject"));
+  const sender = escapeHtml(message.sender || t("Sender unavailable"));
+  const snippet = escapeHtml(message.snippet || t("No preview available."));
+  return html`<article class="inbox-message ${message.is_read ? "" : "unread"}"><div class="inbox-message-copy"><div>${message.is_read ? "" : localizeHtml("<span class=\"inbox-unread-indicator\" aria-label=\"Unread message\" title=\"Unread message\"></span>")}<strong title="${subject}">${subject}</strong>${message.has_attachments ? localizeHtml("<span class=\"inbox-attachment\" title=\"Contains attachments\">◇</span>") : ""}</div><small title="${sender}">${sender}</small><p>${snippet}</p></div><div class="inbox-message-action"><time datetime="${escapeHtml(message.received_at)}">${escapeHtml(formatAnalysisDate(message.received_at))}</time><button class="primary-action analyse-inbox-message" data-message-id="${escapeHtml(message.id)}" data-message-subject="${subject}" type="button">Analyse</button></div></article>`;
 }
 
 function mailboxAuthorizationExpired(error: unknown): boolean {
@@ -2905,7 +2911,7 @@ function mailboxAuthorizationExpired(error: unknown): boolean {
 function renderMailboxMessages(state: HTMLElement, user: AuthUser, snapshot: MailboxInboxSnapshot): void {
   const messages = snapshot.messages;
   state.className = "inbox-state";
-  state.innerHTML = `<div class="inbox-connected-heading"><div><strong>${escapeHtml(snapshot.email || user.email)}</strong><small>Read-only · 10 most recent Inbox messages</small></div><div><button class="soft-action" id="refresh-mailbox" type="button">Refresh</button><button class="inbox-disconnect" id="disconnect-mailbox" type="button">Disconnect</button></div></div><div class="inbox-message-list">${messages.length ? messages.map(mailboxMessageMarkup).join("") : '<p class="inbox-empty">No recent messages were returned by this inbox.</p>'}</div>`;
+  state.innerHTML = html`<div class="inbox-connected-heading"><div><strong>${escapeHtml(snapshot.email || user.email)}</strong><small>Read-only · 10 most recent Inbox messages</small></div><div><button class="soft-action" id="refresh-mailbox" type="button">Refresh</button><button class="inbox-disconnect" id="disconnect-mailbox" type="button">Disconnect</button></div></div><div class="inbox-message-list">${messages.length ? messages.map(mailboxMessageMarkup).join("") : localizeHtml("<p class=\"inbox-empty\">No recent messages were returned by this inbox.</p>")}</div>`;
 }
 
 async function refreshMailboxPanel(user: AuthUser, force = false): Promise<void> {
@@ -2923,7 +2929,7 @@ async function refreshMailboxPanelNow(user: AuthUser, force = false): Promise<vo
   if (!await mailboxInboxAvailable(user)) {
     if (!panel.isConnected) return;
     state.className = "inbox-state inbox-connect-state inbox-coming-soon";
-    state.innerHTML = `<div class="inbox-connect-copy"><strong>Gmail inbox analysis is coming soon</strong><p>You can still download a message as an EML file and analyse it locally.</p></div><span class="inbox-coming-soon-badge">COMING SOON</span>`;
+    state.innerHTML = html`<div class="inbox-connect-copy"><strong>Gmail inbox analysis is coming soon</strong><p>You can still download a message as an EML file and analyse it locally.</p></div><span class="inbox-coming-soon-badge">COMING SOON</span>`;
     return;
   }
   const cached = mailboxInboxCache.get(cacheKey);
@@ -2937,11 +2943,11 @@ async function refreshMailboxPanelNow(user: AuthUser, force = false): Promise<vo
     if (!status.connected) {
       clearMailboxInboxCache(user);
       state.className = "inbox-state inbox-connect-state";
-      state.innerHTML = `<div class="inbox-connect-copy"><strong>Connect ${name}</strong><p>Read-only access. FishStop cannot send, delete or move messages.</p></div><button class="primary-action" id="connect-mailbox" type="button">Connect ${name}</button>`;
+      state.innerHTML = html`<div class="inbox-connect-copy"><strong>Connect ${name}</strong><p>Read-only access. FishStop cannot send, delete or move messages.</p></div><button class="primary-action" id="connect-mailbox" type="button">Connect ${name}</button>`;
       return;
     }
     state.className = "inbox-state";
-    state.innerHTML = `<span class="inbox-spinner" aria-hidden="true"></span><p>Loading the latest messages from ${escapeHtml(status.email || user.email)}…</p>`;
+    state.innerHTML = html`<span class="inbox-spinner" aria-hidden="true"></span><p>Loading the latest messages from ${escapeHtml(status.email || user.email)}…</p>`;
     let request = mailboxInboxRequests.get(cacheKey);
     if (!request || force) {
       const createdRequest = invoke<MailboxMessage[]>("list_recent_mailbox_messages", { userSub: user.sub, provider, limit: 10 });
@@ -2961,7 +2967,7 @@ async function refreshMailboxPanelNow(user: AuthUser, force = false): Promise<vo
     if (!panel.isConnected) return;
     const reconnect = mailboxAuthorizationExpired(error);
     state.className = "inbox-state inbox-connect-state";
-    state.innerHTML = `<div class="inbox-connect-copy inbox-error"><strong>${reconnect ? `Reconnect ${name}` : "Mailbox unavailable"}</strong><p>${escapeHtml(reconnect ? "Mailbox authorization expired. Sign in again to restore read-only access." : "Messages could not be loaded. Please try again.")}</p></div><button class="soft-action" id="${reconnect ? "reconnect-mailbox" : "refresh-mailbox"}" type="button">${reconnect ? `Reconnect ${name}` : "Try again"}</button>`;
+    state.innerHTML = html`<div class="inbox-connect-copy inbox-error"><strong>${reconnect ? t("Reconnect {0}", [name]) : t("Mailbox unavailable")}</strong><p>${escapeHtml(reconnect ? t("Mailbox authorization expired. Sign in again to restore read-only access.") : t("Messages could not be loaded. Please try again."))}</p></div><button class="soft-action" id="${reconnect ? "reconnect-mailbox" : "refresh-mailbox"}" type="button">${reconnect ? t("Reconnect {0}", [name]) : t("Try again")}</button>`;
   }
 }
 
@@ -2970,29 +2976,29 @@ function analysisPageContent(user: AuthUser, source: "file" | "inbox" = "file"):
   const active = current && (current.source || "file") === source ? current : null;
   const isProcessing = active?.status === "processing";
   const hasReport = Boolean(active?.report);
-  const title = escapeHtml(active?.fileName || (source === "inbox" ? "Analyse from inbox" : "Analyse a message"));
+  const title = escapeHtml(active?.fileName || (source === "inbox" ? t("Analyse from inbox") : t("Analyse a message")));
   const status = active?.status === "error"
-    ? "The analysis could not be completed. Please try again."
+    ? t("The analysis could not be completed. Please try again.")
     : isProcessing
-      ? escapeHtml(active.progressMessage || `Local analysis of ${active.fileName} in progress…`)
+      ? escapeHtml(engineText(active.progressMessage || t("Local analysis of {0} in progress…", [active.fileName])))
       : hasReport
-        ? `Analysis complete: ${title}.`
-        : "The message content stays on this device. Enabled security services may check relevant technical data.";
+        ? t("Analysis complete: {0}.", [title])
+        : t("The message content stays on this device. Enabled security services may check relevant technical data.");
   const result = hasReport
     ? (isProcessing ? analysisLoadingMarkup(active!.fileName, active!.completedChecks, active!.progressMessage, active!.progressPercent) : reportMarkup(active!.report!))
     : isProcessing
       ? analysisLoadingMarkup(active!.fileName, active!.completedChecks, active!.progressMessage, active!.progressPercent)
       : "";
   const intake = source === "file"
-    ? `<section class="eml-intake" id="eml-intake" ${isProcessing || hasReport ? "hidden" : ""}><button class="drop-zone" id="eml-drop" type="button"><span class="drop-icon">↥</span><strong>Drop an .eml file here</strong><span>or select it from your computer · max 40 MB</span></button><input id="eml-input" type="file" accept=".eml,message/rfc822" hidden /></section>`
-    : `${!isProcessing && !hasReport ? mailboxIntakeMarkup(user) : ""}<p class="upload-status" id="upload-status">${isProcessing || hasReport ? status : ""}</p>`;
-  const actions = `<div class="analysis-actions"><button class="change-analysis" id="change-eml" type="button" ${(!isProcessing && hasReport) || active?.status === "error" ? "" : "hidden"}>${source === "inbox" ? "Back to inbox" : "Change email"}</button>${source === "file" ? `<button class="reset-analysis" id="reset-analysis" type="button" ${hasReport && !isProcessing ? "" : "hidden"}>Reset</button>` : ""}<button class="cancel-analysis" id="cancel-analysis" type="button" ${isProcessing ? "" : "hidden"}>Cancel</button></div>`;
-  const checkLabel = active?.status === "error" ? "CHECK INCOMPLETE" : isProcessing ? "CHECK IN PROGRESS" : hasReport ? "CHECK COMPLETED" : "NEW CHECK";
-  return `<div class="page-heading analysis-heading"><div><p class="page-kicker analysis-state-line" id="analysis-state-label"><span>${checkLabel}</span>${active?.status === "complete" ? analysisModeMarkup(active.report) + analysisTimeMarkup(user, active.analysisDurationMs) : ""}</p><h1 id="analysis-title">${title}</h1><p>${source === "inbox" ? "Choose a recent message and check it privately with FishStop." : "The file stays on your device and is processed locally."}</p></div>${actions}</div>${intake}${source === "file" ? `<p class="upload-status" id="upload-status">${status}</p>` : ""}<div id="analysis-result">${result}</div>`;
+    ? html`<section class="eml-intake" id="eml-intake" ${isProcessing || hasReport ? "hidden" : ""}><button class="drop-zone" id="eml-drop" type="button"><span class="drop-icon">↥</span><strong>Drop an .eml file here</strong><span>or select it from your computer · max 40 MB</span></button><input id="eml-input" type="file" accept=".eml,message/rfc822" hidden /></section>`
+    : html`${!isProcessing && !hasReport ? mailboxIntakeMarkup(user) : ""}<p class="upload-status" id="upload-status">${isProcessing || hasReport ? status : ""}</p>`;
+  const actions = html`<div class="analysis-actions"><button class="change-analysis" id="change-eml" type="button" ${(!isProcessing && hasReport) || active?.status === "error" ? "" : "hidden"}>${source === "inbox" ? t("Back to inbox") : t("Change email")}</button>${source === "file" ? html`<button class="reset-analysis" id="reset-analysis" type="button" ${hasReport && !isProcessing ? "" : "hidden"}>Reset</button>` : ""}<button class="cancel-analysis" id="cancel-analysis" type="button" ${isProcessing ? "" : "hidden"}>Cancel</button></div>`;
+  const checkLabel = active?.status === "error" ? t("CHECK INCOMPLETE") : isProcessing ? t("CHECK IN PROGRESS") : hasReport ? t("CHECK COMPLETED") : t("NEW CHECK");
+  return html`<div class="page-heading analysis-heading"><div><p class="page-kicker analysis-state-line" id="analysis-state-label"><span>${checkLabel}</span>${active?.status === "complete" ? analysisModeMarkup(active.report) + analysisTimeMarkup(user, active.analysisDurationMs) : ""}</p><h1 id="analysis-title">${title}</h1><p>${source === "inbox" ? t("Choose a recent message and check it privately with FishStop.") : t("The file stays on your device and is processed locally.")}</p></div>${actions}</div>${intake}${source === "file" ? html`<p class="upload-status" id="upload-status">${status}</p>` : ""}<div id="analysis-result">${result}</div>`;
 }
 
 function contentFor(section: Section, user: AuthUser): string {
-  const firstName = escapeHtml(user.name?.trim().split(/\s+/)[0] || user.email.split("@")[0]);
+  const firstName = escapeHtml(user.provider === "guest" ? t("Guest") : user.name?.trim().split(/\s+/)[0] || user.email.split("@")[0]);
   const history = [...readAnalysisHistory(user)].sort((left, right) => Date.parse(right.analyzedAt) - Date.parse(left.analyzedAt));
   const selectedPeriod = statisticsPeriod(user);
   const customRange = statisticsCustomRange(user);
@@ -3004,7 +3010,7 @@ function contentFor(section: Section, user: AuthUser): string {
   const timedAnalyses = filteredHistory.filter((record) => Number.isFinite(record.analysisDurationMs) && Number(record.analysisDurationMs) > 0);
   const averageDuration = timedAnalyses.length ? timedAnalyses.reduce((total, record) => total + Number(record.analysisDurationMs), 0) / timedAnalyses.length : undefined;
   const reasonCounts = riskReasonCounts(filteredHistory);
-  const dayFormatter = new Intl.DateTimeFormat("en-US", { weekday: "short" });
+  const dayFormatter = new Intl.DateTimeFormat(locale(), { weekday: "short" });
   const activityStart = selectedPeriod === "custom" ? new Date(`${customRange.from}T00:00:00`) : new Date();
   if (selectedPeriod !== "custom") { activityStart.setHours(0, 0, 0, 0); activityStart.setDate(activityStart.getDate() - 6); }
   const rangeEnd = new Date(`${customRange.to}T00:00:00`);
@@ -3018,46 +3024,55 @@ function contentFor(section: Section, user: AuthUser): string {
     end.setDate(end.getDate() + Math.floor((index + 1) * calendarDays / binCount));
     const count = filteredHistory.filter(record => { const time = Date.parse(record.analyzedAt); return time >= day.getTime() && time < end.getTime(); }).length;
     const last = new Date(end); last.setDate(last.getDate() - 1);
-    const label = selectedPeriod === "custom" ? day.toLocaleDateString("en-GB", { day: "numeric", month: "short" }) : dayFormatter.format(day).replace(".", "");
+    const label = selectedPeriod === "custom" ? day.toLocaleDateString(locale(), { day: "numeric", month: "short" }) : dayFormatter.format(day).replace(".", "");
     const span = `${localDateValue(day)} – ${localDateValue(last)}`;
     return { label, count, span };
   });
   const maxActivity = Math.max(1, ...activity.map((item) => item.count));
-  const periodLabels: Record<StatisticsPeriod, string> = { today: "Today", week: "Last 7 days", month: "Last month", "3m": "Last 3 months", "6m": "Last 6 months", "9m": "Last 9 months", "12m": "Last 12 months", all: "All", custom: "Custom" };
+  const periodLabels: Record<StatisticsPeriod, string> = { today: t("Today"), week: t("Last 7 days"), month: t("Last month"), "3m": t("Last 3 months"), "6m": t("Last 6 months"), "9m": t("Last 9 months"), "12m": t("Last 12 months"), all: t("All"), custom: t("Custom") };
   const periodOrder: StatisticsPeriod[] = ["today", "week", "month", "3m", "6m", "9m", "12m", "all", "custom"];
-  const customPeriodMarkup = selectedPeriod === "custom" ? `<div id="statistics-custom-period" class="statistics-custom-period"><label>From<input id="statistics-date-from" name="from" type="date" value="${customRange.from}" required /></label><label>To<input id="statistics-date-to" name="to" type="date" value="${customRange.to}" required /></label><p id="statistics-custom-status" role="status" aria-live="polite">Both dates are included.</p></div>` : "";
-  const periodChoices = periodOrder.map((period) => `<button class="statistics-period-option" data-statistics-period="${period}" type="button" role="option" aria-selected="${period === selectedPeriod}">${periodLabels[period]}${period === selectedPeriod ? "<span aria-hidden=\"true\">✓</span>" : ""}</button>`).join("");
+  const customPeriodMarkup = selectedPeriod === "custom" ? html`<div id="statistics-custom-period" class="statistics-custom-period"><label>From<input id="statistics-date-from" name="from" type="date" value="${customRange.from}" required /></label><label>To<input id="statistics-date-to" name="to" type="date" value="${customRange.to}" required /></label><p id="statistics-custom-status" role="status" aria-live="polite">Both dates are included.</p></div>` : "";
+  const periodChoices = periodOrder.map((period) => html`<button class="statistics-period-option" data-statistics-period="${period}" type="button" role="option" aria-selected="${period === selectedPeriod}">${periodLabels[period]}${period === selectedPeriod ? localizeHtml("<span aria-hidden=\"true\">✓</span>") : ""}</button>`).join("");
   const reasonItems = reasonCounts.length
-    ? reasonCounts.slice(0, 6).map(({ label, count }) => `<li><span>${escapeHtml(label)} <b>${count}</b></span><i><em style="width:${(count / reasonCounts[0].count) * 100}%"></em></i></li>`).join("")
-    : `<li class="statistics-empty">No risk reasons were recorded in this period.</li>`;
+    ? reasonCounts.slice(0, 6).map(({ label, count }) => html`<li><span>${escapeHtml(label)} <b>${count}</b></span><i><em style="width:${(count / reasonCounts[0].count) * 100}%"></em></i></li>`).join("")
+    : html`<li class="statistics-empty">No risk reasons were recorded in this period.</li>`;
   if (section === "analyse") return analysisPageContent(user);
-  if (section === "inbox" && (!ACCOUNT_ACCESS_ENABLED || user.provider === "guest")) return `<div class="page-heading"><h1>Analyse from inbox</h1><p>Coming soon. Use Analyse a file to check an exported EML.</p></div>`;
+  if (section === "inbox" && (!ACCOUNT_ACCESS_ENABLED || user.provider === "guest")) return html`<div class="page-heading"><h1>Analyse from inbox</h1><p>Coming soon. Use Analyse a file to check an exported EML.</p></div>`;
   if (section === "inbox") return analysisPageContent(user, "inbox");
-  if (section === "history") return `<div class="page-heading history-heading"><div><p class="page-kicker">PERSONAL WORKSPACE</p><div class="history-title-row"><h1>Analysis history</h1><div class="history-actions"><span class="period">${history.length} ANALYSES</span>${history.length ? `<button id="clear-history" type="button">Clear history</button>` : ""}</div></div><p>Analyses are stored only for this account, on this device.</p></div></div>${history.length ? `<section class="history-list">${history.map((record) => { const high = verdictFlags(record.report).filter((flag) => flag.level === "HIGH").length; return `<button class="history-item" data-open-history="${record.id}" type="button"><span class="history-risk ${high ? "high" : "clear"}">${high ? `${high} HIGH` : "OK"}</span><span><strong>${escapeHtml(record.report.subject || "No subject")}</strong><small>${escapeHtml(record.report.from_ || "Sender unavailable")} · ${formatAnalysisDate(record.analyzedAt)}</small></span><b>Open →</b></button>`; }).join("")}</section>` : `<section class="empty-state"><span class="empty-icon">⌁</span><h2>No analyses yet.</h2><p>Your first EML analysis will appear here.</p><button class="soft-action" data-go="analyse" type="button">Analyse an email <span>→</span></button></section>`}`;
-  if (section === "statistics") return `<div class="page-heading statistics-heading"><div><p class="page-kicker">RISK OVERVIEW</p><h1>Statistics</h1><p>Signals, investigation activity and performance for this account.</p></div><div class="statistics-filter"><span>Period</span><div class="statistics-period-menu"><button class="statistics-period-trigger" id="statistics-period-trigger" type="button" aria-haspopup="listbox" aria-controls="statistics-period-options" aria-expanded="false">${periodLabels[selectedPeriod]}<i aria-hidden="true"></i></button><div class="statistics-period-options" id="statistics-period-options" role="listbox" aria-label="Statistics period" hidden>${periodChoices}</div></div></div></div>${customPeriodMarkup}<section class="metrics stats-metrics"><article><span>Emails analysed</span><strong>${filteredHistory.length}</strong><small>${periodLabels[selectedPeriod]}</small></article><article><span>Average analysis time</span><strong>${formatDuration(averageDuration)}</strong><small>${timedAnalyses.length ? `Based on ${timedAnalyses.length} completed analyses` : "Available after new analyses"}</small></article><article><span>Indicators copied</span><strong>${filteredCopyEvents.length}</strong><small>Copied individually from the Indicators section</small></article></section><section class="stats-layout"><article class="risk-breakdown"><div><p class="page-kicker">DISTRIBUTION</p><h2>Analysis outcomes</h2></div><div class="risk-bars"><div><span>High risk <b>${highRiskCount}</b></span><i><em class="high" style="width:${filteredHistory.length ? (highRiskCount / filteredHistory.length) * 100 : 0}%"></em></i></div><div><span>To review <b>${mediumRiskCount}</b></span><i><em class="medium" style="width:${filteredHistory.length ? (mediumRiskCount / filteredHistory.length) * 100 : 0}%"></em></i></div><div><span>Likely legitimate <b>${clearCount}</b></span><i><em class="clear" style="width:${filteredHistory.length ? (clearCount / filteredHistory.length) * 100 : 0}%"></em></i></div></div></article><article class="activity-card"><div><p class="page-kicker">ACTIVITY</p><h2>${selectedPeriod === "custom" ? "Selected period" : "Last 7 days"}</h2></div><div class="activity-chart">${activity.map((item) => `<div><i style="height:${Math.max(5, (item.count / maxActivity) * 100)}%" title="${item.span}: ${item.count} analyses"></i><span>${item.label}</span></div>`).join("")}</div></article></section><section class="risk-reasons"><div><p class="page-kicker">RISK PATTERNS</p><h2>Top risk reasons</h2><p>Signals that appeared most often in the selected period.</p></div><ol>${reasonItems}</ol></section>`;
+  if (section === "history") return html`<div class="page-heading history-heading"><div><p class="page-kicker">PERSONAL WORKSPACE</p><div class="history-title-row"><h1>Analysis history</h1><div class="history-actions"><span class="period">${history.length} ANALYSES</span>${history.length ? html`<button id="clear-history" type="button">Clear history</button>` : ""}</div></div><p>Analyses are stored only for this account, on this device.</p></div></div>${history.length ? html`<section class="history-list">${history.map((record) => { const high = verdictFlags(record.report).filter((flag) => flag.level === "HIGH").length; return html`<button class="history-item" data-open-history="${record.id}" type="button"><span class="history-risk ${high ? "high" : "clear"}">${high ? t("{0} HIGH", [high]) : "OK"}</span><span><strong>${escapeHtml(record.report.subject || t("No subject"))}</strong><small>${escapeHtml(record.report.from_ || t("Sender unavailable"))} · ${formatAnalysisDate(record.analyzedAt)}</small></span><b>Open →</b></button>`; }).join("")}</section>` : html`<section class="empty-state"><span class="empty-icon">⌁</span><h2>No analyses yet.</h2><p>Your first EML analysis will appear here.</p><button class="soft-action" data-go="analyse" type="button">Analyse an email <span>→</span></button></section>`}`;
+  if (section === "statistics") return html`<div class="page-heading statistics-heading"><div><p class="page-kicker">RISK OVERVIEW</p><h1>Statistics</h1><p>Signals, investigation activity and performance for this account.</p></div><div class="statistics-filter"><span>Period</span><div class="statistics-period-menu"><button class="statistics-period-trigger" id="statistics-period-trigger" type="button" aria-haspopup="listbox" aria-controls="statistics-period-options" aria-expanded="false">${periodLabels[selectedPeriod]}<i aria-hidden="true"></i></button><div class="statistics-period-options" id="statistics-period-options" role="listbox" aria-label="Statistics period" hidden>${periodChoices}</div></div></div></div>${customPeriodMarkup}<section class="metrics stats-metrics"><article><span>Emails analysed</span><strong>${filteredHistory.length}</strong><small>${periodLabels[selectedPeriod]}</small></article><article><span>Average analysis time</span><strong>${formatDuration(averageDuration)}</strong><small>${timedAnalyses.length ? t("Based on {0} completed analyses", [timedAnalyses.length]) : t("Available after new analyses")}</small></article><article><span>Indicators copied</span><strong>${filteredCopyEvents.length}</strong><small>Copied individually from the Indicators section</small></article></section><section class="stats-layout"><article class="risk-breakdown"><div><p class="page-kicker">DISTRIBUTION</p><h2>Analysis outcomes</h2></div><div class="risk-bars"><div><span>High risk <b>${highRiskCount}</b></span><i><em class="high" style="width:${filteredHistory.length ? (highRiskCount / filteredHistory.length) * 100 : 0}%"></em></i></div><div><span>To review <b>${mediumRiskCount}</b></span><i><em class="medium" style="width:${filteredHistory.length ? (mediumRiskCount / filteredHistory.length) * 100 : 0}%"></em></i></div><div><span>Likely legitimate <b>${clearCount}</b></span><i><em class="clear" style="width:${filteredHistory.length ? (clearCount / filteredHistory.length) * 100 : 0}%"></em></i></div></div></article><article class="activity-card"><div><p class="page-kicker">ACTIVITY</p><h2>${selectedPeriod === "custom" ? t("Selected period") : t("Last 7 days")}</h2></div><div class="activity-chart">${activity.map((item) => html`<div><i style="height:${Math.max(5, (item.count / maxActivity) * 100)}%" title="${item.span}: ${item.count} analyses"></i><span>${item.label}</span></div>`).join("")}</div></article></section><section class="risk-reasons"><div><p class="page-kicker">RISK PATTERNS</p><h2>Top risk reasons</h2><p>Signals that appeared most often in the selected period.</p></div><ol>${reasonItems}</ol></section>`;
   if (section === "settings") {
     const keys = reputationKeys(user);
-    const keyRow = (provider: "virustotal" | "abuseipdb" | "otx", name: string, value: boolean) => `<li class="${value ? "ready" : "missing"} ${disabledReputationProviders(user).includes(provider) ? "provider-disabled" : ""}" data-reputation-provider="${provider}"><button class="toggle-reputation-provider" type="button" data-toggle-provider="${provider}" ${localOnlyEnabled(user) ? "disabled" : ""} aria-label="Enable ${name.replace(" API key", "")}" aria-pressed="${!disabledReputationProviders(user).includes(provider)}">${disabledReputationProviders(user).includes(provider) ? "—" : "✓"}</button><div class="credential-static-copy"><strong>${name.replace(" API key", "")}</strong><small>${value ? "Stored in the system keychain" : "Key not configured"}</small></div><label class="credential-inline-field"><span>${name}</span><input form="reputation-settings" name="${provider}" type="password" autocomplete="new-password" aria-label="${name}" placeholder="${value ? "Enter a new key or leave unchanged" : `Enter the ${provider === "otx" ? "OTX" : provider === "virustotal" ? "VirusTotal" : "AbuseIPDB"} token`}" /></label><b>${disabledReputationProviders(user).includes(provider) ? "Disabled" : value ? "Ready" : "Required"}</b><div class="credential-row-actions"><button class="soft-action edit-reputation-key" type="button" data-edit-reputation-key="${provider}" aria-label="${value ? "Edit" : "Add"} ${name}" title="${value ? "Edit" : "Add"} ${name}" aria-expanded="false">${credentialActionIcon(value ? "edit" : "add")}</button><button class="remove-reputation-key" type="button" data-remove-reputation-key="${provider}" aria-label="Remove ${name}" title="Remove ${name}" ${value ? "" : "hidden"}>${credentialActionIcon("remove")}</button></div></li>`;
-    return `<div class="page-heading"><div><p class="page-kicker">LOCAL CONFIGURATION</p><h1>Settings</h1><p>Choose how FishStop works on this device.</p></div></div>
+    const providerStatus = (provider: string, name: string, ready: boolean) => html`<button class="provider-status" type="button" data-toggle-provider="${provider}" aria-label="${t("Enable {0}", [name])}" aria-pressed="${!disabledReputationProviders(user).includes(provider)}" ${localOnlyEnabled(user) ? "disabled" : ""}>${disabledReputationProviders(user).includes(provider) ? t("Disabled") : ready ? t("Ready") : t("Required")}</button>`;
+    const keyRow = (provider: "virustotal" | "abuseipdb" | "otx", name: string, value: boolean) => html`<li class="${value ? "ready" : "missing"} ${disabledReputationProviders(user).includes(provider) ? "provider-disabled" : ""}" data-reputation-provider="${provider}"><button class="toggle-reputation-provider" type="button" data-toggle-provider="${provider}" ${localOnlyEnabled(user) ? "disabled" : ""} aria-label="Enable ${name.replace(" API key", "")}" aria-pressed="${!disabledReputationProviders(user).includes(provider)}">${disabledReputationProviders(user).includes(provider) ? "—" : "✓"}</button><div class="credential-static-copy"><strong>${name.replace(" API key", "")}</strong><small>${value ? t("Stored in the system keychain") : t("Key not configured")}</small></div><label class="credential-inline-field"><span>${t(name)}</span><input form="reputation-settings" name="${provider}" type="password" autocomplete="new-password" aria-label="${t(name)}" placeholder="${value ? t("Enter a new key or leave unchanged") : t("Enter the {0} token", [provider === "otx" ? "OTX" : provider === "virustotal" ? "VirusTotal" : "AbuseIPDB"])}" /></label>${providerStatus(provider, name.replace(" API key", ""), value)}<div class="credential-row-actions"><button class="soft-action edit-reputation-key" type="button" data-edit-reputation-key="${provider}" aria-label="${value ? t("Edit") : t("Add")} ${t(name)}" title="${value ? t("Edit") : t("Add")} ${t(name)}" aria-expanded="false">${credentialActionIcon(value ? "edit" : "add")}</button><button class="remove-reputation-key" type="button" data-remove-reputation-key="${provider}" aria-label="Remove ${t(name)}" title="Remove ${t(name)}" ${value ? "" : "hidden"}>${credentialActionIcon("remove")}</button></div></li>`;
+    return html`<div class="page-heading"><div><p class="page-kicker">LOCAL CONFIGURATION</p><h1>Settings</h1><p>Choose how FishStop works on this device.</p></div></div>
       <div class="settings-grid">
-          <section class="settings-card settings-privacy-mode" aria-label="Analysis privacy">
+
+          <section class="settings-card settings-reputation">
+            <p class="page-kicker">PRIVACY & SERVICES</p>
+            <div class="settings-card-heading"><h2>Network checks</h2></div>
+            <p class="settings-description">Control which services receive email indicators.</p>
             <label class="fine-tuned-model-toggle settings-local-only">
               <span><strong>Local only</strong><small>Keep all analysis checks on this device.</small></span>
               <input id="local-only-toggle" type="checkbox" role="switch" ${localOnlyEnabled(user) ? "checked" : ""} /><i aria-hidden="true"></i>
             </label>
             <details class="settings-details"><summary>What does Local only include?</summary><p>Reputation, geolocation, DNS, RDAP and online identity checks are disabled. Local AI remains available. Model downloads, updates, website links and any future account connections are separate online actions.</p></details>
-          </section>
-        <div class="settings-column">
-          <section class="settings-card settings-reputation">
-            <p class="page-kicker">PRIVACY & SERVICES</p>
-            <div class="settings-card-heading"><h2>Network checks</h2></div>
-            <p class="settings-description">Control which services receive email indicators.</p>
+
             <h3 class="settings-subheading">API services</h3>
             <ul class="credential-list">${keyRow("virustotal", "VirusTotal API key", keys.virustotal)}${keyRow("abuseipdb", "AbuseIPDB API key", keys.abuseipdb)}${keyRow("otx", "AlienVault OTX API key", keys.otx)}</ul>
             <h3 class="settings-subheading">Optional checks</h3>
-            <ul class="credential-list">${(["spamhaus", "geolocation"] as const).map(provider => `<li data-reputation-provider="${provider}" class="${disabledReputationProviders(user).includes(provider) ? "provider-disabled" : "ready"}"><button class="toggle-reputation-provider" type="button" data-toggle-provider="${provider}" aria-pressed="${!disabledReputationProviders(user).includes(provider)}" ${localOnlyEnabled(user) ? "disabled" : ""}>${disabledReputationProviders(user).includes(provider) ? "—" : "✓"}</button><div><strong>${provider === "spamhaus" ? "Spamhaus ZEN" : "IP location"}</strong><small>${provider === "spamhaus" ? "IP blocklist · Opt-in" : "ipwho.is · Opt-in"}</small></div><b>${disabledReputationProviders(user).includes(provider) ? "Disabled" : "Ready"}</b></li>`).join("")}</ul>
+            <ul class="credential-list">${(["spamhaus", "geolocation"] as const).map(provider => html`<li data-reputation-provider="${provider}" class="${disabledReputationProviders(user).includes(provider) ? "provider-disabled" : "ready"}"><button class="toggle-reputation-provider" type="button" data-toggle-provider="${provider}" aria-pressed="${!disabledReputationProviders(user).includes(provider)}" ${localOnlyEnabled(user) ? "disabled" : ""}>${disabledReputationProviders(user).includes(provider) ? "—" : "✓"}</button><div><strong>${provider === "spamhaus" ? "Spamhaus ZEN" : t("IP location")}</strong><small>${provider === "spamhaus" ? t("IP blocklist · Opt-in") : t("ipwho.is · Opt-in")}</small></div>${providerStatus(provider, provider === "spamhaus" ? "Spamhaus ZEN" : t("IP location"), true)}</li>`).join("")}</ul>
 
             <form id="reputation-settings"><div class="credential-edit-actions"><button class="primary-action" type="submit">Save changes</button><button class="cancel-credentials" id="cancel-reputation-edit" type="button">Cancel</button></div><span id="settings-status" aria-live="polite"></span></form>
+          </section>
+
+          <section class="settings-card ollama-lab">
+            <p class="page-kicker">ON-DEVICE ANALYSIS</p><h2>Local AI</h2><p class="settings-description">Choose a model and manage its installation.</p>
+            <div class="machine-profile" id="machine-profile" aria-live="polite"><p>Reading machine information…</p></div>
+          </section>
+          <section class="settings-card settings-app-updates" aria-labelledby="settings-updates-title">
+            <div class="settings-updates-row"><h2 id="settings-updates-title">App updates</h2><button type="button" class="soft-action" data-check-app-updates>Check for updates</button></div>
+            <p data-app-update-check-status role="status" aria-live="polite">Automatic checks are enabled.</p>
           </section>
           <section class="settings-card settings-preferences">
             <p class="page-kicker">YOUR EXPERIENCE</p><h2>Preferences</h2>
@@ -3067,8 +3082,8 @@ function contentFor(section: Section, user: AuthUser): string {
                 <input id="night-mode-enabled" type="checkbox" role="switch" aria-label="Night mode" aria-describedby="night-mode-note" ${currentTheme() === "dark" ? "checked" : ""} /><i aria-hidden="true"></i>
               </label>
               <div class="fine-tuned-model-toggle settings-language-control">
-                <span><strong>Language</strong><small>English · Italian will be available later.</small></span>
-                <button class="login-switch login-language-switch" type="button" role="switch" aria-label="Italian language" aria-checked="false" disabled title="English · Italian will be available later"><span class="login-language-option" aria-hidden="true">IT</span><span class="login-switch-thumb" aria-hidden="true">EN</span></button>
+                <span><strong>Language</strong><small>Choose the interface language.</small></span>
+                <button class="login-switch login-language-switch" type="button" role="switch" data-language-toggle aria-label="Italian language" aria-checked="${currentLanguage() === "it"}" title="Switch between English and Italian"><span class="login-language-option" aria-hidden="true">${currentLanguage() === "it" ? "EN" : "IT"}</span><span class="login-switch-thumb" aria-hidden="true">${currentLanguage() === "it" ? "IT" : "EN"}</span></button>
               </div>
               <label class="fine-tuned-model-toggle">
                 <span><strong>Manual globe tour</strong><small>Start the route animation manually.</small></span>
@@ -3080,24 +3095,13 @@ function contentFor(section: Section, user: AuthUser): string {
               </label>
             </div>
           </section>
-        </div>
-        <div class="settings-column settings-right-column">
-          <section class="settings-card ollama-lab">
-            <p class="page-kicker">ON-DEVICE ANALYSIS</p><h2>Local AI</h2><p class="settings-description">Choose a model and manage its installation.</p>
-            <div class="machine-profile" id="machine-profile" aria-live="polite"><p>Reading machine information…</p></div>
-          </section>
-          <section class="settings-card settings-app-updates" aria-labelledby="settings-updates-title">
-            <div class="settings-updates-row"><h2 id="settings-updates-title">App updates</h2><button type="button" class="soft-action" data-check-app-updates>Check for updates</button></div>
-            <p data-app-update-check-status role="status" aria-live="polite">Automatic checks are enabled.</p>
-          </section>
-        </div>
           <section class="settings-card settings-license" aria-labelledby="software-license-title">
             <div class="settings-about-heading">
               <div><h2 id="software-license-title">About FishStop</h2><p>© 2026 Eugenio De Rosa · Free and open source</p></div>
               <nav class="settings-legal-links" aria-label="FishStop information">
                 <a class="settings-link-button" href="https://github.com/EugenioDeRosa/fishstop-desktop-email-security" target="_blank" rel="noopener noreferrer">Source code <span aria-hidden="true">↗</span></a>
-                <a class="settings-link-button" href="https://fishstop-eml.streamlit.app/?page=privacy" target="_blank" rel="noopener noreferrer">Privacy <span aria-hidden="true">↗</span></a>
-                <a class="settings-link-button" href="https://fishstop-eml.streamlit.app/?page=terms" target="_blank" rel="noopener noreferrer">Terms & license <span aria-hidden="true">↗</span></a>
+                <a class="settings-link-button" href="https://fishstop-eml.streamlit.app/?page=privacy&lang=${currentLanguage()}" target="_blank" rel="noopener noreferrer">Privacy <span aria-hidden="true">↗</span></a>
+                <a class="settings-link-button" href="https://fishstop-eml.streamlit.app/?page=terms&lang=${currentLanguage()}" target="_blank" rel="noopener noreferrer">Terms & license <span aria-hidden="true">↗</span></a>
               </nav>
             </div>
             <details class="settings-details"><summary>GPLv3 license · Available offline</summary><p>You may modify and redistribute FishStop under GPL-3.0-or-later. No warranty, to the extent permitted by law.</p><pre class="settings-license-text">${escapeHtml(gplLicenseText)}</pre></details>
@@ -3111,19 +3115,19 @@ function contentFor(section: Section, user: AuthUser): string {
   const dashboardDangerEnd = history.length ? (dashboardHighRiskCount / history.length) * 100 : 0;
   const dashboardReviewEnd = history.length ? ((dashboardHighRiskCount + dashboardReviewCount) / history.length) * 100 : 0;
   const recentActivity = !analysisHistoryReady.has(user.sub)
-    ? `<div class="no-activity recent-activity-loading"><span aria-hidden="true">···</span><div><strong>Loading recent analyses</strong><p>Reading your local history…</p></div></div>`
+    ? html`<div class="no-activity recent-activity-loading"><span aria-hidden="true">···</span><div><strong>Loading recent analyses</strong><p>Reading your local history…</p></div></div>`
     : analysisHistoryErrors.has(user.sub) && !history.length
-      ? `<div class="no-activity recent-activity-error"><span aria-hidden="true">!</span><div><strong>History unavailable</strong><p>Your saved analyses could not be read.</p></div></div>`
+      ? html`<div class="no-activity recent-activity-error"><span aria-hidden="true">!</span><div><strong>History unavailable</strong><p>Your saved analyses could not be read.</p></div></div>`
       : history.length
-        ? `<div class="recent-activity-list" aria-label="Three most recent analyses">${history.slice(0, 3).map((record) => {
+        ? html`<div class="recent-activity-list" aria-label="Three most recent analyses">${history.slice(0, 3).map((record) => {
           const verdict = assessment(record.report);
-          const verdictLabel = verdict.tone === "danger" ? "High risk" : verdict.tone === "review" ? "Review" : "Clear";
-          const subject = escapeHtml(record.report.subject || "No subject");
-          const sender = escapeHtml(record.report.from_ || "Sender unavailable");
-          return `<button class="recent-activity-item" data-open-history="${escapeHtml(record.id)}" type="button"><span class="recent-activity-meta"><span class="recent-activity-risk ${verdict.tone}">${verdictLabel}</span><time datetime="${escapeHtml(record.analyzedAt)}">${formatAnalysisDate(record.analyzedAt)}</time></span><span class="recent-activity-copy"><strong title="${subject}">${subject}</strong><small title="${sender}">${sender}</small></span><b aria-hidden="true">→</b></button>`;
+          const verdictLabel = verdict.tone === "danger" ? t("High risk") : verdict.tone === "review" ? t("Review") : t("Clear");
+          const subject = escapeHtml(record.report.subject || t("No subject"));
+          const sender = escapeHtml(record.report.from_ || t("Sender unavailable"));
+          return html`<button class="recent-activity-item" data-open-history="${escapeHtml(record.id)}" type="button"><span class="recent-activity-meta"><span class="recent-activity-risk ${verdict.tone}">${verdictLabel}</span><time datetime="${escapeHtml(record.analyzedAt)}">${formatAnalysisDate(record.analyzedAt)}</time></span><span class="recent-activity-copy"><strong title="${subject}">${subject}</strong><small title="${sender}">${sender}</small></span><b aria-hidden="true">→</b></button>`;
         }).join("")}</div>`
-        : `<div class="no-activity no-activity-empty"><span>✓</span><div><strong>No recent analyses</strong><p>Your first checked email will appear here.</p></div></div>`;
-  return `<div class="page-heading dashboard-heading"><div><p class="page-kicker">YOUR PRIVATE WORKSPACE</p><h1>${dashboardGreeting()}, ${firstName}.</h1><p>Keep track of your email security.</p></div></div><section class="welcome-card"><div><p class="page-kicker">READY WHEN YOU ARE</p><h2>Received a suspicious email?</h2><p>Upload the EML file and let FishStop inspect its risk signals.</p><button class="primary-action" data-go="analyse" type="button">Analyse a file <span>→</span></button></div><div class="mail-art" aria-hidden="true"><span></span></div></section><div class="overview-row"><section class="mini-panel recent-activity-panel"><div class="panel-top"><h2>Recent activity</h2><button data-go="history" type="button">View history</button></div>${recentActivity}</section><section class="mini-panel outcomes-panel"><div class="outcomes-heading"><div><p class="page-kicker">LOCAL HISTORY</p><h2>Analysis outcomes</h2></div><small>All saved analyses</small></div><div class="outcomes-content"><div class="outcomes-donut ${history.length ? "" : "empty"}" style="--danger-end:${dashboardDangerEnd}%;--review-end:${dashboardReviewEnd}%" role="img" aria-label="${history.length ? `${dashboardHighRiskCount} high risk, ${dashboardReviewCount} review required, ${dashboardClearCount} clear analyses` : "No saved analyses"}"><span><strong>${history.length}</strong><small>total</small></span></div><ul class="outcomes-legend"><li class="danger"><span>High risk</span><strong>${dashboardHighRiskCount}</strong></li><li class="review"><span>Review</span><strong>${dashboardReviewCount}</strong></li><li class="safe"><span>Clear</span><strong>${dashboardClearCount}</strong></li></ul></div></section></div>`;
+        : html`<div class="no-activity no-activity-empty"><span>✓</span><div><strong>No recent analyses</strong><p>Your first checked email will appear here.</p></div></div>`;
+  return html`<div class="page-heading dashboard-heading"><div><p class="page-kicker">YOUR PRIVATE WORKSPACE</p><h1>${dashboardGreeting()}, ${firstName}.</h1><p>Keep track of your email security.</p></div></div><section class="welcome-card"><div><p class="page-kicker">READY WHEN YOU ARE</p><h2>Received a suspicious email?</h2><p>Upload the EML file and let FishStop inspect its risk signals.</p><button class="primary-action" data-go="analyse" type="button">Analyse a file <span>→</span></button></div><div class="mail-art" aria-hidden="true"><span></span></div></section><div class="overview-row"><section class="mini-panel recent-activity-panel"><div class="panel-top"><h2>Recent activity</h2><button data-go="history" type="button">View history</button></div>${recentActivity}</section><section class="mini-panel outcomes-panel"><div class="outcomes-heading"><div><p class="page-kicker">LOCAL HISTORY</p><h2>Analysis outcomes</h2></div><small>All saved analyses</small></div><div class="outcomes-content"><div class="outcomes-donut ${history.length ? "" : "empty"}" style="--danger-end:${dashboardDangerEnd}%;--review-end:${dashboardReviewEnd}%" role="img" aria-label="${history.length ? t("{0} high risk, {1} review required, {2} clear analyses", [dashboardHighRiskCount, dashboardReviewCount, dashboardClearCount]) : t("No saved analyses")}"><span><strong>${history.length}</strong><small>total</small></span></div><ul class="outcomes-legend"><li class="danger"><span>High risk</span><strong>${dashboardHighRiskCount}</strong></li><li class="review"><span>Review</span><strong>${dashboardReviewCount}</strong></li><li class="safe"><span>Clear</span><strong>${dashboardClearCount}</strong></li></ul></div></section></div>`;
 }
 
 function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
@@ -3136,13 +3140,13 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       if (storedUser()?.sub === user.sub) renderDashboard(user, section);
     });
   }
-  const labels: Record<Section, string> = { dashboard: "Dashboard", analyse: "Analyse", history: "History", statistics: "Statistics", settings: "Settings", inbox: "Analyse from inbox" };
+  const labels: Record<Section, string> = { dashboard: t("Dashboard"), analyse: t("Analyse"), history: t("History"), statistics: t("Statistics"), settings: t("Settings"), inbox: t("Analyse from inbox") };
   const icons: Record<Section, string> = { dashboard: homeIconMarkup(), analyse: searchIconMarkup(), inbox: inboxIconMarkup(), history: "◴", statistics: "◔", settings: "⚙" };
   const initial = escapeHtml((user.name || user.email).trim().charAt(0).toUpperCase());
-  const safeName = escapeHtml(user.name || (user.provider === "microsoft" ? "Microsoft account" : "Google account"));
-  const safeEmail = user.provider === "guest" ? "Local workspace" : escapeHtml(user.email);
+  const safeName = escapeHtml(user.provider === "guest" ? t("Guest") : user.name || (user.provider === "microsoft" ? t("Microsoft account") : t("Google account")));
+  const safeEmail = user.provider === "guest" ? t("Local workspace") : escapeHtml(user.email);
   const safePicture = user.picture ? escapeHtml(user.picture) : "";
-  root.innerHTML = `<div class="app-shell ${section === "dashboard" ? "dashboard-shell" : ""}"><aside class="sidebar"><div class="sidebar-brand"><img class="brand-mark" src="${fishstopMailCheckUrl}" alt="" aria-hidden="true" /><span>fish<span>stop</span></span></div><nav aria-label="Primary navigation">${(Object.keys(labels) as Section[]).map((key) => `<button class="nav-item ${section === key ? "selected" : ""}" data-section="${key}" type="button" ${key === "inbox" && (!ACCOUNT_ACCESS_ENABLED || user.provider === "guest") ? "disabled" : ""}><span>${icons[key]}</span>${labels[key]}</button>`).join("")}</nav><div class="sidebar-bottom"><div class="account"><span class="avatar">${safePicture ? `<img src="${safePicture}" alt="" />` : initial}</span><div><strong>${safeName}</strong><small>${safeEmail}</small></div></div><button class="logout" id="logout" type="button">Sign out <span>↗</span></button></div></aside><main class="workspace"><header class="topbar"><div class="crumb"><span>FishStop</span><b>/</b><strong>${labels[section]}</strong></div><div class="top-status top-status-checking" data-protection-status role="status" aria-live="polite"><i aria-hidden="true"></i><span>Checking protection…</span></div></header><section class="content ${section === "dashboard" ? "dashboard-content" : ""}">${contentFor(section, user)}</section></main></div>`;
+  root.innerHTML = html`<div class="app-shell ${section === "dashboard" ? "dashboard-shell" : ""}"><aside class="sidebar"><div class="sidebar-brand"><img class="brand-mark" src="${fishstopMailCheckUrl}" alt="" aria-hidden="true" /><span>fish<span>stop</span></span></div><nav aria-label="Primary navigation">${(Object.keys(labels) as Section[]).map((key) => html`<button class="nav-item ${section === key ? "selected" : ""}" data-section="${key}" type="button" ${key === "inbox" && (!ACCOUNT_ACCESS_ENABLED || user.provider === "guest") ? "disabled" : ""}><span>${icons[key]}</span>${labels[key]}</button>`).join("")}</nav><div class="sidebar-bottom"><div class="account"><span class="avatar">${safePicture ? html`<img src="${safePicture}" alt="" />` : initial}</span><div><strong>${safeName}</strong><small>${safeEmail}</small></div></div><button class="logout" id="logout" type="button">Sign out <span>↗</span></button></div></aside><main class="workspace"><header class="topbar"><div class="crumb"><span>FishStop</span><b>/</b><strong>${labels[section]}</strong></div><div class="top-status top-status-checking" data-protection-status role="status" aria-live="polite"><i aria-hidden="true"></i><span>Checking protection…</span></div></header><section class="content ${section === "dashboard" ? "dashboard-content" : ""}">${contentFor(section, user)}</section></main></div>`;
   const active = currentAnalysis(user);
   const activeSource = active?.source || "file";
   if (((section === "analyse" && activeSource === "file") || (section === "inbox" && activeSource === "inbox")) && active?.status === "complete" && active.report) {
@@ -3164,10 +3168,10 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
     if (!record || !badge) return;
     const verdict = assessment(record.report);
     badge.className = `history-risk ${verdict.tone}`;
-    badge.textContent = verdict.tone === "danger" ? "RISK" : verdict.tone === "review" ? "REVIEW" : "TRUSTED";
+    badge.textContent = verdict.tone === "danger" ? t("RISK") : verdict.tone === "review" ? "REVIEW" : "TRUSTED";
   });
-  if (section === "history" && readAnalysisHistory(user).length) root.insertAdjacentHTML("beforeend", `<dialog class="confirm-dialog" id="clear-history-dialog" aria-labelledby="clear-history-title"><div class="dialog-mark">!</div><p class="page-kicker">IRREVERSIBLE ACTION</p><h2 id="clear-history-title">Clear history?</h2><p>This will delete every saved analysis for <strong>${safeEmail}</strong> on this device.</p><div class="dialog-actions"><button id="cancel-clear-history" type="button">Cancel</button><button id="confirm-clear-history" type="button">Clear history</button></div></dialog>`);
-  root.insertAdjacentHTML("beforeend", `<dialog class="confirm-dialog sign-out-dialog" id="sign-out-dialog" aria-labelledby="sign-out-title" aria-describedby="sign-out-description"><h2 id="sign-out-title">Sign out?</h2><p id="sign-out-description">Are you sure you want to sign out of FishStop?</p><div class="dialog-actions"><button id="cancel-sign-out" type="button" autofocus>Cancel</button><button id="confirm-sign-out" type="button">Sign out</button></div></dialog>`);
+  if (section === "history" && readAnalysisHistory(user).length) root.insertAdjacentHTML("beforeend", html`<dialog class="confirm-dialog" id="clear-history-dialog" aria-labelledby="clear-history-title"><div class="dialog-mark">!</div><p class="page-kicker">IRREVERSIBLE ACTION</p><h2 id="clear-history-title">Clear history?</h2><p>This will delete every saved analysis for <strong>${safeEmail}</strong> on this device.</p><div class="dialog-actions"><button id="cancel-clear-history" type="button">Cancel</button><button id="confirm-clear-history" type="button">Clear history</button></div></dialog>`);
+  root.insertAdjacentHTML("beforeend", html`<dialog class="confirm-dialog sign-out-dialog" id="sign-out-dialog" aria-labelledby="sign-out-title" aria-describedby="sign-out-description"><h2 id="sign-out-title">Sign out?</h2><p id="sign-out-description">Are you sure you want to sign out of FishStop?</p><div class="dialog-actions"><button id="cancel-sign-out" type="button" autofocus>Cancel</button><button id="confirm-sign-out" type="button">Sign out</button></div></dialog>`);
   animateSectionEntry(section);
   document.querySelectorAll<HTMLButtonElement>("[data-section]").forEach((button) => button.addEventListener("click", () => renderDashboard(user, button.dataset.section as Section)));
   document.querySelectorAll<HTMLButtonElement>("[data-go]").forEach((button) => button.addEventListener("click", () => renderDashboard(user, button.dataset.go as Section)));
@@ -3222,7 +3226,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
     const range = { from: from?.value || "", to: to?.value || "" };
     if (!range.from || !range.to) return;
     if (!statisticsDateBounds(range)) {
-      if (status) status.textContent = "The end date must be on or after the start date.";
+      if (status) status.textContent = t("The end date must be on or after the start date.");
       return;
     }
     try {
@@ -3231,7 +3235,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       renderDashboard(user, "statistics");
       document.getElementById(inputId)?.focus();
     } catch {
-      notify("Could not save the period. Please try again.", "error");
+      notify(t("Could not save the period. Please try again."), "error");
     }
   });
   document.querySelectorAll<HTMLButtonElement>("[data-open-history]").forEach((button) => button.addEventListener("click", () => {
@@ -3239,7 +3243,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
     if (!record) return;
     activeAnalysis = {
       userSub: user.sub,
-      fileName: record.report.subject || "Saved analysis",
+      fileName: record.report.subject || t("Saved analysis"),
       source: "file",
       status: "complete",
       report: record.report,
@@ -3264,10 +3268,10 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       analysisHistoryCache.set(user.sub, []);
       localStorage.removeItem(historyStorageKey(user));
       renderDashboard(user, "history");
-      notify("History cleared.");
+      notify(t("History cleared."));
     }).catch(() => {
       document.querySelector<HTMLDialogElement>("#clear-history-dialog")?.close();
-      notify("Could not clear history. Please try again.", "error");
+      notify(t("Could not clear history. Please try again."), "error");
     });
   });
   const signOutDialog = document.querySelector<HTMLDialogElement>("#sign-out-dialog");
@@ -3288,25 +3292,25 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
   });
   document.querySelector<HTMLInputElement>("#local-only-toggle")?.addEventListener("change", event => {
     try { localStorage.setItem(`fishstop:local-only:${user.sub}`, String((event.target as HTMLInputElement).checked)); }
-    catch { notify("Could not save Local only preference.", "error"); return; }
+    catch { notify(t("Could not save Local only preference."), "error"); return; }
     protectionStatusSnapshot = null;
     renderDashboard(user, "settings");
   });
   document.querySelectorAll<HTMLButtonElement>("[data-toggle-provider]").forEach(button => {
     button.addEventListener("click", () => {
-      if (localOnlyEnabled(user)) { notify("Turn off Local only to change individual services."); return; }
+      if (localOnlyEnabled(user)) { notify(t("Turn off Local only to change individual services.")); return; }
       const provider = button.dataset.toggleProvider!;
       const disabled = disabledReputationProviders(user);
       const next = disabled.includes(provider) ? disabled.filter(value => value !== provider) : [...disabled, provider];
       try { localStorage.setItem(`fishstop:disabled-providers:${user.sub}`, JSON.stringify(next)); localStorage.setItem(`fishstop:network-preferences-v2:${user.sub}`, "true"); }
-      catch { notify("Could not save the service preference. Please try again.", "error"); return; }
-      const name = provider === "virustotal" ? "VirusTotal" : provider === "abuseipdb" ? "AbuseIPDB" : provider === "otx" ? "OTX" : provider === "spamhaus" ? "Spamhaus" : "Geolocation";
-      notify(`${name} ${next.includes(provider) ? "disabled" : "enabled"}.`);
-      button.setAttribute("aria-pressed", String(!next.includes(provider)));
-      button.textContent = next.includes(provider) ? "—" : "✓";
+      catch { notify(t("Could not save the service preference. Please try again."), "error"); return; }
+      const name = provider === "virustotal" ? "VirusTotal" : provider === "abuseipdb" ? "AbuseIPDB" : provider === "otx" ? "OTX" : provider === "spamhaus" ? "Spamhaus" : t("Geolocation");
+      notify(next.includes(provider) ? t("{0} disabled.", [name]) : t("{0} enabled.", [name]));
       const row = button.closest("li")!;
+      row.querySelectorAll<HTMLButtonElement>("[data-toggle-provider]").forEach(control => control.setAttribute("aria-pressed", String(!next.includes(provider))));
+      row.querySelector<HTMLButtonElement>(".toggle-reputation-provider")!.textContent = next.includes(provider) ? "—" : "✓";
       row.classList.toggle("provider-disabled", next.includes(provider));
-      row.querySelector("b")!.textContent = next.includes(provider) ? "Disabled" : (["spamhaus", "geolocation"].includes(provider) || reputationKeys(user)[provider as keyof ReputationKeyStatus]) ? "Ready" : "Required";
+      row.querySelector(".provider-status")!.textContent = next.includes(provider) ? t("Disabled") : (["spamhaus", "geolocation"].includes(provider) || reputationKeys(user)[provider as keyof ReputationKeyStatus]) ? t("Ready") : t("Required");
       protectionStatusSnapshot = null;
       void refreshProtectionStatus(user, true);
     });
@@ -3318,7 +3322,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
     const actions = inlineCredentialForm.querySelector<HTMLElement>(":scope > div");
     actions?.classList.add("credential-edit-actions");
     if (actions && !actions.querySelector("#cancel-reputation-edit")) {
-      actions.querySelector<HTMLButtonElement>('button[type="submit"]')?.insertAdjacentHTML("afterend", '<button class="cancel-credentials" id="cancel-reputation-edit" type="button">Cancel</button>');
+      actions.querySelector<HTMLButtonElement>('button[type="submit"]')?.insertAdjacentHTML("afterend", localizeHtml("<button class=\"cancel-credentials\" id=\"cancel-reputation-edit\" type=\"button\">Cancel</button>"));
     }
   }
   const closeCredentialEditor = () => {
@@ -3351,14 +3355,14 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
     const abuseipdb = inlineValue("abuseipdb");
     const otx = inlineValue("otx");
     const status = document.querySelector<HTMLElement>("#settings-status");
-    if (status) status.textContent = "Saving in the system keychain…";
+    if (status) status.textContent = t("Saving in the system keychain…");
     void invoke("save_reputation_keys", { userSub: user.sub, virustotal, abuseipdb, otx }).then(async () => {
       if (status) status.textContent = "";
-      notify("API keys saved securely.");
+      notify(t("API keys saved securely."));
       closeCredentialEditor();
       await refreshReputationSettings(user, true);
       void refreshProtectionStatus(user, true);
-    }).catch((error) => { console.error("Could not save credentials", error); if (status) status.textContent = ""; notify("Could not save the API keys. Please try again.", "error"); });
+    }).catch((error) => { console.error("Could not save credentials", error); if (status) status.textContent = ""; notify(t("Could not save the API keys. Please try again."), "error"); });
   });
   document.querySelectorAll<HTMLButtonElement>(".remove-reputation-key").forEach((button) => {
     button.addEventListener("click", () => {
@@ -3367,10 +3371,10 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       const status = document.querySelector<HTMLElement>("#settings-status");
       button.disabled = true;
       button.setAttribute("aria-busy", "true");
-      if (status) status.textContent = "Removing the key from the system keychain…";
+      if (status) status.textContent = t("Removing the key from the system keychain…");
       void invoke("remove_reputation_key", { userSub: user.sub, provider }).then(async () => {
         if (status) status.textContent = "";
-        notify("API key removed.");
+        notify(t("API key removed."));
         button.removeAttribute("aria-busy");
         await refreshReputationSettings(user, true);
         void refreshProtectionStatus(user, true);
@@ -3380,37 +3384,37 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
         button.removeAttribute("aria-busy");
         button.innerHTML = credentialActionIcon("remove");
         if (status) status.textContent = "";
-        notify("Could not remove the API key. Please try again.", "error");
+        notify(t("Could not remove the API key. Please try again."), "error");
       });
     });
   });
   document.querySelector<HTMLInputElement>("#night-mode-enabled")?.addEventListener("change", (event) => {
     const control = event.currentTarget as HTMLInputElement;
     const saved = setTheme(control.checked ? "dark" : "light");
-    notify(saved ? `${control.checked ? "Night" : "Day"} mode saved.` : "Appearance updated, but the preference could not be saved.", saved ? "success" : "error");
+    notify(saved ? t("{0} mode saved.", [control.checked ? t("Night") : t("Day")]) : t("Appearance updated, but the preference could not be saved."), saved ? "success" : "error");
   });
   document.querySelector<HTMLInputElement>("#globe-autoplay-disabled")?.addEventListener("change", (event) => {
     const control = event.currentTarget as HTMLInputElement;
     try {
       localStorage.setItem(`fishstop:globe-autoplay-disabled:${user.sub}`, String(control.checked));
-      notify("Preference saved.");
+      notify(t("Preference saved."));
     } catch {
       control.checked = globeAutoplayDisabled(user);
-      notify("Could not save the preference. Please try again.", "error");
+      notify(t("Could not save the preference. Please try again."), "error");
     }
   });
   document.querySelector<HTMLInputElement>("#analysis-time-enabled")?.addEventListener("change", (event) => {
     const control = event.currentTarget as HTMLInputElement;
     try {
       localStorage.setItem(`fishstop:analysis-time-disabled:${user.sub}`, String(!control.checked));
-      notify("Preference saved.");
+      notify(t("Preference saved."));
     } catch {
       control.checked = analysisTimeVisible(user);
-      notify("Could not save the preference. Please try again.", "error");
+      notify(t("Could not save the preference. Please try again."), "error");
     }
   });
   const machineProfile = document.querySelector<HTMLElement>("#machine-profile");
-  if (machineProfile) machineProfile.innerHTML = `<fieldset class="ai-mode-picker"><legend>Analysis mode</legend><label><input type="radio" name="ai-mode" value="fast" disabled><span class="ai-mode-copy"><span class="ai-mode-title"><strong>Fast</strong><em>1.7B</em></span><small>Quicker checks, lower memory use.</small><span class="ai-mode-availability" data-mode-availability>Checking availability…</span></span></label><label><input type="radio" name="ai-mode" value="performance" disabled><span class="ai-mode-copy"><span class="ai-mode-title"><strong>Performance</strong><em>4B</em></span><small>Deeper analysis, more memory.</small><span class="ai-mode-availability" data-mode-availability>Checking availability…</span></span></label></fieldset><details class="settings-details settings-device-details"><summary>Device details</summary><dl><div><dt>System</dt><dd id="machine-system">Reading…</dd></div><div><dt>Processor</dt><dd id="machine-processor">Reading…</dd></div><div><dt>Memory</dt><dd id="machine-memory">Reading…</dd></div><div><dt>Execution</dt><dd id="machine-execution">Reading…</dd></div></dl></details><dl><div class="machine-model-row" id="machine-model-row"><dt>Selected model</dt><dd><div class="machine-model-heading"><div class="machine-model-identity"><strong id="machine-model-name">Checking…</strong><span class="model-status-badge" id="model-status-badge" hidden></span></div><button class="model-remove-action" id="remove-managed-qwen" type="button" aria-haspopup="dialog" aria-controls="remove-model-dialog" hidden>Remove</button><button class="model-download-action" id="install-managed-qwen" type="button" disabled>Checking…</button></div><small id="managed-model-status">Checking the bundled AI runtime…</small><div class="managed-model-progress" id="managed-model-progress" hidden><div><span id="managed-model-progress-label">Preparing download…</span><strong id="managed-model-progress-value">0%</strong></div><div class="managed-model-progress-track" id="managed-model-progress-track" role="progressbar" aria-label="AI model download progress" aria-valuemin="0" aria-valuemax="100"><i id="managed-model-progress-fill"></i></div></div></dd></div></dl><div class="execution-guidance" id="execution-guidance"><section class="cpu-optimization" id="cpu-optimization" hidden><div class="cpu-optimization-heading"><span class="cpu-optimization-mark" aria-hidden="true"><i></i><i></i><i></i></span><div><p class="page-kicker">CPU PERFORMANCE</p><h4>Optimize this computer</h4></div></div><p>Run a short local benchmark to save the fastest CPU settings. No data leaves this device.</p><div class="cpu-optimization-progress" id="cpu-optimization-progress" hidden><span id="cpu-optimization-progress-label">Preparing the local benchmark…</span><div role="progressbar" aria-label="CPU optimization progress" aria-valuemin="0" aria-valuemax="100" id="cpu-optimization-progress-track"><i id="cpu-optimization-progress-fill"></i></div></div><p class="cpu-optimization-result" id="cpu-optimization-result"></p><button class="soft-action" id="optimize-cpu-performance" type="button">Optimize CPU performance</button></section></div>`;
+  if (machineProfile) machineProfile.innerHTML = html`<fieldset class="ai-mode-picker"><legend>Analysis mode</legend><label><input type="radio" name="ai-mode" value="fast" disabled><span class="ai-mode-copy"><span class="ai-mode-title"><strong>Fast</strong><em>1.7B</em></span><small>Quicker checks, lower memory use.</small><span class="ai-mode-availability" data-mode-availability>Checking availability…</span></span></label><label><input type="radio" name="ai-mode" value="performance" disabled><span class="ai-mode-copy"><span class="ai-mode-title"><strong>Performance</strong><em>4B</em></span><small>Deeper analysis, more memory.</small><span class="ai-mode-availability" data-mode-availability>Checking availability…</span></span></label></fieldset><section class="settings-details settings-device-details" aria-label="Device details"><h3>Device details</h3><dl><div><dt>System</dt><dd id="machine-system">Reading…</dd></div><div><dt>Processor</dt><dd id="machine-processor">Reading…</dd></div><div><dt>Memory</dt><dd id="machine-memory">Reading…</dd></div><div><dt>Execution</dt><dd id="machine-execution">Reading…</dd></div></dl></section><dl><div class="machine-model-row" id="machine-model-row"><dt>Selected model</dt><dd><div class="machine-model-heading"><div class="machine-model-identity"><strong id="machine-model-name">Checking…</strong><span class="model-status-badge" id="model-status-badge" hidden></span></div><button class="model-remove-action" id="remove-managed-qwen" type="button" aria-haspopup="dialog" aria-controls="remove-model-dialog" hidden>Remove</button><button class="model-download-action" id="install-managed-qwen" type="button" disabled>Checking…</button></div><small id="managed-model-status">Checking the bundled AI runtime…</small><div class="managed-model-progress" id="managed-model-progress" hidden><div><span id="managed-model-progress-label">Preparing download…</span><strong id="managed-model-progress-value">0%</strong></div><div class="managed-model-progress-track" id="managed-model-progress-track" role="progressbar" aria-label="AI model download progress" aria-valuemin="0" aria-valuemax="100"><i id="managed-model-progress-fill"></i></div></div></dd></div></dl><div class="execution-guidance" id="execution-guidance"><section class="cpu-optimization" id="cpu-optimization" hidden><div class="cpu-optimization-heading"><span class="cpu-optimization-mark" aria-hidden="true"><i></i><i></i><i></i></span><div><p class="page-kicker">CPU PERFORMANCE</p><h4>Optimize this computer</h4></div></div><p>Run a short local benchmark to save the fastest CPU settings. No data leaves this device.</p><div class="cpu-optimization-progress" id="cpu-optimization-progress" hidden><span id="cpu-optimization-progress-label">Preparing the local benchmark…</span><div role="progressbar" aria-label="CPU optimization progress" aria-valuemin="0" aria-valuemax="100" id="cpu-optimization-progress-track"><i id="cpu-optimization-progress-fill"></i></div></div><p class="cpu-optimization-result" id="cpu-optimization-result"></p><button class="soft-action" id="optimize-cpu-performance" type="button">Optimize CPU performance</button></section></div>`;
   let aiModeChanging = false;
   const aiModeControls = [...document.querySelectorAll<HTMLInputElement>('input[name="ai-mode"]')];
   const machineSystem = document.querySelector<HTMLElement>("#machine-system");
@@ -3422,7 +3426,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
   const modelStatusBadge = document.querySelector<HTMLElement>("#model-status-badge");
   const executionGuidanceMessage = document.querySelector<HTMLElement>("#execution-guidance-message");
   const managedModelStatus = document.querySelector<HTMLElement>("#managed-model-status");
-  if (managedModelStatus) managedModelStatus.textContent = "Checking the local AI component…";
+  if (managedModelStatus) managedModelStatus.textContent = t("Checking the local AI component…");
   const installManagedQwen = document.querySelector<HTMLButtonElement>("#install-managed-qwen");
   const removeManagedQwen = document.querySelector<HTMLButtonElement>("#remove-managed-qwen");
   const fineTunedModelStatus = document.querySelector<HTMLElement>("#fine-tuned-model-status");
@@ -3445,12 +3449,12 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       : 0;
     aiModeControls.forEach(control => control.disabled = true);
     optimizeCpuPerformance.disabled = true;
-    optimizeCpuPerformance.textContent = "Optimizing CPU…";
+    optimizeCpuPerformance.textContent = t("Optimizing CPU…");
     cpuOptimizationProgress.hidden = false;
-    cpuOptimizationProgressLabel.textContent = cpuOptimizationOperation.status;
+    cpuOptimizationProgressLabel.textContent = engineText(cpuOptimizationOperation.status);
     cpuOptimizationProgressTrack.setAttribute("aria-valuenow", String(percent));
     cpuOptimizationProgressFill.style.width = `${percent}%`;
-    if (cpuOptimizationResult) cpuOptimizationResult.textContent = "Keep FishStop open while the short benchmark runs.";
+    if (cpuOptimizationResult) cpuOptimizationResult.textContent = t("Keep FishStop open while the short benchmark runs.");
     if (removeManagedQwen) removeManagedQwen.disabled = true;
   };
   const renderManagedOperation = (): boolean => {
@@ -3470,24 +3474,24 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
     const installing = managedModelOperation.phase === "installing";
     installManagedQwen.hidden = !installing;
     installManagedQwen.disabled = true;
-    installManagedQwen.textContent = "Installing AI model…";
+    installManagedQwen.textContent = t("Installing AI model…");
     removeManagedQwen.hidden = installing;
     removeManagedQwen.disabled = true;
-    removeManagedQwen.textContent = "Removing…";
-    managedModelStatus.textContent = managedModelOperation.status;
+    removeManagedQwen.textContent = t("Removing…");
+    managedModelStatus.textContent = engineText(managedModelOperation.status);
     machineModelRow?.classList.remove("is-missing", "is-ready");
     machineModelRow?.classList.add("is-busy");
     if (modelStatusBadge) {
       modelStatusBadge.hidden = false;
       modelStatusBadge.className = "model-status-badge busy";
-      modelStatusBadge.textContent = installing ? "Installing" : "Removing";
+      modelStatusBadge.textContent = installing ? t("Installing") : t("Removing");
     }
     if (managedProgress) managedProgress.hidden = !installing;
     if (installing && managedProgress && managedProgressLabel && managedProgressValue && managedProgressTrack && managedProgressFill) {
       const { completed, total } = managedModelOperation;
       const determinate = typeof completed === "number" && typeof total === "number" && total > 0;
       const percent = determinate ? Math.max(0, Math.min(100, Math.floor(completed / total * 100))) : 0;
-      managedProgressLabel.textContent = managedModelOperation.status || "Downloading AI model…";
+      managedProgressLabel.textContent = engineText(managedModelOperation.status || t("Downloading AI model…"));
       managedProgressValue.textContent = determinate ? `${percent}%` : "…";
       managedProgress.classList.toggle("is-indeterminate", !determinate);
       managedProgressFill.style.width = determinate ? `${percent}%` : "35%";
@@ -3505,27 +3509,27 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
         control.disabled = backgroundChecks.paused || aiModeChanging || !!managedModelOperation || !!cpuOptimizationOperation;
         const installed = control.value === "fast" ? runtime.fast_model_available ?? (fast && runtime.model_ready) : runtime.fine_tuned_available;
         const availability = control.closest("label")?.querySelector<HTMLElement>("[data-mode-availability]");
-        if (availability) { availability.textContent = installed ? "Installed" : "Download required"; availability.classList.toggle("is-installed", installed); }
+        if (availability) { availability.textContent = installed ? t("Installed") : t("Download required"); availability.classList.toggle("is-installed", installed); }
       }
-      const memory = runtime.memory_bytes ? `${(runtime.memory_bytes / 1024 ** 3).toFixed(1)} GB` : "Unavailable";
+      const memory = runtime.memory_bytes ? `${formatNumber(runtime.memory_bytes / 1024 ** 3, 1)} GB` : t("Unavailable");
       const usesMlx = /mlx/i.test(runtime.accelerator);
       const gpuAccelerated = runtime.loaded_on_gpu || usesMlx;
       const gpuAvailable = !runtime.cpu_only;
       if (machineSystem) machineSystem.textContent = `${runtime.platform} · ${runtime.architecture}`;
       if (machineProcessor) machineProcessor.textContent = runtime.cpu;
       if (machineMemory) machineMemory.textContent = memory;
-      if (machineExecution) machineExecution.textContent = runtime.accelerator + (runtime.loaded_on_gpu ? " · accelerated" : "");
+      if (machineExecution) machineExecution.textContent = runtime.accelerator + (runtime.loaded_on_gpu ? t(" · accelerated") : "");
       if (renderManagedOperation()) return;
       if (machineModelName) {
         machineModelName.textContent = `FishSTOP ${modeName}`;
         let version = machineModelName.parentElement?.querySelector<HTMLElement>(".model-finetune-version");
         if (!version && machineModelName.parentElement) { version = document.createElement("small"); version.className = "model-finetune-version"; machineModelName.parentElement.append(version); }
-        if (version) version.textContent = fast ? `Fine tune Lite ${runtime.model.match(/finetuned-lite-(v\d+)/i)?.[1] || "unknown"} · Experimental` : `Fine tune ${runtime.fine_tuned_version || "v5"}`;
+        if (version) version.textContent = fast ? t("Fine tune Lite {0} · Experimental", [runtime.model.match(/finetuned-lite-(v\d+)/i)?.[1] || "unknown"]) : t("Fine tune {0}", [runtime.fine_tuned_version || "v5"]);
         machineModelName.removeAttribute("title");
       }
       machineModelRow?.classList.remove("is-busy", "is-missing", "is-ready");
-      installManagedQwen.textContent = "Download";
-      removeManagedQwen.textContent = "Remove";
+      installManagedQwen.textContent = t("Download");
+      removeManagedQwen.textContent = t("Remove");
       removeManagedQwen.disabled = backgroundChecks.paused;
       if (runtime.model_ready) {
         machineModelRow?.classList.add("is-ready");
@@ -3534,7 +3538,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
           modelStatusBadge.textContent = "";
         }
         managedModelStatus.hidden = runtime.runtime_ready;
-        if (!runtime.runtime_ready) managedModelStatus.textContent = `${modeName} is saved on this computer, but its local runtime is unavailable. The model does not need to be downloaded again.`;
+        if (!runtime.runtime_ready) managedModelStatus.textContent = t("{0} is saved on this computer, but its local runtime is unavailable. The model does not need to be downloaded again.", [modeName]);
         installManagedQwen.hidden = true;
         removeManagedQwen.hidden = false;
       } else {
@@ -3543,14 +3547,14 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
         if (modelStatusBadge) {
           modelStatusBadge.hidden = false;
           modelStatusBadge.className = "model-status-badge missing";
-          modelStatusBadge.textContent = runtime.runtime_ready ? "Not installed" : "Runtime unavailable";
+          modelStatusBadge.textContent = runtime.runtime_ready ? t("Not installed") : t("Runtime unavailable");
         }
         managedModelStatus.textContent = !runtime.model_download_available
-          ? usesMlx ? "The fine-tuned MLX download is not available. Use the default FishSTOP AI backend."
-            : "FishSTOP AI v5 is not yet available for download in this version."
+          ? usesMlx ? t("The fine-tuned MLX download is not available. Use the default FishSTOP AI backend.")
+            : t("FishSTOP AI v5 is not yet available for download in this version.")
           : runtime.runtime_ready
             ? ""
-            : "The local AI component is unavailable.";
+            : t("The local AI component is unavailable.");
         installManagedQwen.hidden = false;
         installManagedQwen.disabled = backgroundChecks.paused || !runtime.runtime_ready || !runtime.model_download_available;
         removeManagedQwen.hidden = true;
@@ -3559,7 +3563,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
         const needsCpuOptimization = runtime.model_ready && runtime.cpu_only && !runtime.cpu_optimization;
         cpuOptimization.hidden = !needsCpuOptimization && !cpuOptimizationOperation;
         if (runtime.model_ready && runtime.cpu_only && runtime.cpu_optimization && executionGuidanceMessage) {
-          executionGuidanceMessage.textContent = "CPU analysis is optimized for this computer.";
+          executionGuidanceMessage.textContent = t("CPU analysis is optimized for this computer.");
         }
         if (cpuOptimizationOperation) {
           if (executionGuidanceMessage) executionGuidanceMessage.hidden = true;
@@ -3567,9 +3571,9 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
         } else if (needsCpuOptimization) {
           if (executionGuidanceMessage) executionGuidanceMessage.hidden = true;
           optimizeCpuPerformance.disabled = backgroundChecks.paused;
-          optimizeCpuPerformance.textContent = "Optimize CPU performance";
+          optimizeCpuPerformance.textContent = t("Optimize CPU performance");
           cpuOptimizationProgress.hidden = true;
-          cpuOptimizationResult.textContent = "No CPU benchmark has been saved yet.";
+          cpuOptimizationResult.textContent = t("No CPU benchmark has been saved yet.");
         }
       }
   };
@@ -3600,27 +3604,27 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       if (cached) {
         if (managedModelStatus) {
           managedModelStatus.hidden = false;
-          managedModelStatus.textContent = "Could not refresh AI status. Showing the last available information.";
+          managedModelStatus.textContent = t("Could not refresh AI status. Showing the last available information.");
         }
         return;
       }
       for (const field of [machineSystem, machineProcessor, machineMemory, machineExecution, machineModelName]) {
-        if (field) field.textContent = "Unavailable";
+        if (field) field.textContent = t("Unavailable");
       }
-      if (executionGuidanceMessage) executionGuidanceMessage.textContent = "Machine information is currently unavailable.";
-      if (managedModelStatus) managedModelStatus.textContent = "The local AI component is currently unavailable.";
+      if (executionGuidanceMessage) executionGuidanceMessage.textContent = t("Machine information is currently unavailable.");
+      if (managedModelStatus) managedModelStatus.textContent = t("The local AI component is currently unavailable.");
       machineModelRow?.classList.remove("is-busy", "is-ready");
       machineModelRow?.classList.add("is-missing");
       if (modelStatusBadge) {
         modelStatusBadge.hidden = false;
         modelStatusBadge.className = "model-status-badge missing";
-        modelStatusBadge.textContent = "Unavailable";
+        modelStatusBadge.textContent = t("Unavailable");
       }
-      if (installManagedQwen) { installManagedQwen.hidden = false; installManagedQwen.disabled = true; installManagedQwen.textContent = "Install unavailable"; }
+      if (installManagedQwen) { installManagedQwen.hidden = false; installManagedQwen.disabled = true; installManagedQwen.textContent = t("Install unavailable"); }
       if (removeManagedQwen) removeManagedQwen.hidden = true;
     }
   };
-  if (machineProfile) root.insertAdjacentHTML("beforeend", `<dialog class="confirm-dialog" id="download-mode-dialog" aria-labelledby="download-mode-title" aria-describedby="download-mode-description"><div class="dialog-mark">↓</div><p class="page-kicker">LOCAL AI MODEL</p><h2 id="download-mode-title">Download AI model</h2><p id="download-mode-description"></p><div class="dialog-actions"><button type="button" data-download-mode-later autofocus>Not now</button><button type="button" data-download-mode-confirm>Download model</button></div></dialog>`);
+  if (machineProfile) root.insertAdjacentHTML("beforeend", html`<dialog class="confirm-dialog" id="download-mode-dialog" aria-labelledby="download-mode-title" aria-describedby="download-mode-description"><div class="dialog-mark">↓</div><p class="page-kicker">LOCAL AI MODEL</p><h2 id="download-mode-title">Download AI model</h2><p id="download-mode-description"></p><div class="dialog-actions"><button type="button" data-download-mode-later autofocus>Not now</button><button type="button" data-download-mode-confirm>Download model</button></div></dialog>`);
   const downloadModeDialog = document.querySelector<HTMLDialogElement>("#download-mode-dialog");
   let previousInstalledMode: "fast" | "performance" | null = null;
   let downloadConfirmed = false;
@@ -3634,7 +3638,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       await invoke("set_ai_mode", { mode });
     } catch (error) {
       console.error("Could not restore installed mode", error);
-      notify("Could not restore the previous model. Please try again.", "error");
+      notify(t("Could not restore the previous model. Please try again."), "error");
     } finally {
       aiModeChanging = false;
       await refreshManagedModel(true);
@@ -3661,7 +3665,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       saved = true;
     } catch (error) {
       console.error("Could not save analysis mode", error);
-      notify("Could not save the analysis mode. Please try again.", "error");
+      notify(t("Could not save the analysis mode. Please try again."), "error");
     } finally {
       aiModeChanging = false;
       await refreshManagedModel(true);
@@ -3670,14 +3674,14 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
     if (!saved || !machineProfile?.isConnected) return;
     const runtime = runtimeStatusCache.peek();
     if (!runtime || (/1\.7b/i.test(runtime.model) ? "fast" : "performance") !== control.value) {
-      notify("Could not check model availability. Please try again.", "error");
+      notify(t("Could not check model availability. Please try again."), "error");
       return;
     }
-    if (runtime.model_ready) { notify("Analysis mode saved."); return; }
+    if (runtime.model_ready) { notify(t("Analysis mode saved.")); return; }
     if (!downloadModeDialog) return;
     const name = control.value === "fast" ? "Fast" : "Performance";
-    downloadModeDialog.querySelector("h2")!.textContent = `Download ${name}?`;
-    downloadModeDialog.querySelector("#download-mode-description")!.textContent = `${name} is not installed on this computer. Download the model to use this analysis mode. Your other installed model will be kept.`;
+    downloadModeDialog.querySelector("h2")!.textContent = t("Download {0}?", [name]);
+    downloadModeDialog.querySelector("#download-mode-description")!.textContent = t("{0} is not installed on this computer. Download the model to use this analysis mode. Your other installed model will be kept.", [name]);
     downloadModeDialog.querySelector<HTMLButtonElement>("[data-download-mode-confirm]")!.disabled = !!installManagedQwen?.disabled;
     previousInstalledMode = returnMode;
     downloadConfirmed = false;
@@ -3686,7 +3690,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
   });
   installManagedQwen?.addEventListener("click", async () => {
     if (aiModeChanging || backgroundChecks.paused || !managedModelStatus || !installManagedQwen || managedModelOperation || cpuOptimizationOperation) return;
-    managedModelOperation = { phase: "installing", status: "Preparing AI model download…" };
+    managedModelOperation = { phase: "installing", status: t("Preparing AI model download…") };
     renderManagedOperation();
     let unlisten: (() => void) | null = null;
     let installationError: unknown = null;
@@ -3705,10 +3709,10 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       renderManagedOperation();
       await refreshManagedModel(true);
     }
-    if (installationError) { console.error("AI model installation failed", installationError); notify("Could not install the AI model. Please try again.", "error"); }
-    else { notify("AI model installed."); void refreshProtectionStatus(user, true); }
+    if (installationError) { console.error("AI model installation failed", installationError); notify(t("Could not install the AI model. Please try again."), "error"); }
+    else { notify(t("AI model installed.")); void refreshProtectionStatus(user, true); }
   });
-  if (machineProfile) root.insertAdjacentHTML("beforeend", `<dialog class="confirm-dialog remove-model-dialog" id="remove-model-dialog" aria-labelledby="remove-model-title" aria-describedby="remove-model-description"><div class="dialog-mark">!</div><p class="page-kicker">LOCAL AI MODEL</p><h2 id="remove-model-title">Remove AI model?</h2><p id="remove-model-description">AI analysis in the selected mode will be unavailable until you reinstall this model or choose another installed mode. Technical checks will remain available.</p><div class="dialog-actions"><button id="cancel-remove-model" type="button" autofocus>Keep model</button><button id="confirm-remove-model" type="button">Remove</button></div></dialog>`);
+  if (machineProfile) root.insertAdjacentHTML("beforeend", html`<dialog class="confirm-dialog remove-model-dialog" id="remove-model-dialog" aria-labelledby="remove-model-title" aria-describedby="remove-model-description"><div class="dialog-mark">!</div><p class="page-kicker">LOCAL AI MODEL</p><h2 id="remove-model-title">Remove AI model?</h2><p id="remove-model-description">AI analysis in the selected mode will be unavailable until you reinstall this model or choose another installed mode. Technical checks will remain available.</p><div class="dialog-actions"><button id="cancel-remove-model" type="button" autofocus>Keep model</button><button id="confirm-remove-model" type="button">Remove</button></div></dialog>`);
   const removeModelDialog = document.querySelector<HTMLDialogElement>("#remove-model-dialog");
   removeManagedQwen?.addEventListener("click", () => {
     if (backgroundChecks.paused || managedModelOperation || cpuOptimizationOperation || !removeModelDialog || removeModelDialog.open) return;
@@ -3720,18 +3724,18 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
     if (!removeModelDialog?.open) return;
     removeModelDialog.close();
     if (backgroundChecks.paused || !managedModelStatus || managedModelOperation || cpuOptimizationOperation) return;
-    managedModelOperation = { phase: "removing", status: "Removing the AI model from this device…" };
+    managedModelOperation = { phase: "removing", status: t("Removing the AI model from this device…") };
     renderManagedOperation();
     let removalError: unknown = null;
     try { await invoke("remove_default_ollama_model"); }
     catch (error) { removalError = error; }
     finally { managedModelOperation = null; await refreshManagedModel(true); }
-    if (removalError) { console.error("AI model removal failed", removalError); notify("Could not remove the AI model. Please try again.", "error"); }
-    else { notify("AI model removed."); void refreshProtectionStatus(user, true); }
+    if (removalError) { console.error("AI model removal failed", removalError); notify(t("Could not remove the AI model. Please try again."), "error"); }
+    else { notify(t("AI model removed.")); void refreshProtectionStatus(user, true); }
   });
   optimizeCpuPerformance?.addEventListener("click", async () => {
     if (backgroundChecks.paused || managedModelOperation || cpuOptimizationOperation || !cpuOptimizationResult) return;
-    cpuOptimizationOperation = { status: "Preparing the short local benchmark…", candidate: 0, total: 1, threads: 0 };
+    cpuOptimizationOperation = { status: t("Preparing the short local benchmark…"), candidate: 0, total: 1, threads: 0 };
     renderCpuOptimizationOperation();
     let unlisten: (() => void) | null = null;
     let benchmarkError: unknown = null;
@@ -3749,8 +3753,8 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       cpuOptimizationOperation = null;
       await refreshManagedModel(true);
     }
-    if (benchmarkError) { console.error("CPU optimization failed", benchmarkError); notify("CPU optimization could not be completed. Please try again.", "error"); }
-    else if (result) notify("CPU optimization saved.");
+    if (benchmarkError) { console.error("CPU optimization failed", benchmarkError); notify(t("CPU optimization could not be completed. Please try again."), "error"); }
+    else if (result) notify(t("CPU optimization saved."));
   });
   refreshMachineSettings = machineProfile ? () => refreshManagedModel(true) : null;
   void refreshManagedModel();
@@ -3781,14 +3785,14 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       status: "processing",
       analysisId,
       completedChecks: [],
-      progressMessage: `Local analysis of ${fileName} in progress…`,
+      progressMessage: t("Local analysis of {0} in progress…", [fileName]),
       progressPercent: 0,
     };
     activeAnalysis = session;
     const startedAt = performance.now();
     const stateLabel = document.querySelector<HTMLElement>("#analysis-state-label");
     const title = document.querySelector<HTMLHeadingElement>("#analysis-title");
-    if (stateLabel) stateLabel.textContent = "CHECK IN PROGRESS";
+    if (stateLabel) stateLabel.textContent = t("CHECK IN PROGRESS");
     if (title) title.textContent = fileName;
     if (intake) intake.hidden = true;
     if (inboxIntake) inboxIntake.hidden = true;
@@ -3797,7 +3801,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
     if (cancelAnalysis) cancelAnalysis.hidden = false;
     const result = document.querySelector<HTMLDivElement>("#analysis-result");
     if (result) result.innerHTML = analysisLoadingMarkup(fileName, session.completedChecks);
-    uploadStatus.textContent = session.progressMessage || `Local analysis of ${fileName} in progress…`;
+    uploadStatus.textContent = session.progressMessage || t("Local analysis of {0} in progress…", [fileName]);
     dropZone?.setAttribute("disabled", "true");
     let heuristicTimer: number | undefined;
     let timingRuntime = ollamaRuntimeSnapshot;
@@ -3831,9 +3835,9 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
         session.progressMessage = message;
         if (analysisIsVisible(session)) {
           const status = document.querySelector<HTMLElement>("#upload-status");
-          if (status) status.textContent = message;
+          if (status) status.textContent = engineText(message);
           const copy = document.querySelector<HTMLElement>("#analysis-result .loading-copy");
-          if (copy) copy.textContent = message;
+          if (copy) copy.textContent = engineText(message);
         }
       }
       if (check === undefined || session.completedChecks?.includes(check)) return;
@@ -3852,7 +3856,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       paintHeuristicProgress();
       // Native events describe work in progress; only the returned report
       // can complete the final assessment, including with older sidecars.
-      queueProgress(event.payload.completed_check === undefined ? undefined : Math.min(2, event.payload.completed_check), event.payload.message);
+      queueProgress(event.payload.completed_check === undefined ? undefined : Math.min(2, event.payload.completed_check), event.payload.message ? engineText(event.payload.message) : undefined);
     }).catch(() => null);
     // Start model loading alongside MIME/reputation checks. Settle errors here
     // immediately; the AI command retains its normal availability/error path.
@@ -3865,7 +3869,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       session.report = report;
       progress.enter("loading", performance.now());
       paintHeuristicProgress();
-      queueProgress(0, "Message checks complete. Preparing local analysis…");
+      queueProgress(0, t("Message checks complete. Preparing local analysis…"));
       await modelPreparation;
       if (activeAnalysis !== session) return;
       await runAiAnalysis(user, report, null, document.createElement("div"), startedAt, analysisId, () => activeAnalysis === session, (engine) => {
@@ -3886,14 +3890,14 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       });
       if (heuristicTimer !== undefined) window.clearInterval(heuristicTimer);
       setAnalysisProgressVisual(session, 100);
-      updateAnalysisProgress(session, 3, "Analysis complete.");
+      updateAnalysisProgress(session, 3, t("Analysis complete."));
       const completionSplash = analysisIsVisible(session)
         ? document.querySelector<HTMLElement>("#analysis-result .analysis-loading") : null;
       if (completionSplash) {
         completionSplash.style.setProperty("--analysis-completion-duration", "300ms");
         completionSplash.classList.add("is-complete");
         const hint = completionSplash.querySelector<HTMLElement>(".loading-estimate");
-        if (hint) hint.textContent = "100% · Analysis complete";
+        if (hint) hint.textContent = t("100% · Analysis complete");
       }
       // Let the last 300ms fill transition finish, then show the full bar briefly.
       // This only presents an already finished result; it never gates on estimates.
@@ -3913,7 +3917,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       if (activeAnalysis === session) {
         console.error("Analysis failed", error);
         session.status = "error";
-        session.error = "The analysis could not be completed. Please try again.";
+        session.error = t("The analysis could not be completed. Please try again.");
         if (analysisIsVisible(session)) renderDashboard(user, analysisSection(session));
       }
     }
@@ -3945,9 +3949,9 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
     const stateLabel = document.querySelector<HTMLElement>("#analysis-state-label");
     const title = document.querySelector<HTMLHeadingElement>("#analysis-title");
     const result = document.querySelector<HTMLDivElement>("#analysis-result");
-    if (stateLabel) stateLabel.textContent = "READING EMAIL";
+    if (stateLabel) stateLabel.textContent = t("READING EMAIL");
     if (title) title.textContent = fileName;
-    uploadStatus.textContent = "Looking for forwarded messages and quoted replies…";
+    uploadStatus.textContent = t("Looking for forwarded messages and quoted replies…");
     if (result) result.innerHTML = conversationInspectionMarkup(fileName);
     dropZone?.setAttribute("disabled", "true");
     try {
@@ -3956,8 +3960,8 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
         await displayAnalysis(fileName, (analysisId) => analysisRequest(analysisId));
         return;
       }
-      if (stateLabel) stateLabel.textContent = "CONVERSATION SELECTION";
-      uploadStatus.textContent = "Choose which messages should receive a verdict and which should provide context.";
+      if (stateLabel) stateLabel.textContent = t("CONVERSATION SELECTION");
+      uploadStatus.textContent = t("Choose which messages should receive a verdict and which should provide context.");
       if (!result) return;
       result.innerHTML = conversationSelectorMarkup(fileName, manifest);
       const updateSelectionAppearance = () => {
@@ -3967,15 +3971,15 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
         });
         const selectedCount = targetButtons.filter((button) => button.getAttribute("aria-pressed") === "true").length;
         const count = result.querySelector<HTMLElement>("[data-selected-count]");
-        if (count) count.textContent = `${selectedCount} selected`;
+        if (count) count.textContent = t("{0} selected", [selectedCount]);
         const listCount = result.querySelector<HTMLElement>("[data-list-selected-count]");
-        if (listCount) listCount.textContent = `${selectedCount} of ${targetButtons.length} selected`;
+        if (listCount) listCount.textContent = t("{0} of {1} selected", [selectedCount, targetButtons.length]);
         const action = result.querySelector<HTMLButtonElement>("#start-conversation-analysis");
         if (action) action.disabled = selectedCount === 0;
         const toggleAll = result.querySelector<HTMLButtonElement>("#toggle-all-conversation");
         if (toggleAll) {
           const allSelected = targetButtons.length > 0 && selectedCount === targetButtons.length;
-          toggleAll.textContent = allSelected ? "Deselect all" : "Select all";
+          toggleAll.textContent = allSelected ? t("Deselect all") : t("Select all");
           toggleAll.setAttribute("aria-pressed", String(allSelected));
         }
         const selectedIds = new Set(
@@ -4019,7 +4023,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
         const selected = selection();
         const error = result.querySelector<HTMLElement>("#conversation-selection-error");
         if (!selected.target_ids.length) {
-          if (error) error.textContent = "Select at least one message to analyse.";
+          if (error) error.textContent = t("Select at least one message to analyse.");
           return;
         }
         void displayAnalysis(fileName, (analysisId) => analysisRequest(analysisId, selected));
@@ -4045,7 +4049,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       updateSelectionAppearance();
     } catch (error) {
       console.error("Conversation inspection failed", error);
-      uploadStatus.textContent = "The conversation could not be read. Please try again.";
+      uploadStatus.textContent = t("The conversation could not be read. Please try again.");
       if (result) result.innerHTML = "";
       if (intake) intake.hidden = false;
       if (inboxIntake) inboxIntake.hidden = false;
@@ -4056,7 +4060,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
   const displayFile = (path?: string) => {
     if (!path || !uploadStatus) return;
     const fileName = path.split(/[\\/]/).pop() || "email.eml";
-    if (!fileName.toLowerCase().endsWith(".eml")) { uploadStatus.textContent = "Select a file with the .eml extension."; return; }
+    if (!fileName.toLowerCase().endsWith(".eml")) { uploadStatus.textContent = t("Select a file with the .eml extension."); return; }
     void prepareConversationSelection(
       fileName,
       () => invoke<ConversationManifest>("inspect_eml", { path }),
@@ -4065,7 +4069,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
   };
   const displayBrowserFile = async (file?: File) => {
     if (!file || !uploadStatus) return;
-    if (!file.name.toLowerCase().endsWith(".eml")) { uploadStatus.textContent = "Select a file with the .eml extension."; return; }
+    if (!file.name.toLowerCase().endsWith(".eml")) { uploadStatus.textContent = t("Select a file with the .eml extension."); return; }
     const contents = Array.from(new Uint8Array(await file.arrayBuffer()));
     void prepareConversationSelection(
       file.name,
@@ -4075,11 +4079,11 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
   };
   const chooseEml = async () => {
     try {
-      const selected = await open({ multiple: false, directory: false, filters: [{ name: "Email message", extensions: ["eml"] }] });
+      const selected = await open({ multiple: false, directory: false, filters: [{ name: t("Email message"), extensions: ["eml"] }] });
       if (typeof selected === "string") displayFile(selected);
     } catch (error) {
       if (emlInput) emlInput.click();
-      else if (uploadStatus) { console.error("File selector failed", error); uploadStatus.textContent = "The file selector could not be opened. Please try again."; }
+      else if (uploadStatus) { console.error("File selector failed", error); uploadStatus.textContent = t("The file selector could not be opened. Please try again."); }
     }
   };
   inboxIntake?.addEventListener("click", async (event) => {
@@ -4089,7 +4093,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
     if (!await mailboxInboxAvailable(user)) return;
     if (button.id === "reconnect-mailbox") {
       button.disabled = true;
-      button.textContent = `Reconnecting ${mailboxProviderName(user)}…`;
+      button.textContent = t("Reconnecting {0}…", [mailboxProviderName(user)]);
       try {
         clearMailboxInboxCache(user);
         await invoke("disconnect_mailbox", { userSub: user.sub });
@@ -4100,26 +4104,26 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
         if (state) {
           state.className = "inbox-state inbox-connect-state";
           console.error("Mailbox reconnection failed", error);
-          state.innerHTML = `<div class="inbox-connect-copy inbox-error"><strong>Reconnection failed</strong><p>The mailbox could not be reconnected. Please try again.</p></div><button class="primary-action" id="reconnect-mailbox" type="button">Try again</button>`;
+          state.innerHTML = html`<div class="inbox-connect-copy inbox-error"><strong>Reconnection failed</strong><p>The mailbox could not be reconnected. Please try again.</p></div><button class="primary-action" id="reconnect-mailbox" type="button">Try again</button>`;
         }
       }
       return;
     }
     if (button.id === "connect-mailbox") {
       button.disabled = true;
-      button.textContent = `Connecting ${mailboxProviderName(user)}…`;
+      button.textContent = t("Connecting {0}…", [mailboxProviderName(user)]);
       try {
         await invoke("connect_mailbox", { userSub: user.sub, provider });
         clearMailboxInboxCache(user);
         await refreshMailboxPanel(user, true);
-        notify("Mailbox connected.");
+        notify(t("Mailbox connected."));
       } catch (error) {
-        notify("Could not connect the mailbox. Please try again.", "error");
+        notify(t("Could not connect the mailbox. Please try again."), "error");
         const state = document.querySelector<HTMLElement>("#inbox-state");
         if (state) {
           state.className = "inbox-state inbox-connect-state";
           console.error("Mailbox connection failed", error);
-          state.innerHTML = `<div class="inbox-connect-copy inbox-error"><strong>Connection failed</strong><p>The mailbox could not be connected. Please try again.</p></div><button class="primary-action" id="connect-mailbox" type="button">Try again</button>`;
+          state.innerHTML = html`<div class="inbox-connect-copy inbox-error"><strong>Connection failed</strong><p>The mailbox could not be connected. Please try again.</p></div><button class="primary-action" id="connect-mailbox" type="button">Try again</button>`;
         }
       }
       return;
@@ -4135,10 +4139,10 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
         clearMailboxInboxCache(user);
         await invoke("disconnect_mailbox", { userSub: user.sub });
         await refreshMailboxPanel(user);
-        notify("Mailbox disconnected.");
+        notify(t("Mailbox disconnected."));
       } catch (error) {
         console.error("Mailbox action failed", error);
-        notify("Could not disconnect the mailbox. Please try again.", "error");
+        notify(t("Could not disconnect the mailbox. Please try again."), "error");
       }
       return;
     }
@@ -4146,7 +4150,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       const messageId = button.dataset.messageId;
       if (!messageId) return;
       document.querySelectorAll<HTMLButtonElement>(".analyse-inbox-message").forEach((action) => { action.disabled = true; });
-      const subject = button.dataset.messageSubject || "Inbox message";
+      const subject = button.dataset.messageSubject || t("Inbox message");
       void prepareConversationSelection(
         subject,
         () => invoke<ConversationManifest>("inspect_mailbox_message", { userSub: user.sub, provider, messageId }),
@@ -4170,7 +4174,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
     const running = currentAnalysis(user);
     if (!running || running.status !== "processing" || !running.analysisId) return;
     cancelAnalysis.disabled = true;
-    cancelAnalysis.textContent = "Cancelling…";
+    cancelAnalysis.textContent = t("Cancelling…");
     activeAnalysis = null;
     void invoke("cancel_analysis", { analysisId: running.analysisId }).catch(() => undefined);
     renderDashboard(user, section === "inbox" ? "inbox" : "analyse");
@@ -4198,13 +4202,13 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
 }
 
 async function startWorkspace(user: AuthUser): Promise<void> {
-  root.innerHTML = `<section class="startup-screen" role="status" aria-live="polite" aria-label="Loading FishStop"><div class="startup-content"><img class="startup-logo" src="${fishstopMailCheckUrl}" alt="" /><h1>fish<span>stop</span></h1><p data-startup-message>Checking AI model</p><div class="startup-track" aria-hidden="true"><span></span></div><small data-startup-detail>Finding the right model for your computer.</small></div></section>`;
+  root.innerHTML = html`<section class="startup-screen" role="status" aria-live="polite" aria-label="Loading FishStop"><div class="startup-content"><img class="startup-logo" src="${fishstopMailCheckUrl}" alt="" /><h1>fish<span>stop</span></h1><p data-startup-message>Checking AI model</p><div class="startup-track" aria-hidden="true"><span></span></div><small data-startup-detail>Finding the right model for your computer.</small></div></section>`;
   const update = (message: string, detail: string, percentage?: number) => {
     const title = root.querySelector<HTMLElement>("[data-startup-message]");
     const note = root.querySelector<HTMLElement>("[data-startup-detail]");
     const track = root.querySelector<HTMLElement>(".startup-track");
     if (!title || !note || !track) return;
-    title.textContent = message;
+    title.textContent = engineText(message);
     note.textContent = `${percentage !== undefined ? `${percentage}% · ` : ""}${detail}`;
     track.classList.toggle("is-determinate", percentage !== undefined);
     track.style.setProperty("--startup-progress", `${percentage ?? 0}%`);
@@ -4220,7 +4224,7 @@ async function startWorkspace(user: AuthUser): Promise<void> {
           subscribe: callback => listen<OllamaModelProgress>("ollama-model-progress", event => callback(event.payload)),
           update,
         });
-        update("Loading your workspace", "Restoring your history and preferences.");
+        update(t("Loading your workspace"), t("Restoring your history and preferences."));
         await runtimeStatusCache.load(true);
       } catch (error) { modelError = error; }
     })()]);
@@ -4229,19 +4233,39 @@ async function startWorkspace(user: AuthUser): Promise<void> {
   protectionStatusSnapshot = null;
   if (modelError) {
     console.error("Startup AI setup failed", modelError);
-    update("Unable to set up AI", "Check your internet connection and try again, or open Settings to manage your model.");
+    update(t("Unable to set up AI"), t("Check your internet connection and try again, or open Settings to manage your model."));
     root.querySelector(".startup-track")?.remove();
-    root.querySelector(".startup-content")?.insertAdjacentHTML("beforeend", '<div class="startup-actions"><button type="button" data-startup-retry>Try again</button><button type="button" data-startup-settings>Open Settings</button></div>');
+    root.querySelector(".startup-content")?.insertAdjacentHTML("beforeend", localizeHtml("<div class=\"startup-actions\"><button type=\"button\" data-startup-retry>Try again</button><button type=\"button\" data-startup-settings>Open Settings</button></div>"));
     root.querySelector("[data-startup-retry]")?.addEventListener("click", () => { void startWorkspace(user); });
     root.querySelector("[data-startup-settings]")?.addEventListener("click", () => renderDashboard(user, "settings"));
     return;
   }
-  update("Checking protection", "Your workspace is almost ready.");
+  update(t("Checking protection"), t("Your workspace is almost ready."));
   protectionStatusSnapshot = await resolveProtectionStatus(user);
   if (storedUser()?.sub === user.sub) renderDashboard(user);
 }
 
 initializeTheme();
+initializeLanguage();
+document.addEventListener("click", event => {
+  const control = (event.target as HTMLElement | null)?.closest<HTMLButtonElement>("[data-language-toggle]");
+  if (!control || control.disabled) return;
+  if (!setLanguage(currentLanguage() === "it" ? "en" : "it")) notify(t("Language changed, but could not be saved on this device."), "error");
+});
+window.addEventListener("fishstop:language-change", () => {
+  const account = storedUser();
+  const section = document.querySelector<HTMLButtonElement>(".nav-item.selected")?.dataset.section as Section | undefined;
+  const expanded = [...root.querySelectorAll<HTMLDetailsElement>("details")].map(details => details.open);
+  const fields = [...root.querySelectorAll<HTMLInputElement>(".credential-inline-field input")].map(input => ({ name: input.name, value: input.value, editing: !!input.closest(".is-editing-key") }));
+  if (account && section) renderDashboard(account, section); else if (!account) renderLogin();
+  root.querySelectorAll<HTMLDetailsElement>("details").forEach((details, index) => { details.open = expanded[index] ?? false; });
+  for (const field of fields) {
+    const input = root.querySelector<HTMLInputElement>(`.credential-inline-field input[name="${field.name}"]`);
+    if (!input) continue;
+    if (field.editing) input.closest("li")?.querySelector<HTMLButtonElement>(".edit-reputation-key")?.click();
+    input.value = field.value;
+  }
+});
 const user = storedUser();
 if (user) void startWorkspace(user); else {
   void backgroundChecks.run(async () => { await runtimeStatusCache.load(); })

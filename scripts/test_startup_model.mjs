@@ -1,9 +1,10 @@
+import './i18n-test-runtime.mjs';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import ts from 'typescript';
 const compiled = ts.transpileModule(readFileSync(new URL('../src/startup-model.ts', import.meta.url), 'utf8'), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
 const exports = {};
-new Function('exports', compiled)(exports);
+new Function('exports', 'require', compiled)(exports, () => globalThis.__fishstopI18n);
 const { ensureStartupModel } = exports;
 for (const model of ['fishstop-fast:1.7b-finetuned-lite-v2-q4_k_m', 'fishstop-qwen3:4b-finetuned-v5-q4_K_M']) {
   const installed = { model, model_ready: true, model_download_available: true };

@@ -1,8 +1,8 @@
 {
-  "version": "Lite v1",
-  "model": "fishstop-fast:1.7b-finetuned-lite-v1-q4_k_m",
-  "file": "fishstop-fast-lite-v1-Q4_K_M.gguf",
+  "version": "Lite v2",
+  "model": "fishstop-fast:1.7b-finetuned-lite-v2-q4_k_m",
+  "file": "fishstop-fast-v2-Q4_K_M.gguf",
   "size_bytes": 1107409408,
-  "sha256": "3ac810cf75426c4d4cd890bf0dad2afb168bf30c0a4313917968b7d139273e7d",
-  "download_url": "https://huggingface.co/fishstop/fishstop-AI-lite/resolve/f735af0695536f7c0de87b26f427a4397e33256a/fishstop-fast-lite-v1-Q4_K_M.gguf"
+  "sha256": "bcf873c54fac325f5d431f73fa3e4a58d9ae432eb1d35b3ff3611ff24843dbca",
+  "download_url": "https://huggingface.co/fishstop/fishstop-AI-lite/resolve/ce0e1b4feabd50a3dcef1291eb7e3769956de420/fishstop-fast-v2-Q4_K_M.gguf"
 }

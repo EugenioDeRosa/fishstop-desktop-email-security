@@ -535,9 +535,9 @@ mod tests {
     fn fast_catalog_imports_the_fine_tune_with_non_thinking_template() {
         let fast = artifact_for_mode(&crate::ollama_runtime::AiMode::Fast);
         assert_eq!(fast.model, crate::ollama_runtime::FAST_MODEL);
-        assert_eq!(fast.version, "Lite v1");
+        assert_eq!(fast.version, "Lite v2");
         assert_eq!(fast.size_bytes, 1107409408);
-        assert!(fast.url().unwrap().path().contains("fishstop-AI-lite/resolve/f735af0695536f7c0de87b26f427a4397e33256a/"));
+        assert!(fast.url().unwrap().path().contains("fishstop-AI-lite/resolve/ce0e1b4feabd50a3dcef1291eb7e3769956de420/"));
         let body = create_body(&fast);
         assert_eq!(body["parameters"]["num_ctx"], 2304);
         assert!(body["template"].as_str().unwrap().contains("<think>\n\n</think>"));

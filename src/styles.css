@@ -546,4 +546,3 @@ html[data-theme="dark"] .statistics-custom-period input { color-scheme:dark; }
 /* Features retained for a future account-enabled release. */
 .provider:disabled, .nav-item:disabled { opacity: .45; cursor: not-allowed; }
 .provider:disabled:hover { transform: none; }
-.provider.guest { border-color: var(--accent, #33bb8a); }

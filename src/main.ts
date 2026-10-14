@@ -3489,7 +3489,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
         machineModelName.textContent = `FishSTOP ${modeName}`;
         let version = machineModelName.parentElement?.querySelector<HTMLElement>(".model-finetune-version");
         if (!version && machineModelName.parentElement) { version = document.createElement("small"); version.className = "model-finetune-version"; machineModelName.parentElement.append(version); }
-        if (version) version.textContent = fast ? "Fine tune Lite v1 · Experimental" : `Fine tune ${runtime.fine_tuned_version || "v5"}`;
+        if (version) version.textContent = fast ? `Fine tune Lite ${runtime.model.match(/finetuned-lite-(v\d+)/i)?.[1] || "unknown"} · Experimental` : `Fine tune ${runtime.fine_tuned_version || "v5"}`;
         machineModelName.removeAttribute("title");
       }
       machineModelRow?.classList.remove("is-busy", "is-missing", "is-ready");

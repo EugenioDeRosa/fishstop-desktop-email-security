@@ -11,9 +11,7 @@ const events = new Map();
 let unavailable = false;
 let metaColor;
 const control = { checked: false };
-const loginOptions = Object.fromEntries(['light', 'dark'].map(theme => [theme, {
-  pressed: undefined, setAttribute(_, value) { this.pressed = value; },
-}]));
+const loginSwitch = { checked: undefined, setAttribute(_, value) { this.checked = value; } };
 const storage = {
   getItem(key) { if (unavailable) throw new Error('Storage unavailable'); return values.get(key) ?? null; },
   setItem(key, value) { if (unavailable) throw new Error('Storage unavailable'); values.set(key, value); },
@@ -22,7 +20,7 @@ const exports = {};
 new Function('exports', 'document', 'localStorage', 'window', compiled)(exports, {
   documentElement: { dataset },
   querySelector: selector => selector === '#night-mode-enabled' ? control
-    : selector.startsWith('#login-theme-') ? loginOptions[selector.slice('#login-theme-'.length)]
+    : selector === '#login-theme-toggle' ? loginSwitch
     : ({ setAttribute: (_, value) => { metaColor = value; } }),
 }, storage, { addEventListener: (type, callback) => events.set(type, callback) });
 
@@ -31,8 +29,7 @@ assert.equal(exports.currentTheme(), 'light', 'Existing users keep the day appea
 assert.equal(exports.setTheme('dark'), true);
 assert.equal(dataset.theme, 'dark');
 assert.equal(control.checked, true);
-assert.equal(loginOptions.dark.pressed, 'true');
-assert.equal(loginOptions.light.pressed, 'false');
+assert.equal(loginSwitch.checked, 'true');
 assert.equal(metaColor, '#10191d');
 dataset.theme = 'light';
 exports.initializeTheme();
@@ -58,6 +55,5 @@ values.clear();
 events.get('storage')({ key: null });
 assert.equal(exports.currentTheme(), 'light');
 assert.equal(control.checked, false);
-assert.equal(loginOptions.light.pressed, 'true', 'Login appearance follows the shared saved preference');
-assert.equal(loginOptions.dark.pressed, 'false');
+assert.equal(loginSwitch.checked, 'false', 'Login appearance follows the shared saved preference');
 console.log('Theme checks passed: switching, persistence, recovery and cross-window updates.');

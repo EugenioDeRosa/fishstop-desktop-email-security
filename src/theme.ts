@@ -12,10 +12,8 @@ function applyTheme(theme: Theme): void {
     ?.setAttribute("content", theme === "dark" ? "#10191d" : "#071b1b");
   const control = document.querySelector<HTMLInputElement>("#night-mode-enabled");
   if (control) control.checked = theme === "dark";
-  for (const option of ["light", "dark"] as const) {
-    document.querySelector<HTMLButtonElement>(`#login-theme-${option}`)
-      ?.setAttribute("aria-pressed", String(theme === option));
-  }
+  document.querySelector<HTMLButtonElement>("#login-theme-toggle")
+    ?.setAttribute("aria-checked", String(theme === "dark"));
 }
 
 export function initializeTheme(): void {

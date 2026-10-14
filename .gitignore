@@ -55,3 +55,12 @@ data/raw/
 /scripts/remove_repetitions.py
 /scripts/revise_thesis_bibliography.py
 /scripts/update_manual_toc_pages.py
+
+# Avvisi delle dipendenze generati per ciascuna build
+/src-tauri/resources/legal/python/
+/src-tauri/resources/legal/python-inventory-*.json
+/src-tauri/resources/legal/SOURCE.txt
+/src-tauri/resources/legal/frontend/
+/src-tauri/resources/legal/rust/
+/src-tauri/resources/legal/frontend-inventory-*.json
+/src-tauri/resources/legal/rust-inventory-*.json

@@ -304,3 +304,21 @@ La prima versione con questa funzione richiede un’installazione manuale. Per o
 Prima della prossima pubblicazione, aggiungere in **GitHub → Settings → Secrets and variables → Actions** il secret **TAURI_SIGNING_PRIVATE_KEY**, contenente la chiave privata generata localmente. Il file è conservato fuori dal repository in `%USERPROFILE%\.codex\fishstop-signing\fishstop-updater.key`. La chiave è senza password; `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` può restare assente. Conservare un backup sicuro della chiave: è necessaria per firmare le release future destinate agli utenti già installati. Non inserirla nel codice o nei log. La chiave pubblica corrispondente è già configurata nell’app.
 
 Il workflow genera i pacchetti firmati e `latest.json`, verificando la presenza di Windows, Mac Intel e Mac Apple Silicon prima di rendere pubblica la release. In mancanza della chiave privata la build di distribuzione non può completarsi. Questa firma è distinta dai certificati Windows/Apple.
+
+## Licenza e codice sorgente
+
+Copyright (C) 2026 Eugenio De Rosa. Il codice originale di questo repository è
+distribuito sotto **GPL-3.0-or-later**: puoi usarlo, modificarlo e ridistribuirlo,
+anche commercialmente, rispettando la [licenza](LICENSE). Le versioni derivate
+coperte dalla GPL che distribuisci devono mantenere le stesse libertà e rendere
+disponibile ai destinatari il sorgente corrispondente. Non viene fornita alcuna
+garanzia, nei limiti consentiti dalla legge.
+
+Le dipendenze e gli asset di terze parti mantengono le proprie licenze.
+Nome e logo non concedono diritti sui marchi o il permesso di presentare un fork
+come release ufficiale. Le condizioni delle API esterne restano indipendenti
+dalla licenza del software; una chiave personale non autorizza ogni tipo di uso.
+
+Sorgenti desktop: https://github.com/EugenioDeRosa/fishstop-desktop-email-security
+
+Distribuzione e sorgenti delle release: [docs/distribution-licensing.md](docs/distribution-licensing.md).

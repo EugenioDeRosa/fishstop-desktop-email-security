@@ -4,6 +4,7 @@ version = "1.2.0"
 description = "Analizzatore desktop di email sospette"
 authors = ["FishStop"]
 edition = "2021"
+license = "GPL-3.0-or-later"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

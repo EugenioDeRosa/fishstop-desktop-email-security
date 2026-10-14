@@ -130,6 +130,24 @@ jobs:
         env:
           FISHSTOP_GOOGLE_CLIENT_SECRET: ${{ secrets.FISHSTOP_GOOGLE_CLIENT_SECRET }}
         run: python -c "from pathlib import Path; import os; secret=os.environ.get('FISHSTOP_GOOGLE_CLIENT_SECRET', '').strip(); assert secret, 'Missing required FISHSTOP_GOOGLE_CLIENT_SECRET repository secret'; Path('src-tauri/resources/google-oauth-client-secret').write_text(secret, encoding='utf-8')"
+      - name: Prepare bundled licenses and matching sources
+        env:
+          FISHSTOP_TARGET_TRIPLE: ${{ matrix.target }}
+          FISHSTOP_COLLECT_RUST_NOTICES: '1'
+        run: python scripts/prepare_release_legal.py
+      - name: Publish platform license notices
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.prepare-release.outputs.release_tag }}
+        shell: bash
+        run: gh release upload "${RELEASE_TAG}" "build/fishstop-notices-${{ matrix.target }}.zip" --clobber
+      - name: Publish matching project sources
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.prepare-release.outputs.release_tag }}
+        shell: bash
+        run: gh release upload "${RELEASE_TAG}" build/fishstop-source.zip --clobber
       - uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -156,6 +174,8 @@ jobs:
           RELEASE_TAG: ${{ needs.prepare-release.outputs.release_tag }}
         run: |
           gh release download "${RELEASE_TAG}" --pattern latest.json
+          gh release download "${RELEASE_TAG}" --pattern fishstop-source.zip
+          gh release download "${RELEASE_TAG}" --pattern 'fishstop-notices-*.zip'
           node -e 'const m=require("./latest.json"); for(const p of ["windows-x86_64","darwin-x86_64","darwin-aarch64"]) { if(!m.platforms[p]?.signature || !m.platforms[p]?.url) throw new Error("Missing signed update: "+p); }'
       - name: Publish this build as the latest release
         env:
@@ -167,19 +187,6 @@ jobs:
             --repo "${GH_REPO}" \
             --target "${GITHUB_SHA}" \
             --title "FishSTOP ${{ needs.prepare-release.outputs.release_version }}" \
-            --notes "Build automatica del commit ${GITHUB_SHA}. Scarica l'installer adatto al tuo sistema operativo." \
+            --notes "FishStop GPL-3.0-or-later. Build del commit ${GITHUB_SHA}. Sorgenti del progetto: fishstop-source.zip, allegato a questa release. Licenze e inventari: fishstop-notices-*.zip. Consulta docs/distribution-licensing.md per la distribuzione e i componenti di terze parti." \
             --draft=false \
             --latest
-      - name: Remove superseded rolling releases
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ needs.prepare-release.outputs.release_tag }}
-        run: |
-          gh release list --repo "${GH_REPO}" --limit 100 --json tagName \
-            --jq '.[].tagName | select(startswith("continuous-"))' |
-          while read -r old_tag; do
-            if test -n "${old_tag}" && test "${old_tag}" != "${RELEASE_TAG}"; then
-              gh release delete "${old_tag}" --repo "${GH_REPO}" --cleanup-tag --yes
-            fi
-          done

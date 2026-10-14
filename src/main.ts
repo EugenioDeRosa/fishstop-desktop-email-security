@@ -1,6 +1,5 @@
 import { t, html, localizeHtml, locale, currentLanguage, initializeLanguage, setLanguage, engineText, withLanguage, formatNumber } from "./i18n";
 import { startAppUpdates } from "./app-updates";
-import gplLicenseText from "../LICENSE?raw";
 import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -3098,15 +3097,13 @@ function contentFor(section: Section, user: AuthUser): string {
           </section>
           <section class="settings-card settings-license" aria-labelledby="software-license-title">
             <div class="settings-about-heading">
-              <div><h2 id="software-license-title">About FishStop</h2><p>© 2026 Eugenio De Rosa · Free and open source</p></div>
+              <div class="settings-about-identity"><img src="${fishstopMailCheckUrl}" alt="" aria-hidden="true" /><div><h2 id="software-license-title">About FishStop</h2><p>© 2026 Eugenio De Rosa · Free and open source</p><span class="settings-license-badge">GPL-3.0-or-later</span></div></div>
               <nav class="settings-legal-links" aria-label="FishStop information">
                 <a class="settings-link-button" href="https://github.com/EugenioDeRosa/fishstop-desktop-email-security" target="_blank" rel="noopener noreferrer">Source code <span aria-hidden="true">↗</span></a>
                 <a class="settings-link-button" href="https://fishstop-eml.streamlit.app/?page=privacy&lang=${currentLanguage()}" target="_blank" rel="noopener noreferrer">Privacy <span aria-hidden="true">↗</span></a>
                 <a class="settings-link-button" href="https://fishstop-eml.streamlit.app/?page=terms&lang=${currentLanguage()}" target="_blank" rel="noopener noreferrer">Terms & license <span aria-hidden="true">↗</span></a>
               </nav>
             </div>
-            <details class="settings-details"><summary>GPLv3 license · Available offline</summary><p>You may modify and redistribute FishStop under GPL-3.0-or-later. No warranty, to the extent permitted by law.</p><pre class="settings-license-text">${escapeHtml(gplLicenseText)}</pre></details>
-            <details class="settings-details"><summary>External service conditions</summary><p>Your API keys do not override provider terms. VirusTotal Public excludes commercial products/services and business workflows without file contributions. Free OTX and public Spamhaus have non-commercial conditions. AbuseIPDB and ipwho.is apply their own plan and data-reuse limits.</p><p>Services receive selected indicators, never the full email or attachments. Indicators may contain personal identifiers. See the website for privacy and service information.</p></details>
           </section>
       </div>`;
   }

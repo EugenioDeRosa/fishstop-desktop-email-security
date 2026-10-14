@@ -667,8 +667,9 @@ html[data-theme="dark"] .statistics-custom-period input { color-scheme:dark; }
 .settings-grid .settings-app-updates { grid-area: updates; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px 24px; }
 .settings-grid .settings-app-updates .settings-updates-row { flex: 1; }
 .settings-grid .settings-license { grid-area: about; }
-.settings-grid .settings-preference-list { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
-.settings-grid .settings-preference-list > label { height: 100%; box-sizing: border-box; }
+.settings-grid .settings-preference-list { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.settings-grid .settings-preference-list > .fine-tuned-model-toggle { height: 100%; box-sizing: border-box; }
+.settings-language-control > span { flex: 1; min-width: 0; }
 .settings-grid .credential-list li,
 .settings-grid .settings-reputation.is-editing-credentials .credential-list li { grid-template-columns: 24px minmax(0, 1fr) 78px; }
 .settings-grid .credential-list .credential-row-actions button { display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px; padding: 7px; border-radius: 7px; }

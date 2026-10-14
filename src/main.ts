@@ -3066,6 +3066,10 @@ function contentFor(section: Section, user: AuthUser): string {
                 <span><strong>Night mode</strong><small id="night-mode-note">Use a darker interface.</small></span>
                 <input id="night-mode-enabled" type="checkbox" role="switch" aria-label="Night mode" aria-describedby="night-mode-note" ${currentTheme() === "dark" ? "checked" : ""} /><i aria-hidden="true"></i>
               </label>
+              <div class="fine-tuned-model-toggle settings-language-control">
+                <span><strong>Language</strong><small>English · Italian will be available later.</small></span>
+                <button class="login-switch login-language-switch" type="button" role="switch" aria-label="Italian language" aria-checked="false" disabled title="English · Italian will be available later"><span class="login-language-option" aria-hidden="true">IT</span><span class="login-switch-thumb" aria-hidden="true">EN</span></button>
+              </div>
               <label class="fine-tuned-model-toggle">
                 <span><strong>Manual globe tour</strong><small>Start the route animation manually.</small></span>
                 <input id="globe-autoplay-disabled" type="checkbox" role="switch" ${globeAutoplayDisabled(user) ? "checked" : ""} /><i aria-hidden="true"></i>

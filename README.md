@@ -356,3 +356,16 @@ Per una futura build con account occorre riattivare il flag frontend
 `ACCOUNT_ACCESS_ENABLED`, la feature Rust `account-access`, la preparazione
 delle credenziali di build e completare le verifiche OAuth prima del rilascio.
 Il codice presente non rende queste funzionalità disponibili all’utente.
+
+## Trasparenza privacy e modello
+
+- [Mappa dei collegamenti esterni e dei dati trasmessi](docs/privacy-data-flows.md).
+- [Model card FishStop AI v5](docs/model-card-v5.md).
+- [Model card Fast Lite v2](docs/model-card-lite-v2.md), con i limiti della provenienza disponibile.
+- [Model card storica Fast Lite v1](docs/model-card-lite-v1.md).
+- [Provenienza, controlli e diritti dei dati di training](docs/training-data-rights.md).
+
+La model card documenta il modello v5 distribuito, senza estendere le conclusioni
+ai modelli sperimentali. La generazione sintetica con ChatGPT è dichiarata;
+restano da verificare le condizioni applicabili e l'assenza di dati memorizzati
+nei pesi. Dataset e report completi restano privati.

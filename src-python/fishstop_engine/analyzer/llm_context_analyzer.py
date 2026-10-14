@@ -1386,7 +1386,7 @@ def _identity_analysis_from_semantic(soc: dict, semantic: dict, *, local_fallbac
 
     from fishstop_engine.brand_intelligence import assess_brand_coherence
     from fishstop_engine.impersonation import assess_impersonation
-    coherence = assess_brand_coherence(soc, entities) if entities else []
+    coherence = assess_brand_coherence(soc, entities) if entities and not soc.get("local_only") else []
     impersonation = assess_impersonation(soc, entities, normalize_semantic_extraction(semantic, soc=soc), coherence)
     soc["impersonation"] = impersonation
     return {

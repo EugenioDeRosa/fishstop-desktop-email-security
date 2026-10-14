@@ -113,6 +113,10 @@ def inspect(path_value: str) -> dict[str, Any]:
 def analyze(path_value: str) -> dict[str, Any]:
     path = _validated_eml_path(path_value)
 
+    local_only = "local_only" in os.getenv("FISHSTOP_DISABLED_PROVIDERS", "spamhaus,geolocation").split(",")
+    if local_only:
+        from fishstop_engine.network_policy import install_local_only_guard
+        install_local_only_guard()
     raw = path.read_bytes()
     conversation_manifest = inspect_conversation_bytes(raw)
     selection_value = os.getenv("FISHSTOP_CONVERSATION_SELECTION", "").strip()
@@ -150,16 +154,17 @@ def analyze(path_value: str) -> dict[str, Any]:
             "message": conversation_manifest["technical_scope_message"],
         })
     from fishstop_engine.domain_identity import verify_message_domain
-    report["domain_authentication"] = verify_message_domain(raw, report)
+    report["local_only"] = local_only
+    report["domain_authentication"] = {"status": "disabled", "message": "Independent DNS/DKIM checks disabled by Local only"} if local_only else verify_message_domain(raw, report)
     report["eml_sha256"] = hashlib.sha256(raw).hexdigest()
-    disabled_providers = set(os.getenv("FISHSTOP_DISABLED_PROVIDERS", "").split(","))
+    disabled_providers = set(os.getenv("FISHSTOP_DISABLED_PROVIDERS", "spamhaus,geolocation").split(","))
     enrich_reputation(
         report,
         os.getenv("VIRUSTOTAL_API_KEY", ""),
         os.getenv("ABUSEIPDB_API_KEY", ""),
         disabled_providers=disabled_providers,
     )
-    if "otx" not in disabled_providers:
+    if "otx" not in disabled_providers and "local_only" not in disabled_providers:
         apply_on_demand_otx_intelligence(report, os.getenv("OTX_API_KEY", ""))
     else:
         report["otx_intelligence"] = {"status": "disabled", "message": "Disabled in Settings", "matches": []}
@@ -171,6 +176,9 @@ def analyze_phi4(report_path: str) -> dict[str, Any]:
     from fishstop_engine.analyzer.llm_context_analyzer import stream_phi4_email_analysis
 
     report = json.loads(Path(report_path).read_text(encoding="utf-8"))
+    if report.get("local_only"):
+        from fishstop_engine.network_policy import install_local_only_guard
+        install_local_only_guard()
     last_event: dict[str, Any] = {}
     for event in stream_phi4_email_analysis(report):
         last_event = event

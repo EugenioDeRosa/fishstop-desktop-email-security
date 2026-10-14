@@ -57,7 +57,7 @@ class SpamhausReputationTests(unittest.TestCase):
         check_ip.return_value = {"ip": "8.8.8.8", "status": "skipped"}
         check_spamhaus_mock.return_value = {"ip": "8.8.8.8", "status": "clean", "provider": "spamhaus"}
 
-        result = check_hop_ip("", "8.8.8.8")
+        result = check_hop_ip("", "8.8.8.8", spamhaus_enabled=True)
 
         self.assertEqual("clean", result["spamhaus"]["status"])
         check_spamhaus_mock.assert_called_once_with("8.8.8.8")

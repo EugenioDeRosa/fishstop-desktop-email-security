@@ -20,7 +20,7 @@ class DisabledReputationTests(unittest.TestCase):
              patch.object(reputation, "check_spamhaus") as fallback, \
              patch.object(reputation, "geolocate", return_value={}), \
              patch.object(reputation, "check_rdap_domain", return_value={}):
-            reputation.enrich(report, "stored-vt", "stored-abuse", disabled_providers={"virustotal", "abuseipdb"})
+            reputation.enrich(report, "stored-vt", "stored-abuse", disabled_providers={"virustotal", "abuseipdb", "spamhaus", "geolocation"})
             for service in [url, file, domain, ip, fallback]:
                 service.assert_not_called()
         self.assertEqual(report["link_reputation"]["https://example.test"]["status"], "disabled")
@@ -32,7 +32,7 @@ class DisabledReputationTests(unittest.TestCase):
         with patch.object(reputation, "check_hop_ip", return_value={"status": "ok"}) as ip, \
              patch.object(reputation, "geolocate", return_value={}):
             reputation.enrich(report, "", "key", disabled_providers={"virustotal"})
-            ip.assert_called_once_with("key", "8.8.8.8")
+            ip.assert_called_once_with("key", "8.8.8.8", spamhaus_enabled=True)
 
     def test_disabled_otx_is_not_invoked(self):
         # Exercise the entry point's actual enrichment block with network mocks.

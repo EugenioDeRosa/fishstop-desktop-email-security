@@ -11,7 +11,7 @@ Versione attuale: **1.2.0**.
 - Ispezione sicura di HTML e allegati, senza eseguire script, form o contenuti remoti. La preview conserva colori, sfondi, tabelle e formattazione di base; immagini e link restano inattivi.
 - Analisi locale dell'identità dichiarata e dell'intento del messaggio tramite un modello Qwen gestito automaticamente da FishStop.
 - Riconoscimento delle conversazioni incorporate nelle email inoltrate o nelle risposte: prima dell'analisi è possibile scegliere quali messaggi valutare e quali includere soltanto come contesto.
-- Controlli di reputazione con VirusTotal, AbuseIPDB e AlienVault OTX, con Spamhaus ZEN come fallback per gli IP quando AbuseIPDB non è configurato. Ai servizi esterni vengono inviati esclusivamente indicatori tecnici compatibili con ciascun servizio, mai il file `.eml` o il testo dell'email.
+- Controlli di reputazione con VirusTotal, AbuseIPDB e AlienVault OTX, con Spamhaus ZEN facoltativo per gli IP, disattivato per default. Ai servizi esterni vengono inviati esclusivamente indicatori tecnici compatibili con ciascun servizio, mai il file `.eml` o il testo dell'email.
 - Importazione di un file `.eml` tramite selezione o trascinamento, fino a 40 MB.
 - Collegamento facoltativo e in sola lettura della casella Gmail o Outlook associata all'accesso. FishStop mostra gli ultimi 10 messaggi e scarica il MIME/EML completo solo quando si avvia l'analisi.
 - Cronologia locale, statistiche per periodo, report tecnico consultabile ed esportazione JSON.
@@ -158,6 +158,24 @@ Poi:
 3. Incolla la chiave nel campo del servizio selezionato.
 4. Seleziona **Save changes** e ripeti per gli altri servizi.
 5. Controlla che ogni servizio mostri lo stato **Ready** e che l'indicatore superiore mostri **Protection active**.
+
+Spamhaus ZEN e IP geolocation (ipwho.is) sono disattivati per default e attivabili
+separatamente in Settings → Reputation. Spamhaus è indipendente da AbuseIPDB.
+**Local only** conserva le preferenze ma disattiva tutte le interrogazioni esterne
+durante l’analisi, incluse DNS/DKIM indipendente, RDAP e brand intelligence online.
+L’AI locale resta utilizzabile; login, download casella, modello e aggiornamenti
+rimangono azioni online separate. I controlli omessi non sono risultati puliti.
+
+VirusTotal usa un limite conservativo condiviso tra analisi: 4 richieste/minuto e
+500 in 24 ore per chiave. Una cache locale riutilizza i risultati per un’ora;
+al raggiungimento del limite il controllo è indicato come non disponibile. Quote
+premium superiori non sono ancora configurabili. Cache e contatori sono nel file
+`~/.fishstop/vt-cache.sqlite3`, separati per impronta della chiave; le chiavi e gli
+URL di interrogazione non sono memorizzati in chiaro, ma le risposte del servizio
+possono contenere metadati degli indicatori. Le righe scadute vengono rimosse
+all’uso successivo; per cancellare la cache elimina quel file con l’app chiusa.
+Il database è locale e non va condiviso. I termini dei fornitori continuano ad
+applicarsi, anche con chiavi personali o con la licenza GPL del software.
 
 Le chiavi vengono conservate nel portachiavi sicuro del sistema operativo e non sono salvate in chiaro nell'interfaccia. Se una chiave manca, FishStop continua a eseguire i controlli statici e l'AI locale, ma il relativo controllo di reputazione rimane non disponibile.
 

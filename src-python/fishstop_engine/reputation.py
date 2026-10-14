@@ -8,6 +8,7 @@ import re
 from urllib.parse import urlparse
 
 from fishstop_engine.domain_utils import registered_domain
+from fishstop_engine.vt_transport import get as vt_get
 
 try:
     import requests
@@ -61,7 +62,7 @@ def check_url(api_key: str, url: str) -> dict:
     if requests is None: return {**base, "message": "Reputation check unavailable: install requests."}
     identifier = base64.urlsafe_b64encode(url.encode()).decode().rstrip("=")
     try:
-        response = requests.get(f"{VT}/urls/{identifier}", headers={"x-apikey": api_key}, timeout=10)
+        response = vt_get(f"{VT}/urls/{identifier}", headers={"x-apikey": api_key}, timeout=10)
         if response.status_code == 404: return {**base, "status": "not_found", "message": "URL not found on VirusTotal"}
         if response.status_code == 401: return {**base, "status": "error", "message": "Invalid VirusTotal API key"}
         if response.status_code == 429: return {**base, "status": "error", "message": "VirusTotal rate limit exceeded"}
@@ -79,7 +80,7 @@ def check_file(api_key: str, sha256: str) -> dict:
     if not api_key: return {**base, "message": "VirusTotal is not configured: add the API key in Settings."}
     if requests is None: return {**base, "message": "Reputation check unavailable: install requests."}
     try:
-        response = requests.get(f"{VT}/files/{sha256}", headers={"x-apikey": api_key}, timeout=10)
+        response = vt_get(f"{VT}/files/{sha256}", headers={"x-apikey": api_key}, timeout=10)
         if response.status_code == 404: return {**base, "status": "not_found", "message": "Hash not found on VirusTotal"}
         if response.status_code == 401: return {**base, "status": "error", "message": "Invalid VirusTotal API key"}
         if response.status_code == 429: return {**base, "status": "error", "message": "VirusTotal rate limit exceeded"}
@@ -96,7 +97,7 @@ def check_vt_domain(api_key: str, domain: str) -> dict:
     if not api_key: return {**base, "message": "VirusTotal is not configured: add the API key in Settings."}
     if requests is None: return {**base, "message": "Reputation check unavailable: install requests."}
     try:
-        response = requests.get(f"{VT}/domains/{domain}", headers={"x-apikey": api_key}, timeout=10)
+        response = vt_get(f"{VT}/domains/{domain}", headers={"x-apikey": api_key}, timeout=10)
         if response.status_code == 404:
             parent = _parent_domain_for_reputation(domain)
             if parent != domain:
@@ -212,15 +213,15 @@ def check_spamhaus(ip: str) -> dict:
     }
 
 
-def check_hop_ip(api_key: str, ip: str) -> dict:
+def check_hop_ip(api_key: str, ip: str, *, spamhaus_enabled: bool = False) -> dict:
     """Use Spamhaus as the keyless fallback without changing AbuseIPDB's schema."""
     result = check_ip(api_key, ip)
-    if api_key:
+    if not spamhaus_enabled:
         spamhaus = {
             "ip": str(ip or "").strip().strip("[]"),
             "status": "skipped",
             "provider": "spamhaus",
-            "message": "Spamhaus fallback not needed because AbuseIPDB is configured.",
+            "message": "Spamhaus disabled in Settings.",
         }
     else:
         spamhaus = check_spamhaus(ip)
@@ -312,7 +313,9 @@ def geolocate(ip: str) -> dict:
 
 
 def enrich(report: dict, vt_key: str, abuse_key: str, *, disabled_providers: set[str] | None = None) -> dict:
-    disabled = disabled_providers or set()
+    disabled = set(disabled_providers if disabled_providers is not None else {"spamhaus", "geolocation"})
+    if "local_only" in disabled:
+        disabled.update({"virustotal", "abuseipdb", "otx", "spamhaus", "geolocation", "rdap"})
     skipped = {"status": "disabled", "message": "Disabled in Settings"}
     # Reputation services receive web indicators only. A mailto link is an
     # email address, not a URL destination, and must not be sent to VirusTotal.
@@ -342,11 +345,11 @@ def enrich(report: dict, vt_key: str, abuse_key: str, *, disabled_providers: set
     # to lower analysis latency without exhausting API quotas or the user's link.
     with ThreadPoolExecutor(max_workers=4, thread_name_prefix="fishstop-reputation") as executor:
         url_jobs = {url: executor.submit(lambda: dict(skipped)) if "virustotal" in disabled else executor.submit(check_url, vt_key, url) for url in urls}
-        hop_jobs = {ip: executor.submit(lambda: dict(skipped)) if "abuseipdb" in disabled else executor.submit(check_hop_ip, abuse_key, ip) for ip in ips}
-        geo_jobs = {ip: executor.submit(geolocate, ip) for ip in ips}
+        hop_jobs = {ip: executor.submit(lambda: dict(skipped)) if {"abuseipdb", "spamhaus"}.issubset(disabled) else executor.submit(check_hop_ip, "" if "abuseipdb" in disabled else abuse_key, ip, spamhaus_enabled="spamhaus" not in disabled) for ip in ips}
+        geo_jobs = {ip: executor.submit(lambda: dict(skipped)) if "geolocation" in disabled else executor.submit(geolocate, ip) for ip in ips}
         domain_jobs = {
             domain: executor.submit(
-                lambda value=domain: {"virustotal": dict(skipped) if "virustotal" in disabled else check_vt_domain(vt_key, value), "rdap": check_rdap_domain(value)}
+                lambda value=domain: {"virustotal": dict(skipped) if "virustotal" in disabled else check_vt_domain(vt_key, value), "rdap": dict(skipped) if "rdap" in disabled else check_rdap_domain(value)}
             )
             for domain in domains
         }

@@ -284,11 +284,22 @@ function legacyReputationKeys(user: AuthUser): { virustotal: string; abuseipdb: 
 // The settings shell is rendered before the asynchronous native-keychain lookup.
 // `refreshReputationSettings` fills in availability without exposing secret values.
 function reputationKeys(user: AuthUser): ReputationKeyStatus { return reputationStatusCache(user).peek() ?? { virustotal: false, abuseipdb: false, otx: false }; }
+function localOnlyEnabled(user: AuthUser): boolean {
+  return localStorage.getItem(`fishstop:local-only:${user.sub}`) === "true";
+}
 function disabledReputationProviders(user: AuthUser): string[] {
+  const defaults = ["spamhaus", "geolocation"];
+  const allowed = ["virustotal", "abuseipdb", "otx", "spamhaus", "geolocation", "local_only"];
+  if (localOnlyEnabled(user)) return allowed;
   try {
-    const saved = JSON.parse(localStorage.getItem(`fishstop:disabled-providers:${user.sub}`) || "[]");
-    return Array.isArray(saved) ? saved.filter(provider => ["virustotal", "abuseipdb", "otx"].includes(provider)) : [];
-  } catch { return []; }
+    const value = localStorage.getItem(`fishstop:disabled-providers:${user.sub}`);
+    const saved = value ? JSON.parse(value) : null;
+    if (!Array.isArray(saved)) return defaults;
+    const disabled = saved.filter(provider => allowed.includes(provider) && provider !== "local_only");
+    // Legacy settings did not contain the two opt-in services.
+    if (localStorage.getItem(`fishstop:network-preferences-v2:${user.sub}`) !== "true") return [...new Set([...disabled, ...defaults])];
+    return disabled;
+  } catch { return defaults; }
 }
 function maskedSecret(value: string): string {
   return value.length <= 8 ? "••••••••" : `${value.slice(0, 4)}••••••${value.slice(-4)}`;
@@ -375,7 +386,7 @@ async function resolveProtectionStatus(user: AuthUser, force = false): Promise<P
         : `${missingKeys.length} API keys to configure`;
       return { userSub: user.sub, tone: "warning", message };
     }
-    return { userSub: user.sub, tone: "ok", message: "Protection active" };
+    return { userSub: user.sub, tone: "ok", message: localOnlyEnabled(user) ? "Local only active" : "Protection active" };
   } catch {
     return { userSub: user.sub, tone: "error", message: "Local AI unavailable" };
   }
@@ -3012,6 +3023,9 @@ function contentFor(section: Section, user: AuthUser): string {
             <div class="settings-card-heading"><h2>Reputation</h2></div>
             <p class="settings-note">Add your API keys to check links, sender domains, IP addresses and attachments. Click the ✓ beside a service to disable it</p>
             <ul class="credential-list">${keyRow("virustotal", "VirusTotal API key", keys.virustotal)}${keyRow("abuseipdb", "AbuseIPDB API key", keys.abuseipdb)}${keyRow("otx", "AlienVault OTX API key", keys.otx)}</ul>
+            <p class="settings-note"><label><input id="local-only-toggle" type="checkbox" ${localOnlyEnabled(user) ? "checked" : ""} /> Local only</label> — During analysis, no indicators are sent externally; DNS, reputation, geolocation and online identity checks are disabled. Local AI remains available. Sign-in, mailbox downloads, model downloads and app updates are separate online actions.</p>
+            <ul class="credential-list">${(["spamhaus", "geolocation"] as const).map(provider => `<li data-reputation-provider="${provider}" class="${disabledReputationProviders(user).includes(provider) ? "provider-disabled" : "ready"}"><button class="toggle-reputation-provider" type="button" data-toggle-provider="${provider}" aria-pressed="${!disabledReputationProviders(user).includes(provider)}" ${localOnlyEnabled(user) ? "disabled" : ""}>${disabledReputationProviders(user).includes(provider) ? "—" : "✓"}</button><div><strong>${provider === "spamhaus" ? "Spamhaus ZEN" : "IP geolocation (ipwho.is)"}</strong><small>${provider === "spamhaus" ? "Public DNSBL: non-commercial fair use and a supported resolver required" : "Sends IP addresses to ipwho.is under its service terms"}</small></div><b>${disabledReputationProviders(user).includes(provider) ? "Disabled" : "Ready"}</b></li>`).join("")}</ul>
+            <p class="settings-note">Your keys do not override provider terms. VirusTotal Public: 4 requests/minute, 500/day; commercial products/services and business workflows without file contributions are excluded. Free OTX: non-commercial use. AbuseIPDB/ipwho.is: plan and data-reuse restrictions. Do not republish provider data as GPL data.</p>
             <form id="reputation-settings"><div class="credential-edit-actions"><button class="primary-action" type="submit">Save changes</button><button class="cancel-credentials" id="cancel-reputation-edit" type="button">Cancel</button></div><span id="settings-status" aria-live="polite"></span></form>
           </section>
           <section class="settings-card settings-preferences">
@@ -3230,20 +3244,27 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
     localStorage.removeItem(USER_STORAGE_KEY);
     renderLogin();
   });
+  document.querySelector<HTMLInputElement>("#local-only-toggle")?.addEventListener("change", event => {
+    try { localStorage.setItem(`fishstop:local-only:${user.sub}`, String((event.target as HTMLInputElement).checked)); }
+    catch { notify("Could not save Local only preference.", "error"); return; }
+    protectionStatusSnapshot = null;
+    renderDashboard(user, "settings");
+  });
   document.querySelectorAll<HTMLButtonElement>("[data-toggle-provider]").forEach(button => {
     button.addEventListener("click", () => {
+      if (localOnlyEnabled(user)) { notify("Turn off Local only to change individual services."); return; }
       const provider = button.dataset.toggleProvider!;
       const disabled = disabledReputationProviders(user);
       const next = disabled.includes(provider) ? disabled.filter(value => value !== provider) : [...disabled, provider];
-      try { localStorage.setItem(`fishstop:disabled-providers:${user.sub}`, JSON.stringify(next)); }
+      try { localStorage.setItem(`fishstop:disabled-providers:${user.sub}`, JSON.stringify(next)); localStorage.setItem(`fishstop:network-preferences-v2:${user.sub}`, "true"); }
       catch { notify("Could not save the service preference. Please try again.", "error"); return; }
-      const name = provider === "virustotal" ? "VirusTotal" : provider === "abuseipdb" ? "AbuseIPDB" : "OTX";
+      const name = provider === "virustotal" ? "VirusTotal" : provider === "abuseipdb" ? "AbuseIPDB" : provider === "otx" ? "OTX" : provider === "spamhaus" ? "Spamhaus" : "Geolocation";
       notify(`${name} ${next.includes(provider) ? "disabled" : "enabled"}.`);
       button.setAttribute("aria-pressed", String(!next.includes(provider)));
       button.textContent = next.includes(provider) ? "—" : "✓";
       const row = button.closest("li")!;
       row.classList.toggle("provider-disabled", next.includes(provider));
-      row.querySelector("b")!.textContent = next.includes(provider) ? "Disabled" : reputationKeys(user)[provider as keyof ReputationKeyStatus] ? "Ready" : "Required";
+      row.querySelector("b")!.textContent = next.includes(provider) ? "Disabled" : (["spamhaus", "geolocation"].includes(provider) || reputationKeys(user)[provider as keyof ReputationKeyStatus]) ? "Ready" : "Required";
       protectionStatusSnapshot = null;
       void refreshProtectionStatus(user, true);
     });

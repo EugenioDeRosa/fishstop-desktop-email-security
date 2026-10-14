@@ -1,4 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+const ACCOUNT_ACCESS_ENABLED: bool = cfg!(feature = "account-access");
 
 mod ollama_runtime;
 mod model_download;
@@ -769,6 +770,9 @@ fn google_sign_in() -> Result<AuthUser, String> {
 
 #[tauri::command]
 async fn sign_in_with_google(app: tauri::AppHandle) -> Result<AuthUser, String> {
+    if !ACCOUNT_ACCESS_ENABLED {
+        return Err("Account access and inbox analysis are coming soon.".to_string());
+    }
     let result = tauri::async_runtime::spawn_blocking(google_sign_in)
         .await
         .map_err(|error| format!("Google sign-in interrupted: {error}"))?;
@@ -877,6 +881,9 @@ fn microsoft_sign_in() -> Result<AuthUser, String> {
 
 #[tauri::command]
 async fn sign_in_with_microsoft(app: tauri::AppHandle) -> Result<AuthUser, String> {
+    if !ACCOUNT_ACCESS_ENABLED {
+        return Err("Account access and inbox analysis are coming soon.".to_string());
+    }
     let result = tauri::async_runtime::spawn_blocking(microsoft_sign_in)
         .await
         .map_err(|error| format!("Microsoft sign-in interrupted: {error}"))?;
@@ -1084,6 +1091,9 @@ async fn connect_mailbox(
     provider: String,
     cache: tauri::State<'_, Arc<Mutex<ReputationCredentialCache>>>,
 ) -> Result<MailboxStatus, String> {
+    if !ACCOUNT_ACCESS_ENABLED {
+        return Err("Account access and inbox analysis are coming soon.".to_string());
+    }
     let cache = Arc::clone(&cache);
     tauri::async_runtime::spawn_blocking(move || match provider.as_str() {
         "google" => connect_google_mailbox(&user_sub, &cache),
@@ -1407,6 +1417,9 @@ async fn list_recent_mailbox_messages(
     limit: usize,
     cache: tauri::State<'_, Arc<Mutex<ReputationCredentialCache>>>,
 ) -> Result<Vec<MailboxMessage>, String> {
+    if !ACCOUNT_ACCESS_ENABLED {
+        return Err("Account access and inbox analysis are coming soon.".to_string());
+    }
     let cache = Arc::clone(&cache);
     tauri::async_runtime::spawn_blocking(move || {
         let limit = limit.clamp(1, 20);
@@ -1428,6 +1441,9 @@ async fn inspect_mailbox_message(
     message_id: String,
     cache: tauri::State<'_, Arc<Mutex<ReputationCredentialCache>>>,
 ) -> Result<serde_json::Value, String> {
+    if !ACCOUNT_ACCESS_ENABLED {
+        return Err("Account access and inbox analysis are coming soon.".to_string());
+    }
     if message_id.trim().is_empty() || message_id.len() > 2048 {
         return Err("Invalid mailbox message identifier.".to_string());
     }
@@ -1456,6 +1472,9 @@ async fn analyze_mailbox_message(
     cache: tauri::State<'_, Arc<Mutex<ReputationCredentialCache>>>,
     cancellation: tauri::State<'_, Arc<AnalysisCancellation>>,
 ) -> Result<serde_json::Value, String> {
+    if !ACCOUNT_ACCESS_ENABLED {
+        return Err("Account access and inbox analysis are coming soon.".to_string());
+    }
     if message_id.trim().is_empty() || message_id.len() > 2048 {
         return Err("Invalid mailbox message identifier.".to_string());
     }

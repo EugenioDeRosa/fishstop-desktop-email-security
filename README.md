@@ -134,7 +134,7 @@ Dopo l'installazione sono necessari due passaggi per attivare tutte le funzioni 
 
 ### 1. Installare il modello AI locale
 
-1. Avvia FishStop ed effettua l'accesso con Google o Microsoft.
+1. Avvia FishStop e seleziona **Continue as guest**.
 2. Apri **Settings** dal menu laterale.
 3. Nella scheda **Machine and automatic model**, individua la sezione **FishStop AI → Local AI model**.
 4. Seleziona **Install FishSTOP AI v5**.
@@ -340,3 +340,19 @@ dalla licenza del software; una chiave personale non autorizza ogni tipo di uso.
 Sorgenti desktop: https://github.com/EugenioDeRosa/fishstop-desktop-email-security
 
 Distribuzione e sorgenti delle release: [docs/distribution-licensing.md](docs/distribution-licensing.md).
+
+## Accesso ospite e funzionalità in arrivo
+
+Le build standard usano **Continue as guest**: uno spazio di lavoro persistente
+locale, con cronologia cifrata, preferenze e chiavi API nel portachiavi del sistema.
+Uscire dall’app o dalla sessione non cancella la cronologia. Non è un account
+online: chi usa la stessa sessione del sistema operativo può riaprire lo spazio
+ospite. Le cronologie dei precedenti account non sono cancellate né unite.
+
+Google, Microsoft e **Analyse from inbox** sono disabilitati e mostrano
+**Coming soon**. Il codice è conservato ma i comandi nativi rifiutano queste
+operazioni nelle build standard. Non viene incluso il client secret Google.
+Per una futura build con account occorre riattivare il flag frontend
+`ACCOUNT_ACCESS_ENABLED`, la feature Rust `account-access`, la preparazione
+delle credenziali di build e completare le verifiche OAuth prima del rilascio.
+Il codice presente non rende queste funzionalità disponibili all’utente.

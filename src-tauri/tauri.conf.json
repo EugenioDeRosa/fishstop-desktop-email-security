@@ -45,7 +45,9 @@
       "binaries/fishstop-engine"
     ],
     "resources": [
-      "resources"
+      "resources/legal",
+      "resources/ollama",
+      "resources/mlx"
     ],
     "createUpdaterArtifacts": true
   },

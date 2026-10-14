@@ -22,8 +22,10 @@ propria coppia di chiavi Tauri e propri endpoint. Le chiavi dell'autore non sono
 necessarie per compilare o eseguire una propria versione. Per le build locali
 senza canale di aggiornamento disattivare `bundle.createUpdaterArtifacts`.
 Google OAuth può essere configurato con `FISHSTOP_GOOGLE_CLIENT_SECRET`; non
-inserire credenziali nel repository. Il workflow ufficiale richiede i secrets
-soltanto per gli account e il canale di distribuzione ufficiali.
+inserire credenziali nel repository. Le build standard sono guest-only: il workflow non prepara credenziali Google
+e le risorse distribuite le escludono. Il secret di firma Tauri rimane necessario
+soltanto per il canale di aggiornamento ufficiale. OAuth resta codice futuro,
+disabilitato dal flag frontend e dalla feature Rust `account-access` non attiva.
 
 ## Verifica obbligatoria prima di una release pubblica
 

@@ -542,3 +542,8 @@ html[data-theme="dark"] .statistics-custom-period input { color-scheme:dark; }
 .machine-model-identity .model-status-badge{font-size:7px;padding:3px 5px;white-space:nowrap}
 .machine-model-row>dd>small[hidden]{display:none}
 .execution-guidance:not(:has(.cpu-optimization:not([hidden]))){display:none}
+
+/* Features retained for a future account-enabled release. */
+.provider:disabled, .nav-item:disabled { opacity: .45; cursor: not-allowed; }
+.provider:disabled:hover { transform: none; }
+.provider.guest { border-color: var(--accent, #33bb8a); }

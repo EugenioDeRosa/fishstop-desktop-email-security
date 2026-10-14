@@ -21,9 +21,12 @@ import fishstopMailCheckUrl from "./fishstop-mail-check.svg";
 import "./styles.css";
 import "./night.css";
 
-type AuthUser = { sub: string; name?: string; email: string; picture?: string; provider?: "google" | "microsoft" };
+type AuthUser = { sub: string; name?: string; email: string; picture?: string; provider?: "google" | "microsoft" | "guest" };
 type MailboxStatus = { connected: boolean; provider: "google" | "microsoft"; email: string };
 type MailboxMessage = { id: string; subject: string; sender: string; received_at: string; snippet: string; has_attachments: boolean; is_read: boolean };
+const ACCOUNT_ACCESS_ENABLED = false;
+const GUEST_USER: AuthUser = { sub: "guest:local-v1", name: "Guest", email: "guest@local.invalid", provider: "guest" };
+
 type Section = "dashboard" | "analyse" | "inbox" | "history" | "statistics" | "settings";
 type SocFlag = { level: "HIGH" | "MEDIUM" | "LOW" | "INFO"; field: string; message: string };
 type AuthResult = {
@@ -2711,7 +2714,7 @@ function storedUser(): AuthUser | null {
     const saved = localStorage.getItem(USER_STORAGE_KEY);
     if (!saved) return null;
     const user = JSON.parse(saved) as AuthUser;
-    return user.sub && user.email ? user : null;
+    return user.sub && user.email && (ACCOUNT_ACCESS_ENABLED || user.sub === GUEST_USER.sub) ? user : null;
   } catch { localStorage.removeItem(USER_STORAGE_KEY); return null; }
 }
 
@@ -2725,7 +2728,7 @@ function microsoftLogo(): string {
 
 function renderLogin(): void {
   clearNotifications();
-  root.innerHTML = `<section class="shell" aria-labelledby="title"><aside class="brand-panel"><div class="brand"><img class="brand-mark" src="${fishstopMailCheckUrl}" alt="" aria-hidden="true" /><span>fish<span>stop</span></span></div><div class="hero-copy"><p class="eyebrow">EMAIL DEFENSE DESK</p><h1>Every message<br><em>deserves a check.</em></h1><p class="intro">Quickly identify phishing, scams and Business Email Compromise in email files.</p></div><div class="signal"><span class="signal-dot"></span><span>Private, local protection</span></div><p class="version">FISHSTOP · DESKTOP EDITION</p></aside><section class="login-panel"><div class="login-appearance" role="group" aria-label="Appearance"><button id="login-theme-light" type="button" aria-pressed="${currentTheme() === "light"}"><span aria-hidden="true">☀</span>Light</button><button id="login-theme-dark" type="button" aria-pressed="${currentTheme() === "dark"}"><span aria-hidden="true">☾</span>Dark</button></div><div class="login-content"><h2 id="title">Sign in to FishStop</h2><p class="subtitle">Use your Google or Microsoft account to access your personal analysis workspace.</p><div class="auth-options"><button class="provider google" id="google-login" type="button"><span class="provider-icon" aria-hidden="true">${googleLogo()}</span><span>Continue with Google</span><b aria-hidden="true">→</b></button><button class="provider microsoft" id="microsoft-login" type="button"><span class="provider-icon" aria-hidden="true">${microsoftLogo()}</span><span>Continue with Microsoft</span><b aria-hidden="true">→</b></button></div><p class="privacy">Account connections and external services are described in the <a href="https://fishstop-eml.streamlit.app/?page=terms" target="_blank" rel="noopener noreferrer">Terms of Service</a> and <a href="https://fishstop-eml.streamlit.app/?page=privacy" target="_blank" rel="noopener noreferrer">Privacy Policy</a>.</p><p class="status" role="status" aria-live="polite"></p></div><footer><span>© 2026 FishStop</span><span>Analyse. Understand. Protect.</span></footer></section></section>`;
+  root.innerHTML = `<section class="shell" aria-labelledby="title"><aside class="brand-panel"><div class="brand"><img class="brand-mark" src="${fishstopMailCheckUrl}" alt="" aria-hidden="true" /><span>fish<span>stop</span></span></div><div class="hero-copy"><p class="eyebrow">EMAIL DEFENSE DESK</p><h1>Every message<br><em>deserves a check.</em></h1><p class="intro">Quickly identify phishing, scams and Business Email Compromise in email files.</p></div><div class="signal"><span class="signal-dot"></span><span>Private, local protection</span></div><p class="version">FISHSTOP · DESKTOP EDITION</p></aside><section class="login-panel"><div class="login-appearance" role="group" aria-label="Appearance"><button id="login-theme-light" type="button" aria-pressed="${currentTheme() === "light"}"><span aria-hidden="true">☀</span>Light</button><button id="login-theme-dark" type="button" aria-pressed="${currentTheme() === "dark"}"><span aria-hidden="true">☾</span>Dark</button></div><div class="login-content"><h2 id="title">Welcome to FishStop</h2><p class="subtitle">Continue as a guest. Your history and preferences stay on this device.</p><div class="auth-options"><button class="provider guest" id="guest-login" type="button"><span>Continue as guest</span><b aria-hidden="true">→</b></button><button class="provider google" id="google-login" type="button" ${ACCOUNT_ACCESS_ENABLED ? "" : "disabled"}><span class="provider-icon" aria-hidden="true">${googleLogo()}</span><span>Continue with Google${ACCOUNT_ACCESS_ENABLED ? "" : " · Coming soon"}</span><b aria-hidden="true">→</b></button><button class="provider microsoft" id="microsoft-login" type="button" ${ACCOUNT_ACCESS_ENABLED ? "" : "disabled"}><span class="provider-icon" aria-hidden="true">${microsoftLogo()}</span><span>Continue with Microsoft${ACCOUNT_ACCESS_ENABLED ? "" : " · Coming soon"}</span><b aria-hidden="true">→</b></button></div><p class="privacy">Account connections and external services are described in the <a href="https://fishstop-eml.streamlit.app/?page=terms" target="_blank" rel="noopener noreferrer">Terms of Service</a> and <a href="https://fishstop-eml.streamlit.app/?page=privacy" target="_blank" rel="noopener noreferrer">Privacy Policy</a>.</p><p class="status" role="status" aria-live="polite"></p></div><footer><span>© 2026 FishStop</span><span>Analyse. Understand. Protect.</span></footer></section></section>`;
   for (const theme of ["light", "dark"] as const) {
     document.querySelector<HTMLButtonElement>(`#login-theme-${theme}`)?.addEventListener("click", () => {
       if (!setTheme(theme)) notify("Appearance changed, but could not be saved on this device.", "error");
@@ -2754,10 +2757,17 @@ function renderLogin(): void {
     });
   });
   brandPanel?.addEventListener("pointerleave", () => brandPanel.classList.remove("is-pointer-active"));
+  document.querySelector<HTMLButtonElement>("#guest-login")?.addEventListener("click", async () => {
+    try {
+      localStorage.setItem(USER_STORAGE_KEY, JSON.stringify(GUEST_USER));
+      await startWorkspace(GUEST_USER);
+    } catch { notify("Could not open the guest workspace. Please try again.", "error"); }
+  });
   const status = document.querySelector<HTMLParagraphElement>(".status");
   const bindLogin = (buttonId: string, provider: string, command: string): void => {
     const button = document.querySelector<HTMLButtonElement>(`#${buttonId}`);
     button?.addEventListener("click", async () => {
+      if (!ACCOUNT_ACCESS_ENABLED) return;
       const buttons = [...document.querySelectorAll<HTMLButtonElement>(".provider")];
       buttons.forEach((item) => { item.disabled = true; });
       button.classList.add("loading");
@@ -2851,6 +2861,7 @@ function clearMailboxInboxCache(user: AuthUser): void {
 }
 
 async function mailboxInboxAvailable(user: AuthUser): Promise<boolean> {
+  if (!ACCOUNT_ACCESS_ENABLED || user.provider === "guest") return false;
   if (mailboxProvider(user) !== "google") return true;
   try {
     const normalizedEmail = user.email.trim().toLowerCase();
@@ -3009,6 +3020,7 @@ function contentFor(section: Section, user: AuthUser): string {
     ? reasonCounts.slice(0, 6).map(({ label, count }) => `<li><span>${escapeHtml(label)} <b>${count}</b></span><i><em style="width:${(count / reasonCounts[0].count) * 100}%"></em></i></li>`).join("")
     : `<li class="statistics-empty">No risk reasons were recorded in this period.</li>`;
   if (section === "analyse") return analysisPageContent(user);
+  if (section === "inbox" && (!ACCOUNT_ACCESS_ENABLED || user.provider === "guest")) return `<div class="page-heading"><h1>Analyse from inbox</h1><p>Coming soon. Use Analyse a file to check an exported EML.</p></div>`;
   if (section === "inbox") return analysisPageContent(user, "inbox");
   if (section === "history") return `<div class="page-heading history-heading"><div><p class="page-kicker">PERSONAL WORKSPACE</p><div class="history-title-row"><h1>Analysis history</h1><div class="history-actions"><span class="period">${history.length} ANALYSES</span>${history.length ? `<button id="clear-history" type="button">Clear history</button>` : ""}</div></div><p>Analyses are stored only for this account, on this device.</p></div></div>${history.length ? `<section class="history-list">${history.map((record) => { const high = verdictFlags(record.report).filter((flag) => flag.level === "HIGH").length; return `<button class="history-item" data-open-history="${record.id}" type="button"><span class="history-risk ${high ? "high" : "clear"}">${high ? `${high} HIGH` : "OK"}</span><span><strong>${escapeHtml(record.report.subject || "No subject")}</strong><small>${escapeHtml(record.report.from_ || "Sender unavailable")} · ${formatAnalysisDate(record.analyzedAt)}</small></span><b>Open →</b></button>`; }).join("")}</section>` : `<section class="empty-state"><span class="empty-icon">⌁</span><h2>No analyses yet.</h2><p>Your first EML analysis will appear here.</p><button class="soft-action" data-go="analyse" type="button">Analyse an email <span>→</span></button></section>`}`;
   if (section === "statistics") return `<div class="page-heading statistics-heading"><div><p class="page-kicker">RISK OVERVIEW</p><h1>Statistics</h1><p>Signals, investigation activity and performance for this account.</p></div><div class="statistics-filter"><span>Period</span><div class="statistics-period-menu"><button class="statistics-period-trigger" id="statistics-period-trigger" type="button" aria-haspopup="listbox" aria-controls="statistics-period-options" aria-expanded="false">${periodLabels[selectedPeriod]}<i aria-hidden="true"></i></button><div class="statistics-period-options" id="statistics-period-options" role="listbox" aria-label="Statistics period" hidden>${periodChoices}</div></div></div></div>${customPeriodMarkup}<section class="metrics stats-metrics"><article><span>Emails analysed</span><strong>${filteredHistory.length}</strong><small>${periodLabels[selectedPeriod]}</small></article><article><span>Average analysis time</span><strong>${formatDuration(averageDuration)}</strong><small>${timedAnalyses.length ? `Based on ${timedAnalyses.length} completed analyses` : "Available after new analyses"}</small></article><article><span>Indicators copied</span><strong>${filteredCopyEvents.length}</strong><small>Copied individually from the Indicators section</small></article></section><section class="stats-layout"><article class="risk-breakdown"><div><p class="page-kicker">DISTRIBUTION</p><h2>Analysis outcomes</h2></div><div class="risk-bars"><div><span>High risk <b>${highRiskCount}</b></span><i><em class="high" style="width:${filteredHistory.length ? (highRiskCount / filteredHistory.length) * 100 : 0}%"></em></i></div><div><span>To review <b>${mediumRiskCount}</b></span><i><em class="medium" style="width:${filteredHistory.length ? (mediumRiskCount / filteredHistory.length) * 100 : 0}%"></em></i></div><div><span>Likely legitimate <b>${clearCount}</b></span><i><em class="clear" style="width:${filteredHistory.length ? (clearCount / filteredHistory.length) * 100 : 0}%"></em></i></div></div></article><article class="activity-card"><div><p class="page-kicker">ACTIVITY</p><h2>${selectedPeriod === "custom" ? "Selected period" : "Last 7 days"}</h2></div><div class="activity-chart">${activity.map((item) => `<div><i style="height:${Math.max(5, (item.count / maxActivity) * 100)}%" title="${item.span}: ${item.count} analyses"></i><span>${item.label}</span></div>`).join("")}</div></article></section><section class="risk-reasons"><div><p class="page-kicker">RISK PATTERNS</p><h2>Top risk reasons</h2><p>Signals that appeared most often in the selected period.</p></div><ol>${reasonItems}</ol></section>`;
@@ -3086,6 +3098,7 @@ function contentFor(section: Section, user: AuthUser): string {
 }
 
 function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
+  if (section === "inbox" && (!ACCOUNT_ACCESS_ENABLED || user.provider === "guest")) section = "analyse";
   disposeHopPager?.(); disposeHopPager = null;
   removeStatisticsMenuDismissal?.();
   removeStatisticsMenuDismissal = null;
@@ -3098,9 +3111,9 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
   const icons: Record<Section, string> = { dashboard: homeIconMarkup(), analyse: searchIconMarkup(), inbox: inboxIconMarkup(), history: "◴", statistics: "◔", settings: "⚙" };
   const initial = escapeHtml((user.name || user.email).trim().charAt(0).toUpperCase());
   const safeName = escapeHtml(user.name || (user.provider === "microsoft" ? "Microsoft account" : "Google account"));
-  const safeEmail = escapeHtml(user.email);
+  const safeEmail = user.provider === "guest" ? "Local workspace" : escapeHtml(user.email);
   const safePicture = user.picture ? escapeHtml(user.picture) : "";
-  root.innerHTML = `<div class="app-shell ${section === "dashboard" ? "dashboard-shell" : ""}"><aside class="sidebar"><div class="sidebar-brand"><img class="brand-mark" src="${fishstopMailCheckUrl}" alt="" aria-hidden="true" /><span>fish<span>stop</span></span></div><nav aria-label="Primary navigation">${(Object.keys(labels) as Section[]).map((key) => `<button class="nav-item ${section === key ? "selected" : ""}" data-section="${key}" type="button"><span>${icons[key]}</span>${labels[key]}</button>`).join("")}</nav><div class="sidebar-bottom"><div class="account"><span class="avatar">${safePicture ? `<img src="${safePicture}" alt="" />` : initial}</span><div><strong>${safeName}</strong><small>${safeEmail}</small></div></div><button class="logout" id="logout" type="button">Sign out <span>↗</span></button></div></aside><main class="workspace"><header class="topbar"><div class="crumb"><span>FishStop</span><b>/</b><strong>${labels[section]}</strong></div><div class="top-status top-status-checking" data-protection-status role="status" aria-live="polite"><i aria-hidden="true"></i><span>Checking protection…</span></div></header><section class="content ${section === "dashboard" ? "dashboard-content" : ""}">${contentFor(section, user)}</section></main></div>`;
+  root.innerHTML = `<div class="app-shell ${section === "dashboard" ? "dashboard-shell" : ""}"><aside class="sidebar"><div class="sidebar-brand"><img class="brand-mark" src="${fishstopMailCheckUrl}" alt="" aria-hidden="true" /><span>fish<span>stop</span></span></div><nav aria-label="Primary navigation">${(Object.keys(labels) as Section[]).map((key) => `<button class="nav-item ${section === key ? "selected" : ""}" data-section="${key}" type="button" ${key === "inbox" && (!ACCOUNT_ACCESS_ENABLED || user.provider === "guest") ? "disabled" : ""}><span>${icons[key]}</span>${labels[key]}${key === "inbox" && (!ACCOUNT_ACCESS_ENABLED || user.provider === "guest") ? " · Coming soon" : ""}</button>`).join("")}</nav><div class="sidebar-bottom"><div class="account"><span class="avatar">${safePicture ? `<img src="${safePicture}" alt="" />` : initial}</span><div><strong>${safeName}</strong><small>${safeEmail}</small></div></div><button class="logout" id="logout" type="button">Sign out <span>↗</span></button></div></aside><main class="workspace"><header class="topbar"><div class="crumb"><span>FishStop</span><b>/</b><strong>${labels[section]}</strong></div><div class="top-status top-status-checking" data-protection-status role="status" aria-live="polite"><i aria-hidden="true"></i><span>Checking protection…</span></div></header><section class="content ${section === "dashboard" ? "dashboard-content" : ""}">${contentFor(section, user)}</section></main></div>`;
   const active = currentAnalysis(user);
   const activeSource = active?.source || "file";
   if (((section === "analyse" && activeSource === "file") || (section === "inbox" && activeSource === "inbox")) && active?.status === "complete" && active.report) {

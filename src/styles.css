@@ -590,7 +590,7 @@ html[data-theme="dark"] .statistics-custom-period input { color-scheme:dark; }
 .settings-grid .ai-mode-picker { gap: 8px; margin-top: 0; }
 .settings-grid .ai-mode-picker > label { padding: 13px; }
 .settings-grid .machine-profile dl > div { grid-template-columns: 68px minmax(0, 1fr); }
-.settings-grid .machine-profile .machine-model-row { grid-template-columns: 1fr; gap: 8px; }
+.settings-grid .machine-profile .machine-model-row { grid-template-columns: 68px minmax(0, 1fr); gap: 12px; }
 .settings-grid .machine-model-heading { gap: 8px; }
 .settings-grid .machine-model-identity { min-width: 0; }
 .settings-grid .machine-model-identity strong { font-size: 13px; overflow-wrap: anywhere; }
@@ -634,12 +634,13 @@ html[data-theme="dark"] .statistics-custom-period input { color-scheme:dark; }
 .settings-legal-links .settings-link-button:focus-visible { outline: 2px solid #32a984; outline-offset: 3px; }
 /* Selected model: name and status first, version on its own line. */
 .settings-grid .machine-profile .machine-model-row > dt { min-height: 0; font-size: 10px; color: var(--night-muted, #71857d); }
-.settings-grid .machine-model-heading { align-items: start; gap: 12px; }
-.settings-grid .machine-model-identity { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 7px 10px; }
-.settings-grid .machine-model-identity > strong { grid-column: 1; grid-row: 1; display: block; font-size: 15px; line-height: 1.4; }
+.settings-grid .machine-model-heading { align-items: center; gap: 10px; min-height: 0; }
+.settings-grid .machine-model-identity { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 3px 8px; }
+.settings-grid .machine-model-identity > strong { grid-column: 1; grid-row: 1; display: block; font-size: 12px; line-height: 1.35; }
 .settings-grid .machine-model-identity > .model-status-badge { grid-column: 2; grid-row: 1; }
-.settings-grid .machine-model-identity > .model-finetune-version { grid-column: 1 / -1; grid-row: 2; display: block; margin: 0; font-size: 11px; line-height: 1.55; }
-.settings-grid .machine-model-heading > button { align-self: start; min-height: 32px; }
+.settings-grid .machine-model-identity > .model-finetune-version { grid-column: 1 / -1; grid-row: 2; display: block; margin: 0; font-size: 9px; line-height: 1.4; }
+.settings-grid .machine-model-heading > button { align-self: center; min-height: 28px; padding: 5px 8px; white-space: nowrap; }
+@media (max-width: 520px) { .settings-grid .machine-profile .machine-model-row { grid-template-columns: minmax(0, 1fr); gap: 6px; } }
 /* API actions align under the status, at the right of each row. */
 .settings-grid .credential-list li,
 .settings-grid .settings-reputation.is-editing-credentials .credential-list li { grid-template-columns: 24px minmax(0, 1fr) 116px; row-gap: 7px; }

@@ -702,9 +702,10 @@ html[data-theme="dark"] .statistics-custom-period input { color-scheme:dark; }
   .statistics-content .stats-metrics article { padding: 12px 16px; }
   .statistics-content .stats-metrics strong { margin: 5px 0 3px; font-size: 25px; }
   .statistics-content .stats-layout { flex: 1; min-height: 150px; margin-top: 0; gap: 12px; }
-  .statistics-content .stats-layout article { padding: 16px 18px; }
+  .statistics-content .stats-layout article { min-height: 0; height: 100%; padding: 16px 18px; }
   .statistics-content .risk-bars { margin-top: 14px; gap: 10px; }
   .statistics-content .activity-chart { min-height: 65px; margin-top: 12px; }
+  .statistics-content .activity-chart > div { height: 100%; min-height: 0; }
   .statistics-content .risk-reasons { flex: none; margin-top: 0; padding: 14px 18px; gap: 20px; }
   .statistics-content .risk-reasons ol { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 16px; align-content: center; }
   .statistics-content .risk-reasons p { margin-bottom: 0; }

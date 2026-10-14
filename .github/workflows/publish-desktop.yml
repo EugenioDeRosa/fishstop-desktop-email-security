@@ -15,6 +15,7 @@ concurrency:
 jobs:
   prepare-release:
     name: Prepare rolling release
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     outputs:
       release_id: ${{ steps.release.outputs.release_id }}
@@ -22,6 +23,22 @@ jobs:
       release_version: ${{ steps.release.outputs.release_version }}
     steps:
       - uses: actions/checkout@v5
+      - name: Check versions and require an actual upgrade
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          node scripts/verify_desktop_release.mjs
+          status="$(gh api --include "repos/${GH_REPO}/releases/latest" > previous-release-response.txt 2>/dev/null && echo found || echo failed)"
+          if test "${status}" = found; then
+            gh release download --repo "${GH_REPO}" --pattern latest.json --dir previous-release
+            node scripts/verify_desktop_release.mjs version previous-release/latest.json
+          elif head -1 previous-release-response.txt | grep -q ' 404'; then
+            echo "No published release yet: checking the first production build."
+          else
+            echo "Cannot verify the previous release. Refusing to publish."
+            exit 1
+          fi
       - name: Check update signing configuration
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -163,16 +180,17 @@ jobs:
     needs: [prepare-release, publish]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v5
       - name: Verify updater manifest before publishing
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ needs.prepare-release.outputs.release_tag }}
         run: |
-          gh release download "${RELEASE_TAG}" --pattern latest.json
+          gh release download "${RELEASE_TAG}" --pattern latest.json --pattern '*.exe' --pattern '*.app.tar.gz' --dir updater-check
           gh release download "${RELEASE_TAG}" --pattern fishstop-source.zip
           gh release download "${RELEASE_TAG}" --pattern 'fishstop-notices-*.zip'
-          node -e 'const m=require("./latest.json"); for(const p of ["windows-x86_64","darwin-x86_64","darwin-aarch64"]) { if(!m.platforms[p]?.signature || !m.platforms[p]?.url) throw new Error("Missing signed update: "+p); }'
+          node scripts/verify_desktop_release.mjs manifest updater-check
       - name: Publish this build as the latest release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

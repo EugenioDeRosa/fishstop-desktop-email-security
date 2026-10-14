@@ -1,4 +1,5 @@
 import { startAppUpdates } from "./app-updates";
+import gplLicenseText from "../LICENSE?raw";
 import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -3039,7 +3040,8 @@ function contentFor(section: Section, user: AuthUser): string {
           <section class="settings-card" aria-labelledby="software-license-title">
             <h2 id="software-license-title">Open-source license</h2>
             <p>Copyright © 2026 Eugenio De Rosa. FishStop is free software under GPL-3.0-or-later. You may modify and redistribute it under that license. Provided without warranty, to the extent permitted by law.</p>
-            <p><a href="https://github.com/EugenioDeRosa/fishstop-desktop-email-security/blob/dev/LICENSE" target="_blank" rel="noopener noreferrer">Read license</a> · <a href="https://github.com/EugenioDeRosa/fishstop-desktop-email-security" target="_blank" rel="noopener noreferrer">Source code</a></p>
+            <details><summary>Read full license</summary><pre style="white-space:pre-wrap;overflow-wrap:anywhere;max-height:20rem;overflow:auto">${escapeHtml(gplLicenseText)}</pre></details>
+            <p><a href="https://github.com/EugenioDeRosa/fishstop-desktop-email-security" target="_blank" rel="noopener noreferrer">Source code and build instructions</a></p>
           </section>
           <section class="settings-card settings-app-updates" aria-labelledby="settings-updates-title">
             <div class="settings-updates-row"><h2 id="settings-updates-title">App updates</h2><button type="button" class="soft-action" data-check-app-updates>Check for updates</button></div>

@@ -65,9 +65,8 @@ Non è stata pubblicata una release né modificato `main` durante questa verific
    completa che leghi dataset, run di training e artefatto distribuito. Non
    dedurre dai test o dalla natura sintetica una clearance completa dei diritti.
 
-5. **Confermare la revoca della vecchia chiave AbuseIPDB.** L'assenza nella
-   cronologia pubblicata non rende sicura una chiave già esposta. Verificare
-   revoca/rotazione nell'account del servizio; non è stata usata per il controllo.
+5. **Rotazione delle vecchie chiavi confermata dal proprietario il 15 ottobre 2026.**
+   Le credenziali non sono state usate durante la verifica.
 
 6. **Verificare firme e frizione di installazione.** La pipeline configura la
    firma Tauri degli aggiornamenti, ma non configura esplicitamente firma e

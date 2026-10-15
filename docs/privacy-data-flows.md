@@ -9,7 +9,7 @@ attivi, non dalla sola presenza di una URL nel codice.
 Le email EML, corpo, HTML, allegati e prompt AI sono elaborati sul dispositivo.
 L'app non invia questi contenuti a un servizio AI remoto e non raccoglie le
 email degli utenti per il training. L'ospite è uno spazio locale persistente,
-non un account anonimo su un server. Cronologia e preferenze restano sul
+non un account anonimo su un server. Il nome ospite scelto dall’utente è salvato localmente, resta dopo il sign out e può essere modificato nelle Impostazioni. Cronologia e preferenze restano sul
 computer; la cronologia è cifrata e le chiavi sono nel portachiavi del sistema.
 Chi accede alla stessa sessione OS può riaprire lo spazio ospite.
 
@@ -75,3 +75,5 @@ build guest-only di dev finché quest'ultima non viene distribuita.
 Riferimenti: reputation.py, otx_intelligence.py, domain_identity.py,
 brand_intelligence.py, network_policy.py, main.py, app-updates.ts e runtime Rust.
 Le condizioni delle API restano indipendenti dalla GPL del codice.
+
+I controlli automatici degli aggiornamenti sono attivi per default e possono essere disattivati nelle Impostazioni. Il controllo manuale rimane disponibile; scaricare e installare un aggiornamento richiede conferma.

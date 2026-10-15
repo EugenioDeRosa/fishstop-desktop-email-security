@@ -82,7 +82,7 @@ FishStop viene distribuito per:
 - macOS con processore Intel (`x64`);
 - Windows a 64 bit (`x64`).
 
-Il primo avvio e la configurazione iniziale richiedono una connessione Internet. Il modello AI occupa diversi GB e viene scaricato separatamente dall'app, solo su richiesta dell'utente.
+Il primo avvio e la configurazione iniziale richiedono una connessione Internet. Il modello AI consigliato viene scaricato separatamente dall’app durante la preparazione del primo accesso: circa 1,1 GB per Fast Lite v2 o 2,5 GB per Pro v5. Servono ulteriore spazio per il runtime e i file temporanei; i modelli già installati vengono riutilizzati.
 
 ## Installazione su macOS
 

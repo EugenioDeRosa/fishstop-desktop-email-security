@@ -75,6 +75,44 @@ def _fake_stream(primary, audit=None, calls=None):
 
 
 class BalancedPipelineTests(unittest.TestCase):
+    def test_fast_payment_workflow_survives_unrelated_primary_action(self):
+        body = (
+            "Aquí está la cuenta bancaria:\nIBAN: ES91 2100 0418 4502 0005 1332\n"
+            "Enviaré la información solicitada tan pronto como recibamos el comprobante\n"
+            "de pago.\nEspero su pronta respuesta"
+        )
+        for action in ("info", "reply", "visit_link", "open_attachment", "verify_account", "change_account_settings", "claim_reward"):
+            with self.subTest(action=action):
+                soc = {
+                    "body_for_ai": body, "body_context": "conversation_selection",
+                    "selected_target_body": body, "links": [], "attachments": [],
+                }
+                result, calls = self._analyze(soc, _primary(
+                    action=action, channel="reply", evidence="Espero su pronta respuesta",
+                ), mode="fast")
+                self.assertEqual("phishing", result["analysis"]["final_verdict"])
+                self.assertEqual("pay_or_transfer", result["analysis"]["requested_action"])
+                self.assertEqual("malicious", result["analysis"]["content_risk"])
+                self.assertFalse(result["analysis"]["payment_destination_change"])
+                self.assertFalse(any(stage.startswith("audit:") for stage in calls))
+
+    def test_fast_unrelated_payment_history_does_not_convict_target(self):
+        for target in (
+            "Gracias, hemos recibido el pago.",
+            "IBAN: ES91 2100 0418 4502 0005 1332\nHemos recibido el comprobante de pago. Gracias.",
+            "IBAN: ES91 2100 0418 4502 0005 1332",
+        ):
+            with self.subTest(target=target):
+                soc = {
+                    "body_for_ai": target + "\n[CONTEXT]\nIBAN: ES91 2100 0418 4502 0005 1332\n"
+                        "Enviaré la información tan pronto como recibamos el comprobante de pago.",
+                    "selected_target_body": target, "body_context": "conversation_selection",
+                    "links": [], "attachments": [],
+                }
+                result, _ = self._analyze(soc, _primary(action="reply", channel="reply"), mode="fast")
+                self.assertNotEqual("phishing", result["analysis"]["final_verdict"])
+                self.assertNotEqual("pay_or_transfer", result["analysis"]["requested_action"])
+
     def test_spanish_bank_details_and_pending_payment_proof_are_phishing(self):
         body = (
             "Buenos días Araceli,\nAquí está la cuenta bancaria:\n"
@@ -165,11 +203,11 @@ class BalancedPipelineTests(unittest.TestCase):
         self.assertTrue(any("UNIQUE_ATTACHMENT_TAIL" in prompt for _, prompt in parts))
         self.assertTrue(all(len(body) < llm.PHI4_BODY_CHUNK_CHARS for body, _ in parts))
 
-    def _analyze(self, soc, primary, audit=None):
+    def _analyze(self, soc, primary, audit=None, mode="balanced"):
         calls = []
         fake = _fake_stream(primary, audit=audit, calls=calls)
         with (
-            patch.object(llm, "ANALYSIS_MODE", "balanced"),
+            patch.object(llm, "ANALYSIS_MODE", mode),
             patch.object(llm, "_use_ollama", return_value=True),
             patch.object(llm, "_stream_ollama", side_effect=fake),
             patch(

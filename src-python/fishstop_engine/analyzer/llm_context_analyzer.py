@@ -2439,7 +2439,15 @@ def _correlate_semantic_with_message_structure(soc: dict, semantic: dict) -> dic
             content_summary="The email asks the recipient to scan an attached QR code" + (" and confirm information using a work email address." if information else "."))
         action, channel = semantic["requested_action"], semantic["action_channel"]
     implicit_payment = _implicit_bank_instruction(soc)
-    if implicit_payment and action in {"none", "informational", "other", "provide_information"}:
+    # A reply request, signature link, or attachment classification must not
+    # hide a payment workflow grounded in the selected target. These actions
+    # can also be downgraded later, after this evidence check has already run.
+    # Keep more sensitive credential/bypass requests as the primary action.
+    if implicit_payment and action in {
+        "none", "informational", "other", "provide_information", "reply",
+        "visit_link", "open_attachment", "verify_account",
+        "change_account_settings", "claim_reward",
+    }:
         semantic.update(requested_action="pay_or_transfer", action_channel="none", asks_for_payment=True,
             payment_method="bank_transfer", evidence_phrase=implicit_payment, ambiguity="low",
             reason="The message supplies bank details and conditions further action on receiving proof of payment.",

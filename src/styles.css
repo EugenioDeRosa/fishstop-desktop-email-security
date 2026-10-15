@@ -860,3 +860,12 @@ html[data-theme="dark"] .statistics-custom-period input { color-scheme:dark; }
 .settings-grid .ollama-lab { padding-bottom: 12px; }
 .settings-grid .machine-profile .machine-model-row { padding-block: 8px; }
 @media(max-width:1080px) { .settings-grid { grid-template-areas: "reputation" "ollama" "preferences" "about"; }.settings-ai-stack { gap: 16px; } }
+
+/* Let updates absorb the remaining column height, keeping model content compact. */
+@media(min-width:1081px) {
+  .settings-grid > .settings-reputation { align-self: stretch; }
+  .settings-grid > .settings-ai-stack { align-self: stretch; grid-template-rows: auto minmax(min-content,1fr); align-content: stretch; }
+  .settings-grid .settings-ai-stack > .settings-app-updates { align-self: stretch; display: flex; flex-direction: column; align-items: stretch; justify-content: center; gap: 12px; }
+  .settings-grid .settings-ai-stack > .settings-app-updates .settings-updates-row { flex: none; }
+  .settings-grid .settings-ai-stack > .settings-app-updates [data-app-update-check-status] { margin: 0; }
+}

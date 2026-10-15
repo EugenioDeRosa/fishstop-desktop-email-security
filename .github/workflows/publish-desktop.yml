@@ -203,7 +203,6 @@ jobs:
         run: |
           gh release edit "${RELEASE_TAG}" \
             --repo "${GH_REPO}" \
-            --target "${GITHUB_SHA}" \
             --title "FishSTOP ${{ needs.prepare-release.outputs.release_version }}" \
             --notes "FishStop GPL-3.0-or-later. Build del commit ${GITHUB_SHA}. Sorgenti del progetto: fishstop-source.zip, allegato a questa release. Licenze e inventari: fishstop-notices-*.zip. Consulta docs/distribution-licensing.md per la distribuzione e i componenti di terze parti." \
             --draft=false \

@@ -735,3 +735,18 @@ html[data-theme="dark"] .statistics-custom-period input { color-scheme:dark; }
 .settings-grid .managed-model-progress > div:first-child { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; font-family: inherit; font-size: 10px; line-height: 1.4; }
 .settings-grid #managed-model-progress-label { min-width: 0; overflow-wrap: anywhere; }
 .settings-grid #managed-model-progress-value { white-space: nowrap; font-variant-numeric: tabular-nums; text-align: right; }
+
+/* Splash-style model progress: no reserved box when idle. */
+.settings-grid .managed-model-progress[hidden],
+.settings-grid #managed-model-status[hidden] { display: none; }
+.settings-grid .managed-model-progress { border: 0; border-radius: 0; padding: 0; background: transparent; gap: 8px; }
+.settings-grid .managed-model-progress > div:first-child { grid-template-columns: minmax(0, 1fr) auto auto; gap: 10px; }
+.settings-grid .managed-model-progress-track { height: 3px; border-radius: 8px; background: var(--night-border, #d3e4dd); }
+.settings-grid .managed-model-progress-track i { background: var(--night-accent, #278879); transition: width .25s ease; }
+.settings-grid .managed-model-progress.is-indeterminate .managed-model-progress-track i { animation: startup-travel 1.3s ease-in-out infinite; }
+.settings-grid .model-cancel-action { padding: 3px 6px; border: 0; border-radius: 5px; background: transparent; color: var(--night-secondary, #56736d); font-family: inherit; font-size: 10px; font-weight: 600; cursor: pointer; }
+.settings-grid .model-cancel-action:hover { background: var(--night-raised, #dcebe6); }
+.settings-grid .model-cancel-action:disabled { opacity: .6; cursor: wait; }
+.settings-grid .model-cancel-action:focus-visible { outline: 2px solid var(--night-accent, #278879); outline-offset: 2px; }
+.settings-grid .execution-guidance:has(> [hidden]:only-child) { display: none; }
+@media(prefers-reduced-motion:reduce) { .settings-grid .managed-model-progress.is-indeterminate .managed-model-progress-track i { animation: none; transform: none; opacity: .55; } }

@@ -17,7 +17,7 @@ for (const fails of [false, true]) {
   const events = [];
   const button = { disabled: false };
   const context = vm.createContext({
-    signingOut: false, modelSessionGeneration: 0,
+    signingOut: false, modelDownloadCancelling: false, modelSessionGeneration: 0,
     managedModelOperation: { phase: 'installing' },
     managedModelInstallation: new Promise(resolve => { finish = resolve; }),
     document: { querySelector: () => button },

@@ -210,6 +210,7 @@ type ConversationSelection = { target_ids: string[]; context_ids: string[]; prio
 let managedModelOperation: ManagedModelOperation | null = null;
 let managedModelInstallation: Promise<unknown> | null = null;
 let signingOut = false;
+let modelDownloadCancelling = false;
 let modelSessionGeneration = 0;
 let cpuOptimizationOperation: CpuOptimizationProgress | null = null;
 const RUNTIME_SNAPSHOT_KEY = "fishstop.machine-runtime-v1";
@@ -3285,7 +3286,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
     signOutDialog?.close();
   });
   document.querySelector<HTMLButtonElement>("#confirm-sign-out")?.addEventListener("click", async () => {
-    if (signingOut) return;
+    if (signingOut || modelDownloadCancelling) return;
     signingOut = true;
     modelSessionGeneration++;
     const confirm = document.querySelector<HTMLButtonElement>("#confirm-sign-out");
@@ -3450,7 +3451,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
     }
   });
   const machineProfile = document.querySelector<HTMLElement>("#machine-profile");
-  if (machineProfile) machineProfile.innerHTML = html`<fieldset class="ai-mode-picker"><legend>Analysis mode</legend><label><input type="radio" name="ai-mode" value="fast" disabled><span class="ai-mode-copy"><span class="ai-mode-title"><strong>Fast</strong><em>1.7B</em></span><small>Quicker checks, lower memory use.</small><span class="ai-mode-availability" data-mode-availability>Checking availability…</span></span></label><label><input type="radio" name="ai-mode" value="performance" disabled><span class="ai-mode-copy"><span class="ai-mode-title"><strong>Pro</strong><em>4B</em></span><small>Deeper analysis, more memory.</small><span class="ai-mode-availability" data-mode-availability>Checking availability…</span></span></label></fieldset><section class="settings-details settings-device-details" aria-label="Device details"><h3>Device details</h3><dl><div><dt>System</dt><dd id="machine-system">Reading…</dd></div><div><dt>Processor</dt><dd id="machine-processor">Reading…</dd></div><div><dt>Memory</dt><dd id="machine-memory">Reading…</dd></div><div><dt>Execution</dt><dd id="machine-execution">Reading…</dd></div></dl></section><dl><div class="machine-model-row" id="machine-model-row"><dt>Selected model</dt><dd><div class="machine-model-heading"><div class="machine-model-identity"><strong id="machine-model-name">Checking…</strong><span class="model-status-badge" id="model-status-badge" hidden></span></div><button class="model-remove-action" id="remove-managed-qwen" type="button" aria-haspopup="dialog" aria-controls="remove-model-dialog" hidden>Remove</button><button class="model-download-action" id="install-managed-qwen" type="button" disabled>Checking…</button></div><small id="managed-model-status">Checking the bundled AI runtime…</small><div class="managed-model-progress" id="managed-model-progress" hidden><div><span id="managed-model-progress-label">Preparing download…</span><strong id="managed-model-progress-value">0%</strong></div><div class="managed-model-progress-track" id="managed-model-progress-track" role="progressbar" aria-label="AI model download progress" aria-valuemin="0" aria-valuemax="100"><i id="managed-model-progress-fill"></i></div></div></dd></div></dl><div class="execution-guidance" id="execution-guidance"><section class="cpu-optimization" id="cpu-optimization" hidden><div class="cpu-optimization-heading"><span class="cpu-optimization-mark" aria-hidden="true"><i></i><i></i><i></i></span><div><p class="page-kicker">CPU PERFORMANCE</p><h4>Optimize this computer</h4></div></div><p>Run a short local benchmark to save the fastest CPU settings. No data leaves this device.</p><div class="cpu-optimization-progress" id="cpu-optimization-progress" hidden><span id="cpu-optimization-progress-label">Preparing the local benchmark…</span><div role="progressbar" aria-label="CPU optimization progress" aria-valuemin="0" aria-valuemax="100" id="cpu-optimization-progress-track"><i id="cpu-optimization-progress-fill"></i></div></div><p class="cpu-optimization-result" id="cpu-optimization-result"></p><button class="soft-action" id="optimize-cpu-performance" type="button">Optimize CPU performance</button></section></div>`;
+  if (machineProfile) machineProfile.innerHTML = html`<fieldset class="ai-mode-picker"><legend>Analysis mode</legend><label><input type="radio" name="ai-mode" value="fast" disabled><span class="ai-mode-copy"><span class="ai-mode-title"><strong>Fast</strong><em>1.7B</em></span><small>Quicker checks, lower memory use.</small><span class="ai-mode-availability" data-mode-availability>Checking availability…</span></span></label><label><input type="radio" name="ai-mode" value="performance" disabled><span class="ai-mode-copy"><span class="ai-mode-title"><strong>Pro</strong><em>4B</em></span><small>Deeper analysis, more memory.</small><span class="ai-mode-availability" data-mode-availability>Checking availability…</span></span></label></fieldset><section class="settings-details settings-device-details" aria-label="Device details"><h3>Device details</h3><dl><div><dt>System</dt><dd id="machine-system">Reading…</dd></div><div><dt>Processor</dt><dd id="machine-processor">Reading…</dd></div><div><dt>Memory</dt><dd id="machine-memory">Reading…</dd></div><div><dt>Execution</dt><dd id="machine-execution">Reading…</dd></div></dl></section><dl><div class="machine-model-row" id="machine-model-row"><dt>Selected model</dt><dd><div class="machine-model-heading"><div class="machine-model-identity"><strong id="machine-model-name">Checking…</strong><span class="model-status-badge" id="model-status-badge" hidden></span></div><button class="model-remove-action" id="remove-managed-qwen" type="button" aria-haspopup="dialog" aria-controls="remove-model-dialog" hidden>Remove</button><button class="model-download-action" id="install-managed-qwen" type="button" disabled>Checking…</button></div><small id="managed-model-status">Checking the bundled AI runtime…</small><div class="managed-model-progress" id="managed-model-progress" hidden><div><span id="managed-model-progress-label">Preparing download…</span><strong id="managed-model-progress-value">0%</strong><button class="model-cancel-action" id="cancel-managed-model-download" type="button">Cancel</button></div><div class="managed-model-progress-track" id="managed-model-progress-track" role="progressbar" aria-label="AI model download progress" aria-valuemin="0" aria-valuemax="100"><i id="managed-model-progress-fill"></i></div></div></dd></div></dl><div class="execution-guidance" id="execution-guidance"><section class="cpu-optimization" id="cpu-optimization" hidden><div class="cpu-optimization-heading"><span class="cpu-optimization-mark" aria-hidden="true"><i></i><i></i><i></i></span><div><p class="page-kicker">CPU PERFORMANCE</p><h4>Optimize this computer</h4></div></div><p>Run a short local benchmark to save the fastest CPU settings. No data leaves this device.</p><div class="cpu-optimization-progress" id="cpu-optimization-progress" hidden><span id="cpu-optimization-progress-label">Preparing the local benchmark…</span><div role="progressbar" aria-label="CPU optimization progress" aria-valuemin="0" aria-valuemax="100" id="cpu-optimization-progress-track"><i id="cpu-optimization-progress-fill"></i></div></div><p class="cpu-optimization-result" id="cpu-optimization-result"></p><button class="soft-action" id="optimize-cpu-performance" type="button">Optimize CPU performance</button></section></div>`;
   let aiModeChanging = false;
   const aiModeControls = [...document.querySelectorAll<HTMLInputElement>('input[name="ai-mode"]')];
   const machineSystem = document.querySelector<HTMLElement>("#machine-system");
@@ -3471,6 +3472,39 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
   const managedProgressValue = document.querySelector<HTMLElement>("#managed-model-progress-value");
   const managedProgressTrack = document.querySelector<HTMLElement>("#managed-model-progress-track");
   const managedProgressFill = document.querySelector<HTMLElement>("#managed-model-progress-fill");
+  const cancelManagedDownload = document.querySelector<HTMLButtonElement>("#cancel-managed-model-download");
+  cancelManagedDownload?.addEventListener("click", async () => {
+    if (modelDownloadCancelling || signingOut || managedModelOperation?.phase !== "installing") return;
+    modelDownloadCancelling = true;
+    modelSessionGeneration++;
+    cancelManagedDownload.disabled = true;
+    cancelManagedDownload.textContent = t("Cancelling…");
+    const logout = document.querySelector<HTMLButtonElement>("#logout");
+    if (logout) logout.disabled = true;
+    try {
+      await invoke("cancel_model_installation");
+      await managedModelInstallation?.catch(() => {});
+      managedModelInstallation = null;
+      managedModelOperation = null;
+      const runtime = await invoke<OllamaRuntimeStatus>("ollama_runtime_status");
+      if (!runtime.model_ready) {
+        const mode = runtime.fast_model_available ? "fast" : runtime.fine_tuned_available ? "performance" : null;
+        if (mode) await invoke("set_ai_mode", { mode });
+      }
+    } catch (error) {
+      if (managedModelOperation) modelSessionGeneration--;
+      notify(t("Could not stop the model download. Please try again."), "error");
+    } finally {
+      modelDownloadCancelling = false;
+      cancelManagedDownload.disabled = false;
+      cancelManagedDownload.textContent = t("Cancel");
+      if (logout) logout.disabled = false;
+      if (machineProfile?.isConnected) {
+        renderManagedOperation();
+        await refreshManagedModel(true);
+      }
+    }
+  });
   const cpuOptimization = document.querySelector<HTMLElement>("#cpu-optimization");
   const optimizeCpuPerformance = document.querySelector<HTMLButtonElement>("#optimize-cpu-performance");
   const cpuOptimizationResult = document.querySelector<HTMLElement>("#cpu-optimization-result");

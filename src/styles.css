@@ -847,3 +847,7 @@ html[data-theme="dark"] .statistics-custom-period input { color-scheme:dark; }
 :root .settings-grid .credential-list .credential-row-actions .remove-reputation-key:hover:not(:disabled) {
   color: var(--night-danger,#a44843); background: var(--night-danger-surface,#fcf0ee);
 }
+
+/* The AI card follows its content rather than the height of the network column. */
+.settings-grid .ollama-lab { align-self: start; }
+.settings-grid .ollama-lab .machine-profile { margin-bottom: 0; }

@@ -41,9 +41,29 @@ const markup = context.contentFor('statistics', user);
 assert.match(markup, /data-statistics-period="custom"/);
 assert.match(markup, /Emails analysed<\/span><strong>1<\/strong>/);
 assert.match(markup, /Average analysis time<\/span><strong>30\.0 s<\/strong>/);
-assert.match(markup, /Indicators copied<\/span><strong>1<\/strong>/);
+assert.match(markup, /Indicators copied: 1/);
+assert.match(markup, /Need attention<\/span><strong>0<\/strong>/);
 assert.match(markup, /<h2>Selected period<\/h2>/);
 assert.match(markup, /2026-03-29 – 2026-03-29: 1 analyses/);
 values.set('fishstop.statistics-period.one.custom', '{invalid');
 assert.ok(context.statisticsDateBounds(context.statisticsCustomRange(user)), 'Corrupt saved dates recover to a valid default');
 console.log('Statistics checks passed: inclusive dates, DST boundaries, invalid ranges, saved account preferences and custom-period metrics/chart.');
+
+// The activity plot covers the entire selected month, including older analyses.
+const now = new Date();
+const older = new Date(now); older.setDate(older.getDate() - 20);
+const recent = new Date(now); recent.setDate(recent.getDate() - 1);
+context.readAnalysisHistory = () => [
+  { analyzedAt: older.toISOString(), report: { tone: 'danger' } },
+  { analyzedAt: recent.toISOString(), report: { tone: 'review' } },
+  { analyzedAt: recent.toISOString(), report: { tone: 'clear' } },
+];
+context.assessment = report => ({ tone: report.tone });
+values.set('fishstop.statistics-period.one', 'month');
+const monthMarkup = context.contentFor('statistics', user);
+assert.match(monthMarkup, /Need attention<\/span><strong>2<\/strong>/);
+assert.match(monthMarkup, /High risk: 1, To review: 1, Likely legitimate: 1/);
+assert.equal([...monthMarkup.matchAll(/title="[^"<>]+: (\d+) analyses"/g)].reduce((sum, item) => sum + Number(item[1]), 0), 3, 'Activity bins include every analysis in the selected month');
+assert.doesNotMatch(monthMarkup, /class="plot-empty"/);
+context.readAnalysisHistory = () => [];
+assert.match(context.contentFor('statistics', user), /class="plot-empty"/);

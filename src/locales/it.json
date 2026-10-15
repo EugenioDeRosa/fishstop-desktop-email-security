@@ -1119,5 +1119,9 @@
   "{0} email action found": "{0} azione email trovata",
   "{0} email actions found": "{0} azioni email trovate",
   "{0} OTX Pulse": "{0} OTX Pulse",
-  "{0} OTX Pulses": "{0} OTX Pulse"
+  "{0} OTX Pulses": "{0} OTX Pulse",
+  "Your email checks, at a glance.": "Le tue analisi, a colpo d’occhio.",
+  "Need attention": "Da verificare",
+  "High risk or to review": "Rischio alto o da approfondire",
+  "Analyses": "Analisi"
 }

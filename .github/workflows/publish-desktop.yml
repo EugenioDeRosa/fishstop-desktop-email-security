@@ -186,11 +186,15 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ needs.prepare-release.outputs.release_tag }}
+          RELEASE_ID: ${{ needs.prepare-release.outputs.release_id }}
         run: |
           gh release download "${RELEASE_TAG}" --pattern latest.json --pattern '*.exe' --pattern '*.app.tar.gz' --dir updater-check
           gh release download "${RELEASE_TAG}" --pattern fishstop-source.zip
           gh release download "${RELEASE_TAG}" --pattern 'fishstop-notices-*.zip'
+          gh api "repos/${GH_REPO}/releases/${RELEASE_ID}" > release-metadata.json
+          node scripts/verify_desktop_release.mjs prepare-manifest updater-check release-metadata.json
           node scripts/verify_desktop_release.mjs manifest updater-check
+          gh release upload "${RELEASE_TAG}" updater-check/latest.json --clobber
       - name: Publish this build as the latest release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

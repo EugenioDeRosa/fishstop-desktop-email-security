@@ -4,7 +4,22 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { generateKeyPairSync, sign, createHash } from 'node:crypto';
-import { releaseVersion, assertNewer, verifyManifest, verifySignedFile } from './verify_desktop_release.mjs';
+import { releaseVersion, assertNewer, verifyManifest, verifySignedFile, normalizeDraftManifest } from './verify_desktop_release.mjs';
+
+test('draft updater URLs become final URLs only for this release assets', () => {
+  const asset = { name: 'FishStop 1.exe', url: 'https://api.github.com/repos/owner/repo/releases/assets/123', browser_download_url: 'https://github.com/owner/repo/releases/download/untagged-draft/FishStop%201.exe' };
+  const options = { repository: 'owner/repo', tag: 'continuous-test', assets: [asset] };
+  const manifest = { platforms: { 'windows-x86_64': { url: asset.browser_download_url, signature: 'unchanged' } } };
+  const normalized = normalizeDraftManifest(manifest, options);
+  assert.equal(normalized.platforms['windows-x86_64'].url, 'https://github.com/owner/repo/releases/download/continuous-test/FishStop%201.exe');
+  assert.equal(normalized.platforms['windows-x86_64'].signature, 'unchanged');
+  assert.equal(manifest.platforms['windows-x86_64'].url, asset.browser_download_url);
+  assert.deepEqual(normalizeDraftManifest(normalized, options), normalized);
+  assert.deepEqual(normalizeDraftManifest({ platforms: { 'windows-x86_64': { url: asset.url, signature: 'unchanged' } } }, options), normalized);
+  for (const url of ['https://example.com/FishStop%201.exe', 'https://github.com/owner/repo/releases/download/other/FishStop%201.exe']) {
+    assert.throws(() => normalizeDraftManifest({ platforms: { test: { url } } }, options));
+  }
+});
 
 test('versions agree and production updates must increase', () => {
   assert.match(releaseVersion(), /^\d+\.\d+\.\d+$/);

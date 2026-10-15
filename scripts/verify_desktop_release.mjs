@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFileSync, createReadStream } from 'node:fs';
+import { readFileSync, writeFileSync, createReadStream } from 'node:fs';
 import { createHash, createPublicKey, verify } from 'node:crypto';
 import { resolve, basename } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -39,6 +39,21 @@ export async function verifySignedFile(file, encodedSignature, encodedKey) {
   assert.ok(verify(null, Buffer.concat([signature.subarray(10), Buffer.from(lines[2].slice(17))]), publicKey, Buffer.from(lines[3] ?? '', 'base64')), 'Update signature comment rejected');
 }
 
+export function normalizeDraftManifest(manifest, { repository, tag, assets }) {
+  const normalized = structuredClone(manifest);
+  const prefix = `https://github.com/${repository}/releases/download/${tag}/`;
+  for (const update of Object.values(normalized.platforms ?? {})) {
+    const asset = assets.find(asset => update.url === asset.browser_download_url
+      || (asset.url && update.url === asset.url)
+      || update.url === prefix + encodeURIComponent(asset.name));
+    assert.ok(asset, 'Updater URL must identify an asset in this release');
+    assert.ok(asset.name && asset.name === basename(asset.name)
+      && !asset.name.includes('\\'), 'Invalid update asset name');
+    update.url = prefix + encodeURIComponent(asset.name);
+  }
+  return normalized;
+}
+
 export async function verifyManifest(manifest, { version, repository, tag, directory, publicKey }) {
   assert.equal(manifest.version, version, 'Updater manifest version does not match this build');
   for (const platform of ['windows-x86_64', 'darwin-x86_64', 'darwin-aarch64']) {
@@ -56,7 +71,15 @@ export async function verifyManifest(manifest, { version, repository, tag, direc
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const version = releaseVersion();
-  if (process.argv[2] === 'manifest') {
+  if (process.argv[2] === 'prepare-manifest') {
+    const file = resolve(process.argv[3], 'latest.json');
+    const release = JSON.parse(readFileSync(process.argv[4], 'utf8'));
+    assert.equal(release.tag_name, process.env.RELEASE_TAG, 'Wrong release metadata');
+    const manifest = normalizeDraftManifest(JSON.parse(readFileSync(file, 'utf8')), {
+      repository: process.env.GH_REPO, tag: process.env.RELEASE_TAG, assets: release.assets,
+    });
+    writeFileSync(file, JSON.stringify(manifest, null, 2) + '\n');
+  } else if (process.argv[2] === 'manifest') {
     const directory = process.argv[3];
     await verifyManifest(JSON.parse(readFileSync(resolve(directory, 'latest.json'), 'utf8')), {
       version, repository: process.env.GH_REPO, tag: process.env.RELEASE_TAG, directory,

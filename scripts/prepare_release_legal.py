@@ -11,6 +11,15 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def cargo_metadata() -> dict:
+    # Cargo emits UTF-8 JSON. Parse bytes directly instead of using the Windows
+    # locale (which may be cp1252 and cannot decode some dependency notices).
+    return json.loads(subprocess.check_output(
+        ["cargo", "metadata", "--locked", "--format-version=1"],
+        cwd=ROOT / "src-tauri",
+    ))
+
+
 def main() -> None:
     target = os.environ["FISHSTOP_TARGET_TRIPLE"]
     legal = ROOT / "src-tauri" / "resources" / "legal"
@@ -52,8 +61,7 @@ def main() -> None:
                 shutil.copyfile(source, destination)
     (legal / f"frontend-inventory-{target}.json").write_text(json.dumps(frontend_inventory, indent=2) + "\n", encoding="utf-8")
     if os.environ.get("FISHSTOP_COLLECT_RUST_NOTICES") == "1":
-        metadata = json.loads(subprocess.check_output(
-            ["cargo", "metadata", "--locked", "--format-version=1"], cwd=ROOT / "src-tauri", text=True))
+        metadata = cargo_metadata()
         rust_inventory = []
         for package in metadata["packages"]:
             if not package.get("source"):

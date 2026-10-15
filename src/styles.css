@@ -813,3 +813,20 @@ html[data-theme="dark"] .statistics-custom-period input { color-scheme:dark; }
 .guest-name-dialog input:focus { outline: 2px solid var(--night-accent,#278879); outline-offset: 2px; }
 .guest-name-dialog .guest-name-error:empty { display: none; }
 .guest-name-dialog .dialog-actions { margin-top: 4px; }
+
+/* Custom dates live in a dialog; risk reasons have a full-width heading. */
+.statistics-period-dialog { width: min(430px,calc(100vw - 40px)); }
+.statistics-period-dialog form { display: grid; gap: 16px; }
+.statistics-period-dialog h2 { font-size: 25px; }
+.statistics-period-dialog form > p { margin: 0; color: var(--night-secondary,#607974); font-size: 11px; line-height: 1.6; }
+.statistics-date-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.statistics-date-fields label { display: grid; gap: 8px; color: var(--night-secondary,#607974); font-size: 11px; }
+.statistics-date-fields input { box-sizing: border-box; min-width: 0; width: 100%; border: 1px solid var(--night-border,#cfe0db); border-radius: 8px; padding: 10px; font: inherit; font-size: 12px; background: var(--night-surface,#fff); color: var(--night-text,#294c47); }
+.statistics-content .risk-reasons { display: flex; flex-direction: column; gap: 18px; padding: 18px 20px; }
+.risk-reasons > header { display: flex; align-items: center; justify-content: space-between; gap: 18px; }
+.risk-reasons > header .page-kicker { margin-bottom: 7px; }
+.risk-reasons > header .copied-summary { margin: 0; white-space: nowrap; }
+.statistics-content .risk-reasons ol { grid-template-columns: repeat(3,minmax(0,1fr)); gap: 16px 24px; align-content: start; }
+.statistics-content .risk-reasons .statistics-empty { grid-column: 1 / -1; min-height: 30px; display: flex; align-items: center; }
+.statistics-content .risk-reasons li > span { line-height: 1.4; font-size: 11px; }
+@media(max-width:760px) { .statistics-content .risk-reasons ol { grid-template-columns: 1fr; }.risk-reasons > header { align-items: flex-start; flex-direction: column; gap: 8px; } }

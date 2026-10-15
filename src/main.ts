@@ -3069,7 +3069,8 @@ function contentFor(section: Section, user: AuthUser): string {
   const maxActivity = Math.max(1, ...activity.map((item) => item.count));
   const periodLabels: Record<StatisticsPeriod, string> = { today: t("Today"), week: t("Last 7 days"), month: t("Last month"), "3m": t("Last 3 months"), "6m": t("Last 6 months"), "9m": t("Last 9 months"), "12m": t("Last 12 months"), all: t("All"), custom: t("Custom") };
   const periodOrder: StatisticsPeriod[] = ["today", "week", "month", "3m", "6m", "9m", "12m", "all", "custom"];
-  const customPeriodMarkup = selectedPeriod === "custom" ? html`<div id="statistics-custom-period" class="statistics-custom-period"><label>From<input id="statistics-date-from" name="from" type="date" value="${customRange.from}" required /></label><label>To<input id="statistics-date-to" name="to" type="date" value="${customRange.to}" required /></label><p id="statistics-custom-status" role="status" aria-live="polite">Both dates are included.</p></div>` : "";
+  const customPeriodMarkup = html`<dialog class="confirm-dialog statistics-period-dialog" id="statistics-period-dialog" aria-labelledby="statistics-period-title"><form id="statistics-custom-period"><h2 id="statistics-period-title">Custom period</h2><p>Choose the dates to include in your statistics.</p><div class="statistics-date-fields"><label>From<input id="statistics-date-from" name="from" type="date" value="${customRange.from}" required /></label><label>To<input id="statistics-date-to" name="to" type="date" value="${customRange.to}" required /></label></div><p id="statistics-custom-status" role="status" aria-live="polite">Both dates are included.</p><div class="dialog-actions"><button type="button" data-close-statistics-period>Cancel</button><button type="submit">Apply</button></div></form></dialog>`;
+
   const periodChoices = periodOrder.map((period) => html`<button class="statistics-period-option" data-statistics-period="${period}" type="button" role="option" aria-selected="${period === selectedPeriod}">${periodLabels[period]}${period === selectedPeriod ? localizeHtml("<span aria-hidden=\"true\">✓</span>") : ""}</button>`).join("");
   const reasonItems = reasonCounts.length
     ? reasonCounts.slice(0, 6).map(({ label, count }) => html`<li><span>${escapeHtml(label)} <b>${count}</b></span><i><em style="width:${(count / reasonCounts[0].count) * 100}%"></em></i></li>`).join("")
@@ -3089,11 +3090,10 @@ function contentFor(section: Section, user: AuthUser): string {
       { label: t("Likely legitimate"), count: clearCount, tone: "clear" },
     ];
     return html`<div class="page-heading statistics-heading"><div><p class="page-kicker">RISK OVERVIEW</p><h1>Statistics</h1><p>Your email checks, at a glance.</p></div><div class="statistics-filter"><span>Period</span><div class="statistics-period-menu"><button class="statistics-period-trigger" id="statistics-period-trigger" type="button" aria-haspopup="listbox" aria-controls="statistics-period-options" aria-expanded="false">${periodLabels[selectedPeriod]}<i aria-hidden="true"></i></button><div class="statistics-period-options" id="statistics-period-options" role="listbox" aria-label="Statistics period" hidden>${periodChoices}</div></div></div></div>
-    ${customPeriodMarkup}
     <section class="metrics stats-metrics"><article><span>Emails analysed</span><strong>${total}</strong><small>${periodLabels[selectedPeriod]}</small></article><article class="attention-metric"><span>Need attention</span><strong>${attention}</strong><small>High risk or to review</small></article><article><span>Average analysis time</span><strong>${formatDuration(averageDuration)}</strong><small>${timedAnalyses.length ? t("Based on {0} completed analyses", [timedAnalyses.length]) : t("Available after new analyses")}</small></article></section>
     <section class="stats-layout stats-redesign"><article class="risk-breakdown"><header><p class="page-kicker">DISTRIBUTION</p><h2>Analysis outcomes</h2></header><div class="outcomes-body"><div class="outcomes-donut" role="img" aria-label="${outcomes.map(item => `${item.label}: ${item.count}`).join(", ")}" style="--outcome-fill:${total ? `conic-gradient(#df6b5e 0% ${highShare}%,#d9ab40 ${highShare}% ${highShare + reviewShare}%,#60bfa8 ${highShare + reviewShare}% 100%)` : "var(--night-border,#dce9e4)"}"><div><strong>${total}</strong><span>Analyses</span></div></div><ul class="outcomes-legend">${outcomes.map(item => html`<li><span class="outcome-dot ${item.tone}"></span><span>${item.label}</span><strong>${item.count}</strong><small>${total ? formatNumber(item.count / total * 100, 0) + "%" : "—"}</small></li>`).join("")}</ul></div></article>
     <article class="activity-card"><header><p class="page-kicker">ACTIVITY</p><h2>Selected period</h2></header><div class="activity-plot ${activity.some(item => item.count) ? "" : "is-empty"}" style="--activity-columns:${binCount}">${activity.some(item => item.count) ? "" : html`<p class="plot-empty">No analyses in this period.</p>`}<div class="activity-bars">${activity.map(item => html`<div class="activity-column"><div class="activity-column-plot"><div class="activity-bar" style="height:${item.count / maxActivity * 82}%" title="${item.span}: ${item.count} analyses"><b>${item.count || ""}</b></div></div><span>${item.label}</span></div>`).join("")}</div></div></article></section>
-    <section class="risk-reasons"><div><p class="page-kicker">RISK PATTERNS</p><h2>Top risk reasons</h2><p>Signals that appeared most often in the selected period.</p><small class="copied-summary">${t("Indicators copied")}: ${filteredCopyEvents.length}</small></div><ol>${reasonItems}</ol></section>`;
+    <section class="risk-reasons"><header><div><p class="page-kicker">RISK PATTERNS</p><h2>Top risk reasons</h2></div><small class="copied-summary">${t("Indicators copied")}: ${filteredCopyEvents.length}</small></header><ol>${reasonItems}</ol></section>${customPeriodMarkup}`;
   }
 
   if (section === "settings") {
@@ -3269,10 +3269,29 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
   document.querySelectorAll<HTMLButtonElement>("[data-statistics-period]").forEach((button) => button.addEventListener("click", () => {
     const period = button.dataset.statisticsPeriod as StatisticsPeriod | undefined;
     if (!period) return;
+    if (period === "custom") {
+      document.querySelector<HTMLElement>("#statistics-period-options")!.hidden = true;
+      document.querySelector("#statistics-period-trigger")?.setAttribute("aria-expanded", "false");
+      const range = statisticsCustomRange(user);
+      const from = document.querySelector<HTMLInputElement>("#statistics-date-from");
+      const to = document.querySelector<HTMLInputElement>("#statistics-date-to");
+      if (from) from.value = range.from;
+      if (to) to.value = range.to;
+      const status = document.querySelector<HTMLElement>("#statistics-custom-status");
+      if (status) status.textContent = t("Both dates are included.");
+      document.querySelector<HTMLDialogElement>("#statistics-period-dialog")?.showModal();
+      return;
+    }
     localStorage.setItem(statisticsPeriodStorageKey(user), period);
     renderDashboard(user, "statistics");
   }));
-  document.querySelector<HTMLElement>("#statistics-custom-period")?.addEventListener("change", (event) => {
+  document.querySelector("#statistics-custom-period")?.addEventListener("input", () => {
+    const status = document.querySelector<HTMLElement>("#statistics-custom-status");
+    if (status) status.textContent = t("Both dates are included.");
+  });
+  document.querySelector("[data-close-statistics-period]")?.addEventListener("click", () => document.querySelector<HTMLDialogElement>("#statistics-period-dialog")?.close());
+  document.querySelector<HTMLElement>("#statistics-custom-period")?.addEventListener("submit", (event) => {
+    event.preventDefault();
     const from = document.querySelector<HTMLInputElement>("#statistics-date-from");
     const to = document.querySelector<HTMLInputElement>("#statistics-date-to");
     const status = document.querySelector<HTMLElement>("#statistics-custom-status");
@@ -3284,9 +3303,9 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
     }
     try {
       localStorage.setItem(`${statisticsPeriodStorageKey(user)}.custom`, JSON.stringify(range));
-      const inputId = (event.target as HTMLInputElement).id;
+      localStorage.setItem(statisticsPeriodStorageKey(user), "custom");
       renderDashboard(user, "statistics");
-      document.getElementById(inputId)?.focus();
+      document.querySelector<HTMLButtonElement>("#statistics-period-trigger")?.focus();
     } catch {
       notify(t("Could not save the period. Please try again."), "error");
     }

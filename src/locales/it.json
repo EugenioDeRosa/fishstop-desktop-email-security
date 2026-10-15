@@ -1129,5 +1129,8 @@
   "Your name stays on this device. You can change it in Settings.": "Il nome resta su questo dispositivo. Puoi modificarlo nelle Impostazioni.",
   "Your name": "Il tuo nome",
   "Change your name": "Modifica il nome",
-  "Could not save your name. Please try again.": "Impossibile salvare il nome. Riprova."
+  "Could not save your name. Please try again.": "Impossibile salvare il nome. Riprova.",
+  "Custom period": "Periodo personalizzato",
+  "Choose the dates to include in your statistics.": "Scegli le date da includere nelle statistiche.",
+  "Apply": "Applica"
 }

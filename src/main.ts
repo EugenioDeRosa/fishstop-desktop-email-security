@@ -208,6 +208,9 @@ type ConversationSegment = { id: string; position: number; kind: "delivered" | "
 type ConversationManifest = { status: "single" | "conversation"; requires_selection: boolean; body_source?: string; message_count: number; segments: ConversationSegment[]; technical_scope_message: string };
 type ConversationSelection = { target_ids: string[]; context_ids: string[]; prior_context_ids?: string[]; later_context_ids?: string[] };
 let managedModelOperation: ManagedModelOperation | null = null;
+let managedModelInstallation: Promise<unknown> | null = null;
+let signingOut = false;
+let modelSessionGeneration = 0;
 let cpuOptimizationOperation: CpuOptimizationProgress | null = null;
 const RUNTIME_SNAPSHOT_KEY = "fishstop.machine-runtime-v1";
 let ollamaRuntimeSnapshot: OllamaRuntimeStatus | null = readRuntimeSnapshot();
@@ -3099,7 +3102,7 @@ function contentFor(section: Section, user: AuthUser): string {
             <div class="settings-about-heading">
               <div class="settings-about-identity"><img src="${fishstopMailCheckUrl}" alt="" aria-hidden="true" /><div><h2 id="software-license-title">About FishStop</h2><p>© 2026 Eugenio De Rosa · Free and open source</p><span class="settings-license-badge">GPL-3.0-or-later</span></div></div>
               <nav class="settings-legal-links" aria-label="FishStop information">
-                <a class="settings-link-button" href="https://github.com/EugenioDeRosa/fishstop-desktop-email-security" target="_blank" rel="noopener noreferrer">Source code <span aria-hidden="true">↗</span></a>
+                <a class="settings-link-button" href="https://github.com/EugenioDeRosa/fishstop-desktop-email-security" target="_blank" rel="noopener noreferrer">GitHub <span aria-hidden="true">↗</span></a>
                 <a class="settings-link-button" href="https://fishstop-eml.streamlit.app/?page=privacy&lang=${currentLanguage()}" target="_blank" rel="noopener noreferrer">Privacy <span aria-hidden="true">↗</span></a>
                 <a class="settings-link-button" href="https://fishstop-eml.streamlit.app/?page=terms&lang=${currentLanguage()}" target="_blank" rel="noopener noreferrer">Terms & license <span aria-hidden="true">↗</span></a>
               </nav>
@@ -3281,7 +3284,34 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
   document.querySelector<HTMLButtonElement>("#cancel-sign-out")?.addEventListener("click", () => {
     signOutDialog?.close();
   });
-  document.querySelector<HTMLButtonElement>("#confirm-sign-out")?.addEventListener("click", () => {
+  document.querySelector<HTMLButtonElement>("#confirm-sign-out")?.addEventListener("click", async () => {
+    if (signingOut) return;
+    signingOut = true;
+    modelSessionGeneration++;
+    const confirm = document.querySelector<HTMLButtonElement>("#confirm-sign-out");
+    if (confirm) { confirm.disabled = true; confirm.textContent = t("Cancelling…"); }
+    try {
+      if (managedModelOperation?.phase === "installing") {
+        await invoke("cancel_model_installation");
+        await managedModelInstallation?.catch(() => {});
+        // Prefer an installed model on the next login after a cancelled switch.
+        try {
+          const runtime = await invoke<OllamaRuntimeStatus>("ollama_runtime_status");
+          if (!runtime.model_ready) {
+            const mode = runtime.fast_model_available ? "fast" : runtime.fine_tuned_available ? "performance" : null;
+            if (mode) await invoke("set_ai_mode", { mode });
+          }
+        } catch (error) { console.error("Could not restore an installed model after cancellation", error); }
+      }
+    } catch (error) {
+      signingOut = false;
+      if (confirm) { confirm.disabled = false; confirm.textContent = t("Sign out"); }
+      notify(t("Could not stop the model download. Please try again."), "error");
+      return;
+    }
+    managedModelOperation = null;
+    managedModelInstallation = null;
+    signingOut = false;
     signOutDialog?.close();
     activeAnalysis = null;
     clearMailboxInboxCache(user);
@@ -3695,22 +3725,28 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
   });
   installManagedQwen?.addEventListener("click", async () => {
     if (aiModeChanging || backgroundChecks.paused || !managedModelStatus || !installManagedQwen || managedModelOperation || cpuOptimizationOperation) return;
+    const installationGeneration = modelSessionGeneration;
     managedModelOperation = { phase: "installing", status: t("Preparing AI model download…") };
     renderManagedOperation();
     let unlisten: (() => void) | null = null;
     let installationError: unknown = null;
     try {
       unlisten = await listen<OllamaModelProgress>("ollama-model-progress", (event) => {
-        if (managedModelOperation?.phase !== "installing") return;
+        if (installationGeneration !== modelSessionGeneration || managedModelOperation?.phase !== "installing") return;
         managedModelOperation = { phase: "installing", ...event.payload };
         renderManagedOperation();
       });
-      await invoke("install_default_ollama_model");
+      if (signingOut || installationGeneration !== modelSessionGeneration) return;
+      managedModelInstallation = invoke("install_default_ollama_model");
+      await managedModelInstallation;
     } catch (error) {
       installationError = error;
     } finally {
       unlisten?.();
+      if (installationGeneration !== modelSessionGeneration) return;
+      managedModelInstallation = null;
       managedModelOperation = null;
+      if (signingOut) return;
       renderManagedOperation();
       await refreshManagedModel(true);
     }

@@ -16,6 +16,21 @@ use std::{
 use tauri::{AppHandle, Emitter, Manager};
 
 static INSTALL_LOCK: Mutex<()> = Mutex::new(());
+static CANCELLED: AtomicBool = AtomicBool::new(false);
+
+pub fn begin_installation() { CANCELLED.store(false, Ordering::SeqCst); }
+pub fn cancel_installation() { CANCELLED.store(true, Ordering::SeqCst); }
+fn check_cancelled() -> Result<(), String> {
+    if CANCELLED.load(Ordering::SeqCst) { Err("AI model installation cancelled.".into()) } else { Ok(()) }
+}
+
+struct CancellableReader<R>(R);
+impl<R: Read> Read for CancellableReader<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        check_cancelled().map_err(std::io::Error::other)?;
+        self.0.read(buffer)
+    }
+}
 
 #[derive(Deserialize)]
 pub struct ModelArtifact {
@@ -74,6 +89,7 @@ fn progress(
     completed: Option<u64>,
     total: Option<u64>,
 ) -> Result<(), String> {
+    check_cancelled()?;
     app.emit(
         "ollama-model-progress",
         ModelProgress {
@@ -102,6 +118,7 @@ fn verify_with_progress(path: &Path, artifact: &ModelArtifact, mut report: impl 
     let mut last_update = Instant::now();
     report(0)?;
     loop {
+        check_cancelled()?;
         let count = file
             .read(&mut buffer)
             .map_err(|error| format!("Could not verify model: {error}"))?;
@@ -194,7 +211,7 @@ fn download_chunks(
             let chunk_path = &chunk_path;
             workers.push(scope.spawn(move || -> Result<(), String> {
                 for index in (worker as u64..chunks).step_by(DOWNLOAD_WORKERS) {
-                    if stopped.load(Ordering::Relaxed) {
+                    if stopped.load(Ordering::Relaxed) || CANCELLED.load(Ordering::SeqCst) {
                         return Ok(());
                     }
                     let start = index * CHUNK_SIZE;
@@ -212,14 +229,14 @@ fn download_chunks(
                     let mut last_error = String::new();
                     let mut success = false;
                     for attempt in 0..3 {
-                        if stopped.load(Ordering::Relaxed) {
+                        if stopped.load(Ordering::Relaxed) || CANCELLED.load(Ordering::SeqCst) {
                             return Ok(());
                         }
                         let mut received = 0;
                         let result = (|| -> Result<(), String> {
                             let mut response = client
                                 .get(ranged_url(base_url, start, end))
-                                .timeout(Duration::from_secs(300))
+                                .timeout(Duration::from_secs(30))
                                 .header(reqwest::header::RANGE, format!("bytes={start}-{end}"))
                                 .send()
                                 .and_then(|response| response.error_for_status())
@@ -231,7 +248,7 @@ fn download_chunks(
                                 File::create(&pending).map_err(|error| error.to_string())?;
                             let mut buffer = [0u8; 128 * 1024];
                             loop {
-                                if stopped.load(Ordering::Relaxed) {
+                                if stopped.load(Ordering::Relaxed) || CANCELLED.load(Ordering::SeqCst) {
                                     return Err("Download interrupted.".into());
                                 }
                                 let count = response
@@ -310,8 +327,10 @@ fn download_chunks(
         report(completed.load(Ordering::Relaxed))?;
         Ok(())
     })?;
+    check_cancelled()?;
     let mut file = File::create(partial).map_err(|error| error.to_string())?;
     for index in 0..chunks {
+        check_cancelled()?;
         let mut chunk = File::open(chunk_path(index)).map_err(|error| error.to_string())?;
         std::io::copy(&mut chunk, &mut file).map_err(|error| error.to_string())?;
     }
@@ -340,6 +359,7 @@ fn download(
         if verify_download(app, &ready, artifact).is_ok() {
             return Ok(ready);
         }
+        check_cancelled()?;
         fs::remove_file(&ready).map_err(|error| error.to_string())?;
     }
     let partial = ready.with_extension("gguf.partial");
@@ -371,6 +391,7 @@ fn download(
     // Servers without byte ranges use a single stream.
     let mut response = client
         .get(artifact.url()?)
+        .timeout(Duration::from_secs(60))
         .send()
         .and_then(|response| response.error_for_status())
         .map_err(|error| format!("Could not download FishSTOP AI: {error}"))?;
@@ -392,6 +413,7 @@ fn download(
         Some(artifact.size_bytes),
     )?;
     loop {
+        check_cancelled()?;
         let count = response
             .read(&mut buffer)
             .map_err(|error| format!("Model download interrupted. Please retry: {error}"))?;
@@ -471,6 +493,7 @@ pub fn install(app: &AppHandle, endpoint: &str, mode: &crate::ollama_runtime::Ai
     let _guard = INSTALL_LOCK
         .try_lock()
         .map_err(|_| "FishSTOP AI installation is already running.")?;
+    check_cancelled()?;
     let artifact = artifact_for_mode(mode);
     artifact.url()?;
     let directory = app
@@ -486,10 +509,17 @@ pub fn install(app: &AppHandle, endpoint: &str, mode: &crate::ollama_runtime::Ai
         .https_only(true)
         .build()
         .map_err(|error| error.to_string())?;
-    let file = download(app, &download_client, &artifact, &directory)?;
+    let downloaded = download(app, &download_client, &artifact, &directory);
+    if CANCELLED.load(Ordering::SeqCst) {
+        let _ = fs::remove_file(directory.join(&artifact.file).with_extension("gguf.partial"));
+        remove_chunks(&artifact, &directory);
+        return Err("AI model installation cancelled.".into());
+    }
+    let file = downloaded?;
+    check_cancelled()?;
     let runtime_client = Client::builder()
         .connect_timeout(Duration::from_secs(5))
-        .timeout(Duration::from_secs(1800))
+        .timeout(Duration::from_secs(60))
         .build()
         .map_err(|error| error.to_string())?;
     progress(
@@ -509,18 +539,19 @@ pub fn install(app: &AppHandle, endpoint: &str, mode: &crate::ollama_runtime::Ai
         let source = File::open(&file).map_err(|error| error.to_string())?;
         runtime_client
             .post(&blob_url)
-            .body(Body::sized(source, artifact.size_bytes))
+            .body(Body::sized(CancellableReader(source), artifact.size_bytes))
             .send()
             .and_then(|response| response.error_for_status())
             .map_err(|error| format!("Could not import FishSTOP AI: {error}"))?;
     }
+    check_cancelled()?;
     let response = runtime_client
         .post(format!("{endpoint}/api/create"))
         .json(&create_body(&artifact))
         .send()
         .and_then(|response| response.error_for_status())
         .map_err(|error| format!("Could not prepare FishSTOP AI: {error}"))?;
-    read_create_progress(response, |_| {
+    read_create_progress(CancellableReader(response), |_| {
         progress(app, "Preparing FishSTOP AI…", None, None)
     })?;
     let _ = fs::remove_file(file);

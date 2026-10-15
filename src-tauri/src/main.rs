@@ -2328,12 +2328,18 @@ async fn install_default_ollama_model(
     app: tauri::AppHandle,
     runtime: tauri::State<'_, Arc<Mutex<OllamaRuntime>>>,
 ) -> Result<(), String> {
+    model_download::begin_installation();
     let runtime = Arc::clone(&runtime);
     tauri::async_runtime::spawn_blocking(move || {
         ollama_runtime::install_default_model(&app, &runtime)
     })
     .await
     .map_err(|error| format!("AI model installation interrupted: {error}"))?
+}
+
+#[tauri::command]
+fn cancel_model_installation() {
+    model_download::cancel_installation();
 }
 
 #[tauri::command]
@@ -2474,6 +2480,7 @@ fn main() {
             select_startup_model,
             identity_registry,
             install_default_ollama_model,
+            cancel_model_installation,
             remove_default_ollama_model,
             local_engine_status,
             open_external_url,

@@ -830,3 +830,20 @@ html[data-theme="dark"] .statistics-custom-period input { color-scheme:dark; }
 .statistics-content .risk-reasons .statistics-empty { grid-column: 1 / -1; min-height: 30px; display: flex; align-items: center; }
 .statistics-content .risk-reasons li > span { line-height: 1.4; font-size: 11px; }
 @media(max-width:760px) { .statistics-content .risk-reasons ol { grid-template-columns: 1fr; }.risk-reasons > header { align-items: flex-start; flex-direction: column; gap: 8px; } }
+
+/* API icons are secondary controls in both themes, not filled action buttons. */
+:root .settings-grid .credential-list .credential-row-actions button {
+  width: 28px; height: 28px; min-height: 28px; padding: 7px;
+  border: 1px solid transparent; border-radius: 6px;
+  background: transparent; color: var(--night-muted,#718781); box-shadow: none;
+}
+:root .settings-grid .credential-list .credential-row-actions button svg {
+  width: 11px; height: 11px; stroke-width: 1.5;
+}
+:root .settings-grid .credential-list .credential-row-actions button:hover:not(:disabled) {
+  background: var(--night-subtle,#edf4f0); color: var(--night-text,#294c47);
+  border-color: transparent; box-shadow: none; transform: none;
+}
+:root .settings-grid .credential-list .credential-row-actions .remove-reputation-key:hover:not(:disabled) {
+  color: var(--night-danger,#a44843); background: var(--night-danger-surface,#fcf0ee);
+}

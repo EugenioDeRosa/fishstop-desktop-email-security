@@ -15,21 +15,31 @@ for(const status of ['timeout','fail','permerror','temperror']){
 }
 assert.equal(context.assessment({...informational,auth_results:{DKIM:{status:'none'}},flags:[{field:'DKIM',level:'MEDIUM',message:'DKIM none - signature validation should be reviewed'}]}).tone,'safe');
 
-// Fast may classify a threat while its final synthesis still says legitimate.
-// Headline, explanation and badge must agree, in either interface language.
+// Semantic categories alone must never convict a message. Evidence-policy risk
+// takes priority over a conflicting benign synthesis, for every model/language.
 for (const language of ['en', 'it']) {
   globalThis.__fishstopI18n.setLanguage(language);
-  for (const threat of [
+  for (const category of [
     { scam_type: 'other' },
     { scam_type: 'invoice_fraud', requested_action: 'pay_or_transfer' },
     { semantic_extraction: { scam_type: 'business_email_compromise' } },
-    { content_risk: 'malicious' },
   ]) {
-    const report = { ...informational, phi4_analysis: { status: 'ok', analysis: { ...informational.phi4_analysis.analysis, ...threat } } };
-    assert.equal(context.assessment(report).tone, 'danger', JSON.stringify(threat));
-    assert.ok(context.aiThreatLabels(report).length);
-    assert.equal(report.phi4_analysis.analysis.final_verdict, 'legitimate', 'Keep original model evidence intact');
+    for (const [risk, tone] of [['benign', 'safe'], ['suspicious', 'review'], ['malicious', 'danger']]) {
+      const report = { ...informational, phi4_analysis: { status: 'ok', analysis: { ...informational.phi4_analysis.analysis, ...category, content_risk: risk } } };
+      const original = JSON.stringify(report);
+      const verdict = context.assessment(report);
+      assert.equal(verdict.tone, tone, JSON.stringify({ category, risk }));
+      assert.equal(context.aiThreatLabels(report).length > 0, risk === 'malicious');
+      if (risk !== 'malicious') assert.doesNotMatch(verdict.detail, /detected indicators|rilevato indicatori/i);
+      assert.equal(JSON.stringify(report), original, 'Keep original model evidence intact');
+    }
   }
+  const malicious = { ...informational, phi4_analysis: { status: 'ok', analysis: { ...informational.phi4_analysis.analysis, content_risk: 'malicious' } } };
+  assert.equal(context.assessment(malicious).tone, 'danger');
+  assert.ok(context.aiThreatLabels(malicious).length);
+  const phishing = { ...informational, phi4_analysis: { status: 'ok', analysis: { ...informational.phi4_analysis.analysis, final_verdict: 'phishing', scam_type: 'invoice_fraud' } } };
+  assert.equal(context.assessment(phishing).tone, 'danger', 'Explicit phishing verdicts remain high risk');
+  assert.ok(context.aiThreatLabels(phishing).length);
   assert.equal(context.assessment(informational).tone, 'safe');
 }
 globalThis.__fishstopI18n.setLanguage('en');

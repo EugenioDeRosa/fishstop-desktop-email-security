@@ -1514,16 +1514,16 @@ function assessment(report: AnalysisReport): { tone: "safe" | "review" | "danger
   // it is the final synthesis. Confirmed external detections and strong static
   // findings can never be downgraded by an unavailable or disagreeing model.
   if (staticReason) return result("danger", t("HIGH RISK"), staticReason);
-  // Fast can return a legitimate synthesis together with a classified content
-  // threat. Use the same content evidence as the explanation and threat badges,
-  // before any benign-message exception, so the headline cannot contradict them.
-  const contentThreat = report.phi4_analysis?.status === "ok"
-    && aiThreatLabels(report).some(label => label !== t("Impersonation"));
+  // Risk classifications come from the engine's evidence policy. A scam type
+  // alone is a semantic category, not an independent finding of maliciousness.
+  const contentRisk = report.phi4_analysis?.status === "ok" ? (semantic?.content_risk || "").toLowerCase() : "";
+  const contentThreat = contentRisk === "malicious";
   if (phi === "phishing" || contentThreat) return result("danger", t("HIGH RISK"), conciseAiVerdict(report, t("Risk indicators were found. Do not interact with this message.")));
   const incomplete = incompleteAnalysisReason(report);
   if (incomplete) return result("review", t("ANALYSIS INCOMPLETE"), incomplete);
   if (unverifiedRequestedResource) return result("review", t("REVIEW REQUIRED"), unverifiedRequestedResource);
   if (high) return result("danger", t("HIGH RISK"), t("A high-severity static check failed. Do not interact with this message."));
+  if (contentRisk === "suspicious") return result("review", t("REVIEW REQUIRED"), t("Anomalies were found. Verify the message before taking any action."));
   // A first-party account notice is not suspicious merely because it contains
   // a security CTA. Require independent aligned authentication, same-party
   // destinations and the complete absence of sensitive-data or static risk.
@@ -2615,7 +2615,8 @@ function aiThreatLabels(report: AnalysisReport): string[] {
     other: t("Malicious content"),
   };
 
-  if (scamLabels[scamType]) labels.add(scamLabels[scamType]);
+  const aiFoundThreat = verdict === "phishing" || contentRisk === "malicious";
+  if (aiFoundThreat && scamLabels[scamType]) labels.add(scamLabels[scamType]);
   const impersonation = Boolean(
     extraction?.impersonation_or_deception
     || extraction?.identity_deception
@@ -2624,7 +2625,6 @@ function aiThreatLabels(report: AnalysisReport): string[] {
   const checkedIdentity = report.identity_analysis?.impersonation;
   if (checkedIdentity ? checkedIdentity.status === "inconsistent" : impersonation && verdict !== "legitimate") labels.add(t("Impersonation"));
 
-  const aiFoundThreat = verdict === "phishing" || contentRisk === "malicious";
   if (aiFoundThreat && !labels.size) {
     const actionLabels: Record<string, string> = {
       provide_credentials: t("Credential phishing"),

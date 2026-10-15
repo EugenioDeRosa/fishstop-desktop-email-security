@@ -2741,6 +2741,39 @@ function storedUser(): AuthUser | null {
   } catch { localStorage.removeItem(USER_STORAGE_KEY); return null; }
 }
 
+const GUEST_NAME_KEY = "fishstop.guest-name";
+function savedGuestName(): string {
+  try { return (localStorage.getItem(GUEST_NAME_KEY) || "").trim().slice(0, 40); }
+  catch { return ""; }
+}
+
+function requestGuestName(user: AuthUser): Promise<boolean> {
+  return new Promise(resolve => {
+    root.insertAdjacentHTML("beforeend", html`<dialog class="confirm-dialog guest-name-dialog" aria-labelledby="guest-name-title"><form id="guest-name-form"><h2 id="guest-name-title">What should we call you?</h2><p>Your name stays on this device. You can change it in Settings.</p><label for="guest-display-name">Your name</label><input id="guest-display-name" name="display-name" type="text" autocomplete="given-name" maxlength="40" required value="${escapeHtml(savedGuestName())}" /><p class="guest-name-error" role="status"></p><div class="dialog-actions"><button type="button" data-name-cancel>Cancel</button><button type="submit">Save name</button></div></form></dialog>`);
+    const dialog = root.querySelector<HTMLDialogElement>(".guest-name-dialog")!;
+    const input = dialog.querySelector<HTMLInputElement>("input")!;
+    let saved = false;
+    dialog.addEventListener("close", () => { dialog.remove(); resolve(saved); }, { once: true });
+    dialog.querySelector("[data-name-cancel]")?.addEventListener("click", () => dialog.close());
+    dialog.querySelector("form")?.addEventListener("submit", event => {
+      event.preventDefault();
+      const name = input.value.trim().replace(/\s+/g, " ").slice(0, 40);
+      if (!name) { input.value = ""; input.reportValidity(); return; }
+      try {
+        const updated = { ...user, name };
+        localStorage.setItem(GUEST_NAME_KEY, name);
+        localStorage.setItem(USER_STORAGE_KEY, JSON.stringify(updated));
+        user.name = name;
+        saved = true;
+        dialog.close();
+      } catch { dialog.querySelector<HTMLElement>(".guest-name-error")!.textContent = t("Could not save your name. Please try again."); }
+    });
+    dialog.showModal();
+    input.focus();
+    input.select();
+  });
+}
+
 function googleLogo(): string {
   return html`<svg viewBox="0 0 18 18" role="img" aria-label="Google"><path fill="#4285F4" d="M17.64 9.205c0-.638-.057-1.252-.164-1.841H9v3.481h4.844a4.14 4.14 0 0 1-1.797 2.716v2.258h2.909c1.702-1.567 2.684-3.875 2.684-6.614Z"/><path fill="#34A853" d="M9 18c2.43 0 4.468-.806 5.956-2.181l-2.91-2.258c-.805.54-1.835.859-3.046.859-2.344 0-4.328-1.585-5.037-3.714H.956v2.332A9 9 0 0 0 9 18Z"/><path fill="#FBBC05" d="M3.963 10.706A5.41 5.41 0 0 1 3.682 9c0-.592.102-1.167.281-1.706V4.962H.956A9 9 0 0 0 0 9c0 1.452.347 2.827.956 4.038l3.007-2.332Z"/><path fill="#EA4335" d="M9 3.58c1.322 0 2.508.455 3.441 1.346l2.582-2.581C13.464.892 11.426 0 9 0A9 9 0 0 0 .956 4.962l3.007 2.332C4.672 5.165 6.656 3.58 9 3.58Z"/></svg>`;
 }
@@ -2780,8 +2813,9 @@ function renderLogin(): void {
   brandPanel?.addEventListener("pointerleave", () => brandPanel.classList.remove("is-pointer-active"));
   document.querySelector<HTMLButtonElement>("#guest-login")?.addEventListener("click", async () => {
     try {
-      localStorage.setItem(USER_STORAGE_KEY, JSON.stringify(GUEST_USER));
-      await startWorkspace(GUEST_USER);
+      const user = { ...GUEST_USER, name: savedGuestName() || t("Guest") };
+      localStorage.setItem(USER_STORAGE_KEY, JSON.stringify(user));
+      await startWorkspace(user);
     } catch { notify(t("Could not open the guest workspace. Please try again."), "error"); }
   });
   const status = document.querySelector<HTMLParagraphElement>(".status");
@@ -3002,7 +3036,7 @@ function analysisPageContent(user: AuthUser, source: "file" | "inbox" = "file"):
 }
 
 function contentFor(section: Section, user: AuthUser): string {
-  const firstName = escapeHtml(user.provider === "guest" ? t("Guest") : user.name?.trim().split(/\s+/)[0] || user.email.split("@")[0]);
+  const firstName = escapeHtml((user.name?.trim().split(/\s+/)[0] || (user.provider === "guest" ? t("Guest") : user.email.split("@")[0])));
   const history = [...readAnalysisHistory(user)].sort((left, right) => Date.parse(right.analyzedAt) - Date.parse(left.analyzedAt));
   const selectedPeriod = statisticsPeriod(user);
   const customRange = statisticsCustomRange(user);
@@ -3066,7 +3100,7 @@ function contentFor(section: Section, user: AuthUser): string {
     const keys = reputationKeys(user);
     const providerStatus = (provider: string, name: string, ready: boolean) => html`<button class="provider-status" type="button" data-toggle-provider="${provider}" aria-label="${t("Enable {0}", [name])}" aria-pressed="${!disabledReputationProviders(user).includes(provider)}" ${localOnlyEnabled(user) ? "disabled" : ""}>${disabledReputationProviders(user).includes(provider) ? t("Disabled") : ready ? t("Ready") : t("Required")}</button>`;
     const keyRow = (provider: "virustotal" | "abuseipdb" | "otx", name: string, value: boolean) => html`<li class="${value ? "ready" : "missing"} ${disabledReputationProviders(user).includes(provider) ? "provider-disabled" : ""}" data-reputation-provider="${provider}"><button class="toggle-reputation-provider" type="button" data-toggle-provider="${provider}" ${localOnlyEnabled(user) ? "disabled" : ""} aria-label="Enable ${name.replace(" API key", "")}" aria-pressed="${!disabledReputationProviders(user).includes(provider)}">${disabledReputationProviders(user).includes(provider) ? "—" : "✓"}</button><div class="credential-static-copy"><strong>${name.replace(" API key", "")}</strong><small>${value ? t("Stored in the system keychain") : t("Key not configured")}</small></div><label class="credential-inline-field"><span>${t(name)}</span><input form="reputation-settings" name="${provider}" type="password" autocomplete="new-password" aria-label="${t(name)}" placeholder="${value ? t("Enter a new key or leave unchanged") : t("Enter the {0} token", [provider === "otx" ? "OTX" : provider === "virustotal" ? "VirusTotal" : "AbuseIPDB"])}" /></label>${providerStatus(provider, name.replace(" API key", ""), value)}<div class="credential-row-actions"><button class="soft-action edit-reputation-key" type="button" data-edit-reputation-key="${provider}" aria-label="${value ? t("Edit") : t("Add")} ${t(name)}" title="${value ? t("Edit") : t("Add")} ${t(name)}" aria-expanded="false">${credentialActionIcon(value ? "edit" : "add")}</button><button class="remove-reputation-key" type="button" data-remove-reputation-key="${provider}" aria-label="Remove ${t(name)}" title="Remove ${t(name)}" ${value ? "" : "hidden"}>${credentialActionIcon("remove")}</button><button class="credential-close-edit" type="button" aria-label="${t("Cancel")}" title="${t("Cancel")}">${credentialActionIcon("close")}</button></div></li>`;
-    return html`<div class="page-heading"><div><p class="page-kicker">LOCAL CONFIGURATION</p><h1>Settings</h1><p>Choose how FishStop works on this device.</p></div></div>
+    return html`<div class="page-heading"><div><p class="page-kicker">LOCAL CONFIGURATION</p><h1>Settings</h1><p>Choose how FishStop works on this device.</p></div>${user.provider === "guest" ? html`<button class="settings-profile-name" id="edit-guest-name" type="button" aria-label="Change your name" title="Change your name"><span>${escapeHtml(savedGuestName() || t("Guest"))}</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="m16 3 5 5-12 12-6 1 1-6Z"/><path d="m14 5 5 5"/></svg></button>` : ""}</div>
       <div class="settings-grid">
 
           <section class="settings-card settings-reputation">
@@ -3162,7 +3196,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
   const labels: Record<Section, string> = { dashboard: t("Dashboard"), analyse: t("Analyse"), history: t("History"), statistics: t("Statistics"), settings: t("Settings"), inbox: t("Analyse from inbox") };
   const icons: Record<Section, string> = { dashboard: homeIconMarkup(), analyse: searchIconMarkup(), inbox: inboxIconMarkup(), history: "◴", statistics: "◔", settings: "⚙" };
   const initial = escapeHtml((user.name || user.email).trim().charAt(0).toUpperCase());
-  const safeName = escapeHtml(user.provider === "guest" ? t("Guest") : user.name || (user.provider === "microsoft" ? t("Microsoft account") : t("Google account")));
+  const safeName = escapeHtml(user.provider === "guest" ? savedGuestName() || t("Guest") : user.name || (user.provider === "microsoft" ? t("Microsoft account") : t("Google account")));
   const safeEmail = user.provider === "guest" ? t("Local workspace") : escapeHtml(user.email);
   const safePicture = user.picture ? escapeHtml(user.picture) : "";
   root.innerHTML = html`<div class="app-shell ${section === "dashboard" ? "dashboard-shell" : ""}"><aside class="sidebar"><div class="sidebar-brand"><img class="brand-mark" src="${fishstopMailCheckUrl}" alt="" aria-hidden="true" /><span>fish<span>stop</span></span></div><nav aria-label="Primary navigation">${(Object.keys(labels) as Section[]).map((key) => html`<button class="nav-item ${section === key ? "selected" : ""}" data-section="${key}" type="button" ${key === "inbox" && (!ACCOUNT_ACCESS_ENABLED || user.provider === "guest") ? "disabled" : ""}><span>${icons[key]}</span>${labels[key]}</button>`).join("")}</nav><div class="sidebar-bottom"><div class="account"><span class="avatar">${safePicture ? html`<img src="${safePicture}" alt="" />` : initial}</span><div><strong>${safeName}</strong><small>${safeEmail}</small></div></div><button class="logout" id="logout" type="button">Sign out <span>↗</span></button></div></aside><main class="workspace"><header class="topbar"><div class="crumb"><span>FishStop</span><b>/</b><strong>${labels[section]}</strong></div><div class="top-status top-status-checking" data-protection-status role="status" aria-live="polite"><i aria-hidden="true"></i><span>Checking protection…</span></div></header><section class="content ${section === "dashboard" ? "dashboard-content" : section === "statistics" ? "statistics-content" : ""}">${contentFor(section, user)}</section></main></div>`;
@@ -3292,6 +3326,9 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       document.querySelector<HTMLDialogElement>("#clear-history-dialog")?.close();
       notify(t("Could not clear history. Please try again."), "error");
     });
+  });
+  document.querySelector("#edit-guest-name")?.addEventListener("click", async () => {
+    if (await requestGuestName(user)) renderDashboard(user, "settings");
   });
   const signOutDialog = document.querySelector<HTMLDialogElement>("#sign-out-dialog");
   document.querySelector<HTMLButtonElement>("#logout")?.addEventListener("click", () => {
@@ -4295,6 +4332,16 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
 }
 
 async function startWorkspace(user: AuthUser): Promise<void> {
+  if (user.provider === "guest") {
+    if (!savedGuestName() && !await requestGuestName(user)) {
+      localStorage.removeItem(USER_STORAGE_KEY);
+      renderLogin();
+      return;
+    }
+    user.name = savedGuestName();
+    localStorage.setItem(USER_STORAGE_KEY, JSON.stringify(user));
+  }
+
   root.innerHTML = html`<section class="startup-screen" role="status" aria-live="polite" aria-label="Loading FishStop"><div class="startup-content"><img class="startup-logo" src="${fishstopMailCheckUrl}" alt="" /><h1>fish<span>stop</span></h1><p data-startup-message>Checking AI model</p><div class="startup-track" aria-hidden="true"><span></span></div><small data-startup-detail>Finding the right model for your computer.</small></div></section>`;
   const update = (message: string, detail: string, percentage?: number) => {
     const title = root.querySelector<HTMLElement>("[data-startup-message]");

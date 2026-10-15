@@ -1,4 +1,5 @@
 {
+  "Save name": "Salva nome",
   "No analyses in this period.": "Nessuna analisi in questo periodo.",
   "Could not stop the model download. Please try again.": "Impossibile interrompere il download del modello. Riprova.",
   "· {0} encrypted": "· {0} cifrati",
@@ -1123,5 +1124,10 @@
   "Your email checks, at a glance.": "Le tue analisi, a colpo d’occhio.",
   "Need attention": "Da verificare",
   "High risk or to review": "Rischio alto o da approfondire",
-  "Analyses": "Analisi"
+  "Analyses": "Analisi",
+  "What should we call you?": "Come ti chiami?",
+  "Your name stays on this device. You can change it in Settings.": "Il nome resta su questo dispositivo. Puoi modificarlo nelle Impostazioni.",
+  "Your name": "Il tuo nome",
+  "Change your name": "Modifica il nome",
+  "Could not save your name. Please try again.": "Impossibile salvare il nome. Riprova."
 }

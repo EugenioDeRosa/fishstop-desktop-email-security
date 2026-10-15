@@ -799,3 +799,17 @@ html[data-theme="dark"] .statistics-custom-period input { color-scheme:dark; }
 
 .stats-redesign .outcomes-donut::before, .stats-redesign .outcomes-legend li::before { display: none; }
 .stats-redesign .outcomes-legend li { padding-left: 0; }
+
+.settings-profile-name { align-self: center; display: inline-flex; align-items: center; gap: 7px; max-width: 180px; padding: 6px 8px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--night-muted,#718781); font: inherit; font-size: 11px; cursor: pointer; }
+.settings-profile-name span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.settings-profile-name svg { width: 12px; height: 12px; flex: none; }
+.settings-profile-name:hover { background: var(--night-subtle,#edf7f4); color: var(--night-text,#294c47); }
+.settings-profile-name:focus-visible { outline: 2px solid var(--night-accent,#278879); outline-offset: 2px; }
+.guest-name-dialog form { display: grid; gap: 12px; }
+.guest-name-dialog h2 { font-size: 25px; }
+.guest-name-dialog form > p { margin: 0; color: var(--night-secondary,#607974); font-size: 11px; line-height: 1.6; }
+.guest-name-dialog label { color: var(--night-secondary,#607974); font-size: 11px; font-weight: 600; }
+.guest-name-dialog input { width: 100%; box-sizing: border-box; padding: 11px 12px; border: 1px solid var(--night-border,#cfe0db); border-radius: 8px; background: var(--night-surface,#fff); color: var(--night-text,#294c47); font: inherit; font-size: 14px; }
+.guest-name-dialog input:focus { outline: 2px solid var(--night-accent,#278879); outline-offset: 2px; }
+.guest-name-dialog .guest-name-error:empty { display: none; }
+.guest-name-dialog .dialog-actions { margin-top: 4px; }

@@ -3090,7 +3090,7 @@ function contentFor(section: Section, user: AuthUser): string {
             <form id="reputation-settings"><div class="credential-edit-actions"><button class="primary-action" type="submit">Save changes</button><button class="cancel-credentials" id="cancel-reputation-edit" type="button">Cancel</button></div><span id="settings-status" aria-live="polite"></span></form>
           </section>
 
-          <section class="settings-card ollama-lab">
+          <div class="settings-ai-stack"><section class="settings-card ollama-lab">
             <p class="page-kicker">ON-DEVICE ANALYSIS</p><h2>Local AI</h2><p class="settings-description">Choose a model and manage its installation.</p>
             <div class="machine-profile" id="machine-profile" aria-live="polite"><p>Reading machine information…</p></div>
           </section>
@@ -3098,6 +3098,7 @@ function contentFor(section: Section, user: AuthUser): string {
             <div class="settings-updates-row"><h2 id="settings-updates-title">App updates</h2><button type="button" class="soft-action" data-check-app-updates>Check for updates</button></div>
             <p data-app-update-check-status role="status" aria-live="polite">Automatic checks are enabled.</p>
           </section>
+          </div>
           <section class="settings-card settings-preferences">
             <p class="page-kicker">YOUR EXPERIENCE</p><h2>Preferences</h2>
             <div class="settings-preference-list">
@@ -3503,7 +3504,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
     }
   });
   const machineProfile = document.querySelector<HTMLElement>("#machine-profile");
-  if (machineProfile) machineProfile.innerHTML = html`<fieldset class="ai-mode-picker"><legend>Analysis mode</legend><label><input type="radio" name="ai-mode" value="fast" disabled><span class="ai-mode-copy"><span class="ai-mode-title"><strong>Fast</strong><em>1.7B</em></span><small>Quicker checks, lower memory use.</small><span class="ai-mode-availability" data-mode-availability>Checking availability…</span></span></label><label><input type="radio" name="ai-mode" value="performance" disabled><span class="ai-mode-copy"><span class="ai-mode-title"><strong>Pro</strong><em>4B</em></span><small>Deeper analysis, more memory.</small><span class="ai-mode-availability" data-mode-availability>Checking availability…</span></span></label></fieldset><section class="settings-details settings-device-details" aria-label="Device details"><h3>Device details</h3><dl><div><dt>System</dt><dd id="machine-system">Reading…</dd></div><div><dt>Processor</dt><dd id="machine-processor">Reading…</dd></div><div><dt>Memory</dt><dd id="machine-memory">Reading…</dd></div><div><dt>Execution</dt><dd id="machine-execution">Reading…</dd></div></dl></section><dl><div class="machine-model-row" id="machine-model-row"><dt>Selected model</dt><dd><div class="machine-model-heading"><div class="machine-model-identity"><strong id="machine-model-name">Checking…</strong><span class="model-status-badge" id="model-status-badge" hidden></span></div><button class="model-remove-action" id="remove-managed-qwen" type="button" aria-haspopup="dialog" aria-controls="remove-model-dialog" hidden>Remove</button><button class="model-download-action" id="install-managed-qwen" type="button" disabled>Checking…</button></div><small id="managed-model-status">Checking the bundled AI runtime…</small><div class="managed-model-progress" id="managed-model-progress" hidden><div><span id="managed-model-progress-label">Preparing download…</span><strong id="managed-model-progress-value">0%</strong><button class="model-cancel-action" id="cancel-managed-model-download" type="button">Cancel</button></div><div class="managed-model-progress-track" id="managed-model-progress-track" role="progressbar" aria-label="AI model download progress" aria-valuemin="0" aria-valuemax="100"><i id="managed-model-progress-fill"></i></div></div></dd></div></dl><div class="execution-guidance" id="execution-guidance"><section class="cpu-optimization" id="cpu-optimization" hidden><div class="cpu-optimization-heading"><span class="cpu-optimization-mark" aria-hidden="true"><i></i><i></i><i></i></span><div><p class="page-kicker">CPU PERFORMANCE</p><h4>Optimize this computer</h4></div></div><p>Run a short local benchmark to save the fastest CPU settings. No data leaves this device.</p><div class="cpu-optimization-progress" id="cpu-optimization-progress" hidden><span id="cpu-optimization-progress-label">Preparing the local benchmark…</span><div role="progressbar" aria-label="CPU optimization progress" aria-valuemin="0" aria-valuemax="100" id="cpu-optimization-progress-track"><i id="cpu-optimization-progress-fill"></i></div></div><p class="cpu-optimization-result" id="cpu-optimization-result"></p><button class="soft-action" id="optimize-cpu-performance" type="button">Optimize CPU performance</button></section></div>`;
+  if (machineProfile) machineProfile.innerHTML = html`<fieldset class="ai-mode-picker"><legend>Analysis mode</legend><label><input type="radio" name="ai-mode" value="fast" disabled><span class="ai-mode-copy"><span class="ai-mode-title"><strong>Fast</strong><em>1.7B</em></span><small>Quicker checks, lower memory use.</small><span class="ai-mode-availability" data-mode-availability>Checking availability…</span></span></label><label><input type="radio" name="ai-mode" value="performance" disabled><span class="ai-mode-copy"><span class="ai-mode-title"><strong>Pro</strong><em>4B</em></span><small>Deeper analysis, more memory.</small><span class="ai-mode-availability" data-mode-availability>Checking availability…</span></span></label></fieldset><section class="settings-details settings-device-details" aria-label="Device details"><h3>Device details</h3><dl><div><dt>System</dt><dd id="machine-system">Reading…</dd></div><div><dt>Processor</dt><dd id="machine-processor">Reading…</dd></div><div><dt>Memory</dt><dd id="machine-memory">Reading…</dd></div><div><dt>Execution</dt><dd id="machine-execution">Reading…</dd></div></dl></section><dl><div class="machine-model-row" id="machine-model-row"><dt>Selected model</dt><dd><div class="machine-model-heading"><div class="machine-model-identity"><strong id="machine-model-name">Checking…</strong><span class="model-status-badge" id="model-status-badge" hidden></span></div><button class="model-remove-action" id="remove-managed-qwen" type="button" aria-haspopup="dialog" aria-controls="remove-model-dialog" hidden>Remove</button><button class="model-download-action" id="install-managed-qwen" type="button" disabled>Checking…</button></div><small id="managed-model-status">Checking the bundled AI runtime…</small></dd></div></dl><div class="execution-guidance" id="execution-guidance"><section class="cpu-optimization" id="cpu-optimization" hidden><div class="cpu-optimization-heading"><span class="cpu-optimization-mark" aria-hidden="true"><i></i><i></i><i></i></span><div><p class="page-kicker">CPU PERFORMANCE</p><h4>Optimize this computer</h4></div></div><p>Run a short local benchmark to save the fastest CPU settings. No data leaves this device.</p><div class="cpu-optimization-progress" id="cpu-optimization-progress" hidden><span id="cpu-optimization-progress-label">Preparing the local benchmark…</span><div role="progressbar" aria-label="CPU optimization progress" aria-valuemin="0" aria-valuemax="100" id="cpu-optimization-progress-track"><i id="cpu-optimization-progress-fill"></i></div></div><p class="cpu-optimization-result" id="cpu-optimization-result"></p><button class="soft-action" id="optimize-cpu-performance" type="button">Optimize CPU performance</button></section></div>`;
   let aiModeChanging = false;
   const aiModeControls = [...document.querySelectorAll<HTMLInputElement>('input[name="ai-mode"]')];
   const machineSystem = document.querySelector<HTMLElement>("#machine-system");
@@ -3519,12 +3520,14 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
   const installManagedQwen = document.querySelector<HTMLButtonElement>("#install-managed-qwen");
   const removeManagedQwen = document.querySelector<HTMLButtonElement>("#remove-managed-qwen");
   const fineTunedModelStatus = document.querySelector<HTMLElement>("#fine-tuned-model-status");
-  const managedProgress = document.querySelector<HTMLElement>("#managed-model-progress");
-  const managedProgressLabel = document.querySelector<HTMLElement>("#managed-model-progress-label");
-  const managedProgressValue = document.querySelector<HTMLElement>("#managed-model-progress-value");
-  const managedProgressTrack = document.querySelector<HTMLElement>("#managed-model-progress-track");
-  const managedProgressFill = document.querySelector<HTMLElement>("#managed-model-progress-fill");
-  const cancelManagedDownload = document.querySelector<HTMLButtonElement>("#cancel-managed-model-download");
+  const progressTemplate = document.createElement("template");
+  progressTemplate.innerHTML = html`<div class="managed-model-progress" id="managed-model-progress" hidden><div><span id="managed-model-progress-label">Preparing download…</span><strong id="managed-model-progress-value">0%</strong><button class="model-cancel-action" id="cancel-managed-model-download" type="button">Cancel</button></div><div class="managed-model-progress-track" id="managed-model-progress-track" role="progressbar" aria-label="AI model download progress" aria-valuemin="0" aria-valuemax="100"><i id="managed-model-progress-fill"></i></div></div>`;
+  const managedProgress = progressTemplate.content.firstElementChild as HTMLElement;
+  const managedProgressLabel = managedProgress.querySelector<HTMLElement>("#managed-model-progress-label");
+  const managedProgressValue = managedProgress.querySelector<HTMLElement>("#managed-model-progress-value");
+  const managedProgressTrack = managedProgress.querySelector<HTMLElement>("#managed-model-progress-track");
+  const managedProgressFill = managedProgress.querySelector<HTMLElement>("#managed-model-progress-fill");
+  const cancelManagedDownload = managedProgress.querySelector<HTMLButtonElement>("#cancel-managed-model-download");
   cancelManagedDownload?.addEventListener("click", async () => {
     if (modelDownloadCancelling || signingOut || managedModelOperation?.phase !== "installing") return;
     modelDownloadCancelling = true;
@@ -3583,6 +3586,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
     aiModeControls.forEach(control => control.disabled = backgroundChecks.paused || aiModeChanging || !!managedModelOperation || !!cpuOptimizationOperation);
     if (!managedModelOperation) {
       if (managedProgress) {
+        managedProgress.remove();
         managedProgress.hidden = true;
         managedProgress.classList.remove("is-indeterminate");
       }
@@ -3608,7 +3612,11 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       modelStatusBadge.className = "model-status-badge busy";
       modelStatusBadge.textContent = installing ? t("Installing") : t("Removing");
     }
-    if (managedProgress) managedProgress.hidden = !installing;
+    if (managedProgress) {
+      managedProgress.hidden = !installing;
+      if (installing && !managedProgress.isConnected) managedModelStatus.after(managedProgress);
+      else if (!installing) managedProgress.remove();
+    }
     if (installing && managedProgress && managedProgressLabel && managedProgressValue && managedProgressTrack && managedProgressFill) {
       const { completed, total } = managedModelOperation;
       const determinate = typeof completed === "number" && typeof total === "number" && total > 0;

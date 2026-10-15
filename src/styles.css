@@ -851,3 +851,12 @@ html[data-theme="dark"] .statistics-custom-period input { color-scheme:dark; }
 /* The AI card follows its content rather than the height of the network column. */
 .settings-grid .ollama-lab { align-self: start; }
 .settings-grid .ollama-lab .machine-profile { margin-bottom: 0; }
+
+/* Independent right column: updates follow the AI card without a shared-row gap. */
+.settings-grid { grid-template-areas: "reputation ollama" "preferences preferences" "about about"; grid-template-rows: auto auto auto; align-items: start; }
+.settings-ai-stack { grid-area: ollama; display: grid; align-content: start; gap: 20px; min-width: 0; }
+.settings-grid .settings-ai-stack > .ollama-lab,
+.settings-grid .settings-ai-stack > .settings-app-updates { grid-area: auto; }
+.settings-grid .ollama-lab { padding-bottom: 12px; }
+.settings-grid .machine-profile .machine-model-row { padding-block: 8px; }
+@media(max-width:1080px) { .settings-grid { grid-template-areas: "reputation" "ollama" "preferences" "about"; }.settings-ai-stack { gap: 16px; } }

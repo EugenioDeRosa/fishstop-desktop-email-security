@@ -876,9 +876,7 @@ html[data-theme="dark"] .statistics-custom-period input { color-scheme:dark; }
 @media(max-width:760px) { .shell .brand-panel .hero-copy h1 { font-size: clamp(30px,5.5vw,40px); } }
 
 /* A compact settings row gives the expanded updates card a useful hierarchy. */
-.settings-grid .settings-app-updates .settings-auto-updates { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; gap: 12px; margin: 0; padding: 12px 0; border: 0; border-top: 1px solid var(--night-border,#dce9e4); border-bottom: 1px solid var(--night-border,#dce9e4); border-radius: 0; background: transparent; }
-.settings-auto-updates strong { font-size: 11px; }
-.settings-auto-updates small { display: block; max-width: 260px; margin-top: 4px; color: var(--night-muted,#718781); font-size: 10px; line-height: 1.5; font-weight: 400; }
 .settings-grid .settings-app-updates { gap: 16px; }
 .settings-grid .settings-app-updates [data-app-update-check-status] { font-size: 10px; line-height: 1.5; color: var(--night-muted,#718781); }
-@media(max-width:1080px) { .settings-grid .settings-app-updates .settings-auto-updates { margin-top: 14px; } }
+
+.settings-grid .settings-update-preferences { grid-template-columns: minmax(0,1fr); }

@@ -3096,7 +3096,7 @@ function contentFor(section: Section, user: AuthUser): string {
           </section>
           <section class="settings-card settings-app-updates" aria-labelledby="settings-updates-title">
             <div class="settings-updates-row"><h2 id="settings-updates-title">App updates</h2><button type="button" class="soft-action" data-check-app-updates>Check for updates</button></div>
-            <label class="fine-tuned-model-toggle settings-auto-updates"><span><strong>Automatic checks</strong><small>Notify me when a new version is available.</small></span><input id="automatic-app-updates" type="checkbox" role="switch" aria-label="Automatic checks" ${automaticUpdatesEnabled() ? "checked" : ""} /><i aria-hidden="true"></i></label>
+            <div class="settings-preference-list settings-update-preferences"><label class="fine-tuned-model-toggle"><span><strong>Automatic checks</strong><small>Notify me when a new version is available.</small></span><input id="automatic-app-updates" type="checkbox" role="switch" aria-label="Automatic checks" ${automaticUpdatesEnabled() ? "checked" : ""} /><i aria-hidden="true"></i></label></div>
             <p data-app-update-check-status role="status" aria-live="polite">${automaticUpdatesEnabled() ? t("Checks at startup and every hour.") : t("Automatic checks are off. You can check manually.")}</p>
           </section>
           </div>

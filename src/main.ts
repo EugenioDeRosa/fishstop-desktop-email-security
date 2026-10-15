@@ -1,3 +1,4 @@
+import { statisticsPanels } from "./statistics";
 import { t, html, localizeHtml, locale, currentLanguage, initializeLanguage, setLanguage, engineText, withLanguage, formatNumber } from "./i18n";
 import { startAppUpdates } from "./app-updates";
 import { invoke } from "@tauri-apps/api/core";
@@ -20,6 +21,7 @@ import { animate } from "motion/mini";
 import fishstopMailCheckUrl from "./fishstop-mail-check.svg";
 import "./styles.css";
 import "./night.css";
+import "./statistics.css";
 
 type AuthUser = { sub: string; name?: string; email: string; picture?: string; provider?: "google" | "microsoft" | "guest" };
 type MailboxStatus = { connected: boolean; provider: "google" | "microsoft"; email: string };
@@ -774,7 +776,7 @@ function isInStatisticsPeriod(value: string, period: StatisticsPeriod, range?: S
     return Boolean(bounds && Number.isFinite(timestamp) && timestamp >= bounds.start && timestamp < bounds.end);
   }
   const start = statisticsPeriodStart(period);
-  return Number.isFinite(timestamp) && (start === null || timestamp >= start);
+  return Number.isFinite(timestamp) && timestamp <= Date.now() && (start === null || timestamp >= start);
 }
 
 function formatDuration(milliseconds?: number): string {
@@ -2851,16 +2853,18 @@ function riskReasons(report: AnalysisReport): string[] {
   const maliciousLink = (result?: ReputationResult) => ["malicious", "suspicious"].includes((result?.status || "").toLowerCase()) || Number(result?.malicious || 0) > 0 || Number(result?.suspicious || 0) > 0;
 
   if (report.reply_to_mismatch || returnPathMismatchForVerdict(report) || report.display_name_spoofing || /reply-to|return-path|display.?name|sender.*mismatch|spoof/.test(flags)) reasons.add(t("Sender mismatch"));
-  if ((report.links || []).some((link) => link.display_mismatch || link.is_ip || maliciousLink(report.link_reputation?.[link.url || ""])) || /malicious.*url|suspicious.*url|dangerous.*link|lookalike/.test(flags)) reasons.add(t("Suspicious link"));
+  if ((report.links || []).some((link) => link.display_mismatch || link.is_ip || link.dangerous_download || ["high", "critical"].includes((link.context_risk_level || "").toLowerCase()) || maliciousLink(report.link_reputation?.[link.url || ""])) || (report.lookalike_alerts || []).some(alert => alert.level === "HIGH" || alert.level === "MEDIUM") || /malicious.*url|suspicious.*url|dangerous.*link|lookalike/.test(flags)) reasons.add(t("Suspicious link"));
   if ((report.attachments || []).some((file) => {
     const anomaly = String(file.anomaly || "").trim().toLowerCase();
     return Boolean(anomaly && anomaly !== "none")
       || ["high", "critical"].includes((file.attachment_security?.risk_level || "").toLowerCase())
       || ["medium", "high", "critical", "warning"].includes((file.pdf_security?.risk_level || "").toLowerCase())
       || ["medium", "high", "critical"].includes((file.office_security?.risk_level || "").toLowerCase())
+      || ["medium", "high", "critical"].includes((file.archive_security?.risk_level || "").toLowerCase())
+      || ["medium", "high", "critical"].includes((file.html_security?.risk_level || "").toLowerCase())
       || maliciousLink(file.file_reputation);
   }) || /attachment.*(malicious|suspicious)|pdf.*risk/.test(flags)) reasons.add(t("Suspicious attachment"));
-  if (requestedAction === "provide_credentials" || /credential|password|otp|mfa|login|sign.?in/.test(intentSignals)) reasons.add(t("Credential request"));
+  if (semantic?.semantic_extraction?.asks_for_credentials || requestedAction === "provide_credentials" || /credential|password|otp|mfa|login|sign.?in/.test(intentSignals)) reasons.add(t("Credential request"));
   if (semantic?.payment_destination_change || /payment.?destination|payment.?diversion|new.?iban|changed.?iban|beneficiary.?change/.test(intentSignals)) reasons.add(t("Payment diversion"));
   return [...reasons];
 }
@@ -3041,59 +3045,24 @@ function contentFor(section: Section, user: AuthUser): string {
   const selectedPeriod = statisticsPeriod(user);
   const customRange = statisticsCustomRange(user);
   const filteredHistory = history.filter((record) => isInStatisticsPeriod(record.analyzedAt, selectedPeriod, customRange));
-  const filteredCopyEvents = readIndicatorCopyEvents(user).filter((event) => isInStatisticsPeriod(event.copiedAt, selectedPeriod, customRange));
-  const highRiskCount = filteredHistory.filter((record) => assessment(record.report).tone === "danger").length;
-  const mediumRiskCount = filteredHistory.filter((record) => assessment(record.report).tone === "review").length;
-  const clearCount = Math.max(0, filteredHistory.length - highRiskCount - mediumRiskCount);
-  const timedAnalyses = filteredHistory.filter((record) => Number.isFinite(record.analysisDurationMs) && Number(record.analysisDurationMs) > 0);
-  const averageDuration = timedAnalyses.length ? timedAnalyses.reduce((total, record) => total + Number(record.analysisDurationMs), 0) / timedAnalyses.length : undefined;
-  const reasonCounts = riskReasonCounts(filteredHistory);
-  const dayFormatter = new Intl.DateTimeFormat(locale(), { weekday: "short" });
-  const activityStart = selectedPeriod === "custom" ? new Date(`${customRange.from}T00:00:00`)
-    : new Date(statisticsPeriodStart(selectedPeriod) ?? (filteredHistory.length ? Math.min(...filteredHistory.map(record => Date.parse(record.analyzedAt))) : Date.now()));
-  activityStart.setHours(0, 0, 0, 0);
-  const rangeEnd = selectedPeriod === "custom" ? new Date(`${customRange.to}T00:00:00`) : new Date();
-  rangeEnd.setHours(0, 0, 0, 0);
-  const calendarDays = Math.max(1, Math.round((Date.UTC(rangeEnd.getFullYear(), rangeEnd.getMonth(), rangeEnd.getDate()) - Date.UTC(activityStart.getFullYear(), activityStart.getMonth(), activityStart.getDate())) / 86_400_000) + 1);
-  const binCount = Math.min(7, calendarDays);
-  const activity = Array.from({ length: binCount }, (_, index) => {
-    const day = new Date(activityStart), end = new Date(activityStart);
-    day.setDate(day.getDate() + Math.floor(index * calendarDays / binCount));
-    end.setDate(end.getDate() + Math.floor((index + 1) * calendarDays / binCount));
-    const count = filteredHistory.filter(record => { const time = Date.parse(record.analyzedAt); return time >= day.getTime() && time < end.getTime(); }).length;
-    const last = new Date(end); last.setDate(last.getDate() - 1);
-    const label = calendarDays > 7 || selectedPeriod === "custom" ? day.toLocaleDateString(locale(), { day: "numeric", month: "short" }) : dayFormatter.format(day).replace(".", "");
-    const span = `${localDateValue(day)} – ${localDateValue(last)}`;
-    return { label, count, span };
-  });
-  const maxActivity = Math.max(1, ...activity.map((item) => item.count));
   const periodLabels: Record<StatisticsPeriod, string> = { today: t("Today"), week: t("Last 7 days"), month: t("Last month"), "3m": t("Last 3 months"), "6m": t("Last 6 months"), "9m": t("Last 9 months"), "12m": t("Last 12 months"), all: t("All"), custom: t("Custom") };
   const periodOrder: StatisticsPeriod[] = ["today", "week", "month", "3m", "6m", "9m", "12m", "all", "custom"];
   const customPeriodMarkup = html`<dialog class="confirm-dialog statistics-period-dialog" id="statistics-period-dialog" aria-labelledby="statistics-period-title"><form id="statistics-custom-period"><h2 id="statistics-period-title">Custom period</h2><p>Choose the dates to include in your statistics.</p><div class="statistics-date-fields"><label>From<input id="statistics-date-from" name="from" type="date" value="${customRange.from}" required /></label><label>To<input id="statistics-date-to" name="to" type="date" value="${customRange.to}" required /></label></div><p id="statistics-custom-status" role="status" aria-live="polite">Both dates are included.</p><div class="dialog-actions"><button type="button" data-close-statistics-period>Cancel</button><button type="submit">Apply</button></div></form></dialog>`;
 
   const periodChoices = periodOrder.map((period) => html`<button class="statistics-period-option" data-statistics-period="${period}" type="button" role="option" aria-selected="${period === selectedPeriod}">${periodLabels[period]}${period === selectedPeriod ? localizeHtml("<span aria-hidden=\"true\">✓</span>") : ""}</button>`).join("");
-  const reasonItems = reasonCounts.length
-    ? reasonCounts.slice(0, 6).map(({ label, count }) => html`<li><span>${escapeHtml(label)} <b>${count}</b></span><i><em style="width:${(count / reasonCounts[0].count) * 100}%"></em></i></li>`).join("")
-    : html`<li class="statistics-empty">No risk reasons were recorded in this period.</li>`;
   if (section === "analyse") return analysisPageContent(user);
   if (section === "inbox" && (!ACCOUNT_ACCESS_ENABLED || user.provider === "guest")) return html`<div class="page-heading"><h1>Analyse from inbox</h1><p>Coming soon. Use Analyse a file to check an exported EML.</p></div>`;
   if (section === "inbox") return analysisPageContent(user, "inbox");
   if (section === "history") return html`<div class="page-heading history-heading"><div><p class="page-kicker">PERSONAL WORKSPACE</p><div class="history-title-row"><h1>Analysis history</h1><div class="history-actions"><span class="period">${history.length} ANALYSES</span>${history.length ? html`<button id="clear-history" type="button">Clear history</button>` : ""}</div></div><p>Analyses are stored only for this account, on this device.</p></div></div>${history.length ? html`<section class="history-list">${history.map((record) => { const high = verdictFlags(record.report).filter((flag) => flag.level === "HIGH").length; return html`<button class="history-item" data-open-history="${record.id}" type="button"><span class="history-risk ${high ? "high" : "clear"}">${high ? t("{0} HIGH", [high]) : "OK"}</span><span><strong>${escapeHtml(record.report.subject || t("No subject"))}</strong><small>${escapeHtml(record.report.from_ || t("Sender unavailable"))} · ${formatAnalysisDate(record.analyzedAt)}</small></span><b>Open →</b></button>`; }).join("")}</section>` : html`<section class="empty-state"><span class="empty-icon">⌁</span><h2>No analyses yet.</h2><p>Your first EML analysis will appear here.</p><button class="soft-action" data-go="analyse" type="button">Analyse an email <span>→</span></button></section>`}`;
   if (section === "statistics") {
-    const total = filteredHistory.length;
-    const attention = highRiskCount + mediumRiskCount;
-    const highShare = total ? highRiskCount / total * 100 : 0;
-    const reviewShare = total ? mediumRiskCount / total * 100 : 0;
-    const outcomes = [
-      { label: t("High risk"), count: highRiskCount, tone: "high" },
-      { label: t("To review"), count: mediumRiskCount, tone: "medium" },
-      { label: t("Likely legitimate"), count: clearCount, tone: "clear" },
-    ];
+    const samples = filteredHistory.map(record => ({ analyzedAt: record.analyzedAt, tone: assessment(record.report).tone, duration: record.analysisDurationMs }));
+    const start = selectedPeriod === "custom" ? new Date(customRange.from + "T00:00:00")
+      : new Date(statisticsPeriodStart(selectedPeriod) ?? (samples.length ? Math.min(...samples.map(record => Date.parse(record.analyzedAt))) : Date.now()));
+    const end = selectedPeriod === "custom" ? new Date(customRange.to + "T00:00:00") : new Date();
+    const unavailable = !analysisHistoryReady.has(user.sub) ? t("Loading your local history…")
+      : analysisHistoryErrors.has(user.sub) ? t("History unavailable. Restart FishStop to try again.") : "";
     return html`<div class="page-heading statistics-heading"><div><p class="page-kicker">RISK OVERVIEW</p><h1>Statistics</h1><p>Your email checks, at a glance.</p></div><div class="statistics-filter"><span>Period</span><div class="statistics-period-menu"><button class="statistics-period-trigger" id="statistics-period-trigger" type="button" aria-haspopup="listbox" aria-controls="statistics-period-options" aria-expanded="false">${periodLabels[selectedPeriod]}<i aria-hidden="true"></i></button><div class="statistics-period-options" id="statistics-period-options" role="listbox" aria-label="Statistics period" hidden>${periodChoices}</div></div></div></div>
-    <section class="metrics stats-metrics"><article><span>Emails analysed</span><strong>${total}</strong><small>${periodLabels[selectedPeriod]}</small></article><article class="attention-metric"><span>Need attention</span><strong>${attention}</strong><small>High risk or to review</small></article><article><span>Average analysis time</span><strong>${formatDuration(averageDuration)}</strong><small>${timedAnalyses.length ? t("Based on {0} completed analyses", [timedAnalyses.length]) : t("Available after new analyses")}</small></article></section>
-    <section class="stats-layout stats-redesign"><article class="risk-breakdown"><header><p class="page-kicker">DISTRIBUTION</p><h2>Analysis outcomes</h2></header><div class="outcomes-body"><div class="outcomes-donut" role="img" aria-label="${outcomes.map(item => `${item.label}: ${item.count}`).join(", ")}" style="--outcome-fill:${total ? `conic-gradient(#df6b5e 0% ${highShare}%,#d9ab40 ${highShare}% ${highShare + reviewShare}%,#60bfa8 ${highShare + reviewShare}% 100%)` : "var(--night-border,#dce9e4)"}"><div><strong>${total}</strong><span>Analyses</span></div></div><ul class="outcomes-legend">${outcomes.map(item => html`<li><span class="outcome-dot ${item.tone}"></span><span>${item.label}</span><strong>${item.count}</strong><small>${total ? formatNumber(item.count / total * 100, 0) + "%" : "—"}</small></li>`).join("")}</ul></div></article>
-    <article class="activity-card"><header><p class="page-kicker">ACTIVITY</p><h2>Selected period</h2></header><div class="activity-plot ${activity.some(item => item.count) ? "" : "is-empty"}" style="--activity-columns:${binCount}">${activity.some(item => item.count) ? "" : html`<p class="plot-empty">No analyses in this period.</p>`}<div class="activity-bars">${activity.map(item => html`<div class="activity-column"><div class="activity-column-plot"><div class="activity-bar" style="height:${item.count / maxActivity * 82}%" title="${item.span}: ${item.count} analyses"><b>${item.count || ""}</b></div></div><span>${item.label}</span></div>`).join("")}</div></div></article></section>
-    <section class="risk-reasons"><header><div><p class="page-kicker">RISK PATTERNS</p><h2>Top risk reasons</h2></div><small class="copied-summary">${t("Indicators copied")}: ${filteredCopyEvents.length}</small></header><ol>${reasonItems}</ol></section>${customPeriodMarkup}`;
+    ${statisticsPanels(samples, start, end, riskReasonCounts(filteredHistory), unavailable)}${customPeriodMarkup}`;
   }
 
   if (section === "settings") {
@@ -3199,7 +3168,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
   const safeName = escapeHtml(user.provider === "guest" ? savedGuestName() || t("Guest") : user.name || (user.provider === "microsoft" ? t("Microsoft account") : t("Google account")));
   const safeEmail = user.provider === "guest" ? t("Local workspace") : escapeHtml(user.email);
   const safePicture = user.picture ? escapeHtml(user.picture) : "";
-  root.innerHTML = html`<div class="app-shell ${section === "dashboard" ? "dashboard-shell" : ""}"><aside class="sidebar"><div class="sidebar-brand"><img class="brand-mark" src="${fishstopMailCheckUrl}" alt="" aria-hidden="true" /><span>fish<span>stop</span></span></div><nav aria-label="Primary navigation">${(Object.keys(labels) as Section[]).map((key) => html`<button class="nav-item ${section === key ? "selected" : ""}" data-section="${key}" type="button" ${key === "inbox" && (!ACCOUNT_ACCESS_ENABLED || user.provider === "guest") ? "disabled" : ""}><span>${icons[key]}</span>${labels[key]}</button>`).join("")}</nav><div class="sidebar-bottom"><div class="account"><span class="avatar">${safePicture ? html`<img src="${safePicture}" alt="" />` : initial}</span><div><strong>${safeName}</strong><small>${safeEmail}</small></div></div><button class="logout" id="logout" type="button">Sign out <span>↗</span></button></div></aside><main class="workspace"><header class="topbar"><div class="crumb"><span>FishStop</span><b>/</b><strong>${labels[section]}</strong></div><div class="top-status top-status-checking" data-protection-status role="status" aria-live="polite"><i aria-hidden="true"></i><span>Checking protection…</span></div></header><section class="content ${section === "dashboard" ? "dashboard-content" : section === "statistics" ? "statistics-content" : ""}">${contentFor(section, user)}</section></main></div>`;
+  root.innerHTML = html`<div class="app-shell ${section === "dashboard" ? "dashboard-shell" : section === "statistics" ? "statistics-shell" : ""}"><aside class="sidebar"><div class="sidebar-brand"><img class="brand-mark" src="${fishstopMailCheckUrl}" alt="" aria-hidden="true" /><span>fish<span>stop</span></span></div><nav aria-label="Primary navigation">${(Object.keys(labels) as Section[]).map((key) => html`<button class="nav-item ${section === key ? "selected" : ""}" data-section="${key}" type="button" ${key === "inbox" && (!ACCOUNT_ACCESS_ENABLED || user.provider === "guest") ? "disabled" : ""}><span>${icons[key]}</span>${labels[key]}</button>`).join("")}</nav><div class="sidebar-bottom"><div class="account"><span class="avatar">${safePicture ? html`<img src="${safePicture}" alt="" />` : initial}</span><div><strong>${safeName}</strong><small>${safeEmail}</small></div></div><button class="logout" id="logout" type="button">Sign out <span>↗</span></button></div></aside><main class="workspace"><header class="topbar"><div class="crumb"><span>FishStop</span><b>/</b><strong>${labels[section]}</strong></div><div class="top-status top-status-checking" data-protection-status role="status" aria-live="polite"><i aria-hidden="true"></i><span>Checking protection…</span></div></header><section class="content ${section === "dashboard" ? "dashboard-content" : section === "statistics" ? "statistics-content" : ""}">${contentFor(section, user)}</section></main></div>`;
   const active = currentAnalysis(user);
   const activeSource = active?.source || "file";
   if (((section === "analyse" && activeSource === "file") || (section === "inbox" && activeSource === "inbox")) && active?.status === "complete" && active.report) {
@@ -3229,6 +3198,16 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
   document.querySelectorAll<HTMLButtonElement>("[data-section]").forEach((button) => button.addEventListener("click", () => renderDashboard(user, button.dataset.section as Section)));
   document.querySelectorAll<HTMLButtonElement>("[data-go]").forEach((button) => button.addEventListener("click", () => renderDashboard(user, button.dataset.go as Section)));
   const statisticsMenu = document.querySelector<HTMLElement>(".statistics-period-menu");
+  document.querySelectorAll<HTMLButtonElement>("[data-statistics-view]").forEach(button => button.addEventListener("click", () => {
+    document.querySelector<HTMLElement>(".statistics-panels")!.dataset.view = button.dataset.statisticsView;
+    document.querySelectorAll<HTMLButtonElement>("[data-statistics-view]").forEach(tab => tab.setAttribute("aria-pressed", String(tab === button)));
+  }));
+  document.querySelectorAll<HTMLButtonElement>("[data-statistics-tooltip]").forEach(button => {
+    const show = () => { document.querySelector<HTMLElement>(".statistics-tooltip")!.textContent = button.dataset.statisticsTooltip || ""; };
+    const hide = () => { document.querySelector<HTMLElement>(".statistics-tooltip")!.textContent = ""; };
+    button.addEventListener("focus", show); button.addEventListener("mouseenter", show);
+    button.addEventListener("blur", hide); button.addEventListener("mouseleave", hide);
+  });
   const statisticsTrigger = document.querySelector<HTMLButtonElement>("#statistics-period-trigger");
   const statisticsOptions = document.querySelector<HTMLElement>(".statistics-period-options");
   const closeStatisticsMenu = () => {

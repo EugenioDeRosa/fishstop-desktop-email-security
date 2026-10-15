@@ -1132,5 +1132,22 @@
   "Could not save your name. Please try again.": "Impossibile salvare il nome. Riprova.",
   "Custom period": "Periodo personalizzato",
   "Choose the dates to include in your statistics.": "Scegli le date da includere nelle statistiche.",
-  "Apply": "Applica"
+  "Apply": "Applica",
+  "Statistics summary": "Riepilogo statistiche",
+  "Saved in this period": "Salvate nel periodo",
+  "of analyses": "delle analisi",
+  "Typical analysis time": "Durata tipica",
+  "Median of {0} timed analyses": "Mediana di {0} analisi cronometrate",
+  "No timing data available": "Tempi non disponibili",
+  "Statistics view": "Vista statistiche",
+  "Overview": "Panoramica",
+  "Signals": "Segnali",
+  "Analyses over time": "Analisi nel tempo",
+  "{0} analyses": "{0} analisi",
+  "Recurring signals": "Segnali ricorrenti",
+  "Analyses containing each signal": "Analisi con ciascun segnale",
+  "Each email is counted once per signal. An email can contain multiple signals.": "Ogni email viene contata una volta per segnale. Può contenere più segnali.",
+  "Only analyses saved on this device. Clearing history also changes these statistics.": "Solo analisi salvate su questo dispositivo. Cancellare lo storico modifica anche le statistiche.",
+  "Loading your local history…": "Caricamento dello storico locale…",
+  "History unavailable. Restart FishStop to try again.": "Storico non disponibile. Riavvia FishStop per riprovare."
 }

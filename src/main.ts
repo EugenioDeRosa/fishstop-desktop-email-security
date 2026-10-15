@@ -1514,7 +1514,12 @@ function assessment(report: AnalysisReport): { tone: "safe" | "review" | "danger
   // it is the final synthesis. Confirmed external detections and strong static
   // findings can never be downgraded by an unavailable or disagreeing model.
   if (staticReason) return result("danger", t("HIGH RISK"), staticReason);
-  if (phi === "phishing") return result("danger", t("HIGH RISK"), conciseAiVerdict(report, t("Risk indicators were found. Do not interact with this message.")));
+  // Fast can return a legitimate synthesis together with a classified content
+  // threat. Use the same content evidence as the explanation and threat badges,
+  // before any benign-message exception, so the headline cannot contradict them.
+  const contentThreat = report.phi4_analysis?.status === "ok"
+    && aiThreatLabels(report).some(label => label !== t("Impersonation"));
+  if (phi === "phishing" || contentThreat) return result("danger", t("HIGH RISK"), conciseAiVerdict(report, t("Risk indicators were found. Do not interact with this message.")));
   const incomplete = incompleteAnalysisReason(report);
   if (incomplete) return result("review", t("ANALYSIS INCOMPLETE"), incomplete);
   if (unverifiedRequestedResource) return result("review", t("REVIEW REQUIRED"), unverifiedRequestedResource);

@@ -15,6 +15,25 @@ for(const status of ['timeout','fail','permerror','temperror']){
 }
 assert.equal(context.assessment({...informational,auth_results:{DKIM:{status:'none'}},flags:[{field:'DKIM',level:'MEDIUM',message:'DKIM none - signature validation should be reviewed'}]}).tone,'safe');
 
+// Fast may classify a threat while its final synthesis still says legitimate.
+// Headline, explanation and badge must agree, in either interface language.
+for (const language of ['en', 'it']) {
+  globalThis.__fishstopI18n.setLanguage(language);
+  for (const threat of [
+    { scam_type: 'other' },
+    { scam_type: 'invoice_fraud', requested_action: 'pay_or_transfer' },
+    { semantic_extraction: { scam_type: 'business_email_compromise' } },
+    { content_risk: 'malicious' },
+  ]) {
+    const report = { ...informational, phi4_analysis: { status: 'ok', analysis: { ...informational.phi4_analysis.analysis, ...threat } } };
+    assert.equal(context.assessment(report).tone, 'danger', JSON.stringify(threat));
+    assert.ok(context.aiThreatLabels(report).length);
+    assert.equal(report.phi4_analysis.analysis.final_verdict, 'legitimate', 'Keep original model evidence intact');
+  }
+  assert.equal(context.assessment(informational).tone, 'safe');
+}
+globalThis.__fishstopI18n.setLanguage('en');
+
 const settings={...informational,phi4_analysis:{status:'ok',analysis:{...informational.phi4_analysis.analysis,requested_action:'change_account_settings',action_channel:'normal_known_procedure',intent_evidence:'Settings > Storage'}},
   links:[{url:'https://unknown.example/settings',host:'unknown.example',scheme:'https',display_text:'Settings > Storage',html_call_to_action:true}],link_reputation:{}};
 assert.equal(context.assessment(settings).tone,'review','a supplied settings CTA is not an independent path');

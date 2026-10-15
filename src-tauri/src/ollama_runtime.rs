@@ -54,7 +54,11 @@ fn startup_mode_for_hardware(memory_bytes: Option<u64>, accelerated: bool, logic
 
 fn startup_mode(saved: Option<AiMode>, fast_installed: bool, performance_installed: bool,
     memory_bytes: Option<u64>, accelerated: bool, logical_cpus: usize) -> AiMode {
-    if let Some(mode) = saved { return mode; }
+    match saved {
+        Some(AiMode::Fast) if fast_installed => return AiMode::Fast,
+        Some(AiMode::Performance) if performance_installed => return AiMode::Performance,
+        _ => {}
+    }
     match (fast_installed, performance_installed) {
         (true, false) => AiMode::Fast,
         (_, true) => AiMode::Performance,
@@ -66,7 +70,7 @@ pub fn select_startup_model(app: &AppHandle, runtime: &Arc<Mutex<OllamaRuntime>>
     let current = status(app, runtime);
     let saved_path = app.path().app_data_dir().map_err(|error| error.to_string())?.join("ai-mode.json");
     let saved = fs::read(&saved_path).ok().and_then(|data| serde_json::from_slice::<AiMode>(&data).ok());
-    // Hardware selection happens only without a saved choice or installed model.
+    // A saved choice is reusable only while that model is still installed.
     // A previous Fast install still records the user's mode, but never makes v2 ready.
     let fast_installed = current.fast_model_available || managed_model_installed(app, PREVIOUS_FAST_MODEL);
     let mode = startup_mode(saved, fast_installed, current.fine_tuned_available,
@@ -1566,6 +1570,8 @@ pub fn remove_default_model(
         .send()
         .and_then(|response| response.error_for_status())
         .map_err(|error| format!("Could not remove the AI model: {error}"))?;
+    // Removing a model must not schedule its download on the next login.
+    select_startup_model(app, runtime)?;
     Ok(())
 }
 
@@ -1591,9 +1597,11 @@ mod tests {
         assert_eq!(startup_mode(None, false, true, None, false, 2), AiMode::Performance);
         assert_eq!(startup_mode(Some(AiMode::Fast), true, true, high_memory, true, 16), AiMode::Fast);
         assert_eq!(startup_mode(Some(AiMode::Performance), true, true, None, false, 2), AiMode::Performance);
-        // An interrupted download resumes the saved choice, regardless of new hardware.
-        assert_eq!(startup_mode(Some(AiMode::Fast), false, false, high_memory, true, 16), AiMode::Fast);
-        assert_eq!(startup_mode(Some(AiMode::Performance), false, false, None, false, 2), AiMode::Performance);
+        assert_eq!(startup_mode(Some(AiMode::Performance), true, false, None, false, 2), AiMode::Fast);
+        assert_eq!(startup_mode(Some(AiMode::Fast), false, true, high_memory, true, 16), AiMode::Performance);
+        // Missing or removed models do not force another download of the saved choice.
+        assert_eq!(startup_mode(Some(AiMode::Fast), false, false, high_memory, true, 16), AiMode::Performance);
+        assert_eq!(startup_mode(Some(AiMode::Performance), false, false, None, false, 2), AiMode::Fast);
     }
 
     use super::{fine_tuned_version_from_tags, machine_profile, OllamaTag, FINE_TUNED_MODEL, FAST_MODEL, AiMode, model_for_mode};

@@ -1,6 +1,6 @@
 import { statisticsPanels } from "./statistics";
 import { t, html, localizeHtml, locale, currentLanguage, initializeLanguage, setLanguage, engineText, withLanguage, formatNumber } from "./i18n";
-import { startAppUpdates } from "./app-updates";
+import { startAppUpdates, automaticUpdatesEnabled, setAutomaticUpdatesEnabled } from "./app-updates";
 import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -3096,7 +3096,8 @@ function contentFor(section: Section, user: AuthUser): string {
           </section>
           <section class="settings-card settings-app-updates" aria-labelledby="settings-updates-title">
             <div class="settings-updates-row"><h2 id="settings-updates-title">App updates</h2><button type="button" class="soft-action" data-check-app-updates>Check for updates</button></div>
-            <p data-app-update-check-status role="status" aria-live="polite">Automatic checks are enabled.</p>
+            <label class="fine-tuned-model-toggle settings-auto-updates"><span><strong>Automatic checks</strong><small>Notify me when a new version is available.</small></span><input id="automatic-app-updates" type="checkbox" role="switch" aria-label="Automatic checks" ${automaticUpdatesEnabled() ? "checked" : ""} /><i aria-hidden="true"></i></label>
+            <p data-app-update-check-status role="status" aria-live="polite">${automaticUpdatesEnabled() ? t("Checks at startup and every hour.") : t("Automatic checks are off. You can check manually.")}</p>
           </section>
           </div>
           <section class="settings-card settings-preferences">
@@ -3325,6 +3326,16 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       document.querySelector<HTMLDialogElement>("#clear-history-dialog")?.close();
       notify(t("Could not clear history. Please try again."), "error");
     });
+  });
+  document.querySelector<HTMLInputElement>("#automatic-app-updates")?.addEventListener("change", event => {
+    const toggle = event.target as HTMLInputElement;
+    if (!setAutomaticUpdatesEnabled(toggle.checked)) {
+      toggle.checked = !toggle.checked;
+      notify(t("Could not save update preferences. Please try again."), "error");
+      return;
+    }
+    const status = document.querySelector<HTMLElement>("[data-app-update-check-status]");
+    if (status) status.textContent = toggle.checked ? t("Checks at startup and every hour.") : t("Automatic checks are off. You can check manually.");
   });
   document.querySelector("#edit-guest-name")?.addEventListener("click", async () => {
     if (await requestGuestName(user)) renderDashboard(user, "settings");

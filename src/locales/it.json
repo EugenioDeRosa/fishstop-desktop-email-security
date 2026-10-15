@@ -1149,5 +1149,10 @@
   "Each email is counted once per signal. An email can contain multiple signals.": "Ogni email viene contata una volta per segnale. Può contenere più segnali.",
   "Only analyses saved on this device. Clearing history also changes these statistics.": "Solo analisi salvate su questo dispositivo. Cancellare lo storico modifica anche le statistiche.",
   "Loading your local history…": "Caricamento dello storico locale…",
-  "History unavailable. Restart FishStop to try again.": "Storico non disponibile. Riavvia FishStop per riprovare."
+  "History unavailable. Restart FishStop to try again.": "Storico non disponibile. Riavvia FishStop per riprovare.",
+  "Automatic checks": "Controlli automatici",
+  "Notify me when a new version is available.": "Avvisami quando è disponibile una nuova versione.",
+  "Checks at startup and every hour.": "Verifica all’avvio e ogni ora.",
+  "Automatic checks are off. You can check manually.": "Controlli automatici disattivati. Puoi verificare manualmente.",
+  "Could not save update preferences. Please try again.": "Impossibile salvare le preferenze di aggiornamento. Riprova."
 }

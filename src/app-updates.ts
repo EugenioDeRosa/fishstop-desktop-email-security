@@ -4,6 +4,19 @@ import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import "./app-updates.css";
 
+const AUTO_UPDATES_KEY = "fishstop.automatic-update-checks";
+export function automaticUpdatesEnabled(): boolean {
+  try { return localStorage.getItem(AUTO_UPDATES_KEY) !== "false"; }
+  catch { return true; }
+}
+export function setAutomaticUpdatesEnabled(enabled: boolean): boolean {
+  try {
+    localStorage.setItem(AUTO_UPDATES_KEY, String(enabled));
+    window.dispatchEvent(new Event("fishstop:auto-updates-change"));
+    return true;
+  } catch { return false; }
+}
+
 export function updateCheckFailure(error: unknown): string {
   const message = String(error);
   if (/valid release JSON|release.?not.?found|\b404\b/i.test(message)) {
@@ -65,6 +78,7 @@ export function startAppUpdates(isBusy: () => boolean): void {
     dialog.showModal();
   }
   async function checkForUpdates(manual = false) {
+    if (!manual && !automaticUpdatesEnabled()) return;
     if (checking || installing || installed || dialog.open) return;
     if (isBusy()) {
       if (manual) checkStatus(t("Finish the current operation before checking for updates."));
@@ -77,7 +91,7 @@ export function startAppUpdates(isBusy: () => boolean): void {
       await pending?.close();
       pending = update;
       checkStatus(update ? t("FishSTOP {0} is available.", [update.version]) : t("You are using the latest version of FishSTOP."));
-      if (update && (manual || !dismissed.has(update.version))) { later.textContent = t("Later"); showUpdate(); }
+      if (update && (manual || (automaticUpdatesEnabled() && !dismissed.has(update.version)))) { later.textContent = t("Later"); showUpdate(); }
     } catch (error) {
       console.warn("App update check failed", error);
       if (manual) checkStatus(updateCheckFailure(error));
@@ -137,9 +151,12 @@ export function startAppUpdates(isBusy: () => boolean): void {
   });
   // Silent network failures never block startup or interrupt an analysis.
   setInterval(() => {
-    if (document.hidden) return;
+    if (document.hidden || !automaticUpdatesEnabled()) return;
     if (deferred) showUpdate();
     else if (Date.now() >= nextCheck) void checkForUpdates();
   }, 5000);
+  window.addEventListener("fishstop:auto-updates-change", () => {
+    if (automaticUpdatesEnabled()) nextCheck = Date.now() + 10000;
+  });
   window.addEventListener("online", () => { void checkForUpdates(); });
 }

@@ -15,21 +15,21 @@ class Element {
 const tick = async () => { for (let i=0;i<12;i++) await Promise.resolve(); };
 async function harness() {
   let next = null, busy = false, checks = 0, relaunches = 0;
-  const intervals = [], listeners = {};
+  const intervals = [], listeners = {}, windowListeners = {}, preferences = new Map();
   const dialog = new Element(); dialog.children = {};
   const inlineStatus = new Element();
   const document = { querySelectorAll:()=>[inlineStatus], hidden:false, createElement:()=>dialog, body:{append(){}}, addEventListener:(name, fn)=>listeners[name]=fn };
   const exports = {};
-  new Function('exports','require','document','window','setInterval','setTimeout', compiled)(exports, name => {
+  new Function('exports','require','document','window','setInterval','setTimeout','localStorage', compiled)(exports, name => {
     if (name === './i18n') return globalThis.__fishstopI18n;
     if (name.includes('/core')) return { isTauri:()=>true };
     if (name.includes('plugin-updater')) return { check:async()=>{checks++; if(next instanceof Error) throw next; return next;} };
     if (name.includes('plugin-process')) return { relaunch:async()=>{relaunches++;} };
     return {};
-  }, document, {addEventListener(){}}, fn=>intervals.push(fn), ()=>{});
+  }, document, {addEventListener(name, fn){windowListeners[name]=fn;}, dispatchEvent(event){windowListeners[event.type]?.();}}, fn=>intervals.push(fn), ()=>{}, {getItem:key=>preferences.get(key) ?? null,setItem:(key,value)=>preferences.set(key,value)});
   exports.startAppUpdates(()=>busy || dialog.open);
   const manual = async()=>{listeners.click({target:{closest:()=>new Element()}}); await tick();};
-  return {dialog, inlineStatus, updateCheckFailure:exports.updateCheckFailure, manual, intervals, setNext:value=>next=value, setBusy:value=>busy=value, get checks(){return checks;}, get relaunches(){return relaunches;}};
+  return {automaticUpdatesEnabled:exports.automaticUpdatesEnabled,setAutomaticUpdatesEnabled:exports.setAutomaticUpdatesEnabled,online:async()=>{windowListeners.online();await tick();},dialog, inlineStatus, updateCheckFailure:exports.updateCheckFailure, manual, intervals, setNext:value=>next=value, setBusy:value=>busy=value, get checks(){return checks;}, get relaunches(){return relaunches;}};
 }
 let h=await harness();
 await h.manual();
@@ -72,3 +72,15 @@ assert.ok(settings.indexOf('settings-app-updates') < settings.indexOf('settings-
 assert.ok(settings.indexOf('ollama-lab') < settings.indexOf('settings-app-updates'));
 assert.equal((settings.match(/data-check-app-updates/g)||[]).length,1);
 console.log('App update checks passed: discovery, explicit consent, postponement, busy guard, safe notes, resource cleanup, install/restart and error recovery.');
+
+h=await harness();
+assert.equal(h.automaticUpdatesEnabled(),true,'Existing automatic checks remain enabled by default');
+assert.equal(h.setAutomaticUpdatesEnabled(false),true);
+await h.online();
+assert.equal(h.checks,0,'Automatic network-triggered checks respect the disabled preference');
+await h.manual();
+assert.equal(h.checks,1,'Manual checks remain available when automatic checks are disabled');
+assert.equal(h.automaticUpdatesEnabled(),false);
+assert.equal(h.setAutomaticUpdatesEnabled(true),true);
+await h.online();
+assert.equal(h.checks,2,'Re-enabling allows automatic checks again');

@@ -4,8 +4,8 @@ import { readFileSync } from 'node:fs';
 import ts from 'typescript';
 
 const source = ts.createSourceFile('main.ts', readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8'), ts.ScriptTarget.Latest, true);
-const names = ['storedUser', 'renderLogin'];
-const constants = ['ACCOUNT_ACCESS_ENABLED', 'GUEST_USER', 'USER_STORAGE_KEY'];
+const names = ['storedUser', 'renderLogin', 'savedGuestName'];
+const constants = ['ACCOUNT_ACCESS_ENABLED', 'GUEST_USER', 'USER_STORAGE_KEY', 'GUEST_NAME_KEY'];
 const selected = source.statements.filter(node =>
   ts.isFunctionDeclaration(node) && names.includes(node.name?.text) ||
   ts.isVariableStatement(node) && node.declarationList.declarations.some(d => constants.includes(d.name.getText(source))));
@@ -36,9 +36,11 @@ assert.equal(oauthCalls, 0);
 await handlers.get('#guest-login')();
 assert.equal(user.sub, 'guest:local-v1');
 assert.deepEqual(app.storedUser(), user, 'Guest session restores after restart');
+storage.setItem('fishstop.guest-name', 'Alex');
 storage.removeItem(app.USER_STORAGE_KEY);
 await handlers.get('#guest-login')();
 assert.equal(user.sub, app.GUEST_USER.sub, 'Returning after sign-out reuses the history namespace');
+assert.equal(user.name, 'Alex', 'Returning guests keep their chosen name');
 storage.setItem(app.USER_STORAGE_KEY, JSON.stringify({ sub: 'old-google-user', email: 'old@example.invalid', provider: 'google' }));
 assert.equal(app.storedUser(), null, 'Guest-only release does not resume an OAuth account');
 console.log('Guest access checks passed: no OAuth calls, persistence and isolated legacy accounts.');

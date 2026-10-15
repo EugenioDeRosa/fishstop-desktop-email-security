@@ -880,3 +880,11 @@ html[data-theme="dark"] .statistics-custom-period input { color-scheme:dark; }
 .settings-grid .settings-app-updates [data-app-update-check-status] { font-size: 10px; line-height: 1.5; color: var(--night-muted,#718781); }
 
 .settings-grid .settings-update-preferences { grid-template-columns: minmax(0,1fr); }
+
+/* Replace the selected-model contents in place; progress never adds a row. */
+.settings-grid .machine-profile .machine-model-row.is-downloading { position: relative; box-sizing: border-box; grid-template-columns: 68px minmax(0,1fr); padding: 8px 12px; }
+.settings-grid .machine-model-row.is-downloading > dt,
+.settings-grid .machine-model-row.is-downloading > dd { visibility: hidden; }
+.settings-grid .machine-model-row.is-downloading > .managed-model-progress { position: absolute; inset: 7px 12px; display: grid; align-content: center; gap: 5px; margin: 0; padding: 0; min-width: 0; }
+.settings-grid .machine-model-row.is-downloading #managed-model-progress-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; overflow-wrap: normal; }
+.settings-grid .machine-model-row.is-downloading .model-cancel-action { min-height: 22px; padding: 2px 5px; }

@@ -3596,6 +3596,8 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
   const renderManagedOperation = (): boolean => {
     aiModeControls.forEach(control => control.disabled = backgroundChecks.paused || aiModeChanging || !!managedModelOperation || !!cpuOptimizationOperation);
     if (!managedModelOperation) {
+      machineModelRow?.classList.remove("is-downloading");
+      machineModelRow?.style.removeProperty("height");
       if (managedProgress) {
         managedProgress.remove();
         managedProgress.hidden = true;
@@ -3608,6 +3610,14 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
     }
     if (!managedModelStatus || !installManagedQwen || !removeManagedQwen) return false;
     const installing = managedModelOperation.phase === "installing";
+    if (installing && machineModelRow && !machineModelRow.classList.contains("is-downloading")) {
+      const height = machineModelRow.getBoundingClientRect().height;
+      machineModelRow.style.height = `${height || 48}px`;
+      machineModelRow.classList.add("is-downloading");
+    } else if (!installing) {
+      machineModelRow?.classList.remove("is-downloading");
+      machineModelRow?.style.removeProperty("height");
+    }
     managedModelStatus.hidden = installing;
     installManagedQwen.hidden = true;
     installManagedQwen.disabled = true;
@@ -3625,7 +3635,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
     }
     if (managedProgress) {
       managedProgress.hidden = !installing;
-      if (installing && !managedProgress.isConnected) managedModelStatus.after(managedProgress);
+      if (installing && !managedProgress.isConnected) machineModelRow?.append(managedProgress);
       else if (!installing) managedProgress.remove();
     }
     if (installing && managedProgress && managedProgressLabel && managedProgressValue && managedProgressTrack && managedProgressFill) {
@@ -3633,6 +3643,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       const determinate = typeof completed === "number" && typeof total === "number" && total > 0;
       const percent = determinate ? Math.max(0, Math.min(100, Math.floor(completed / total * 100))) : 0;
       managedProgressLabel.textContent = engineText(managedModelOperation.status || t("Downloading AI model…"));
+      managedProgressLabel.title = managedProgressLabel.textContent;
       managedProgressValue.textContent = determinate ? `${percent}%` : "…";
       managedProgress.classList.toggle("is-indeterminate", !determinate);
       managedProgressFill.style.width = determinate ? `${percent}%` : "35%";

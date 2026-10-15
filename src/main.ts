@@ -3304,6 +3304,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
         } catch (error) { console.error("Could not restore an installed model after cancellation", error); }
       }
     } catch (error) {
+      modelSessionGeneration--;
       signingOut = false;
       if (confirm) { confirm.disabled = false; confirm.textContent = t("Sign out"); }
       notify(t("Could not stop the model download. Please try again."), "error");

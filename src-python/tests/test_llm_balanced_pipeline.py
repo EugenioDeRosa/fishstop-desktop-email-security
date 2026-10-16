@@ -607,8 +607,9 @@ class BalancedPipelineTests(unittest.TestCase):
         analysis = result["analysis"]
         self.assertEqual("informational", analysis["requested_action"])
         self.assertFalse(analysis["semantic_extraction"]["asks_for_credentials"])
-        self.assertEqual("benign", analysis["content_risk"])
-        self.assertEqual("legitimate", analysis["final_verdict"])
+        # A contradictory AI warning is reviewed rather than silently erased.
+        self.assertEqual("suspicious", analysis["content_risk"])
+        self.assertEqual("review", analysis["final_verdict"])
         self.assertEqual(
             "The email provides a one-time authentication code for an independently initiated verification flow.",
             analysis["content_summary"],
@@ -1016,7 +1017,7 @@ class BalancedPipelineTests(unittest.TestCase):
             llm.PHI4_OUTPUT_SCHEMA["required"],
             [
                 "summary", "action", "channel", "evidence", "signals", "ambiguity",
-                "risk_assessment", "risk_evidence",
+                "risk_assessment", "risk_evidence", "risk_rationale",
             ],
         )
         self.assertNotIn("confidence", llm.PHI4_OUTPUT_SCHEMA["properties"])
@@ -1048,18 +1049,19 @@ class BalancedPipelineTests(unittest.TestCase):
         self.assertNotIn("TECHNICAL EVIDENCE", prompt)
         self.assertNotIn("SPF check did not pass", prompt)
 
-    def test_primary_and_audit_share_the_exact_system_prefix(self):
+    def test_primary_and_audit_share_system_but_separate_judgement_from_extraction(self):
         self.assertEqual(llm.TARGETED_SYSTEM_MESSAGE, llm.SYSTEM_MESSAGE)
-        self.assertEqual(llm.SHARED_TASK_PREFIX, llm.TASK_INSTRUCTIONS)
+        self.assertLess(len(llm.TASK_INSTRUCTIONS), len(llm.SHARED_TASK_PREFIX))
         audit_prompt = (
             llm.SHARED_TASK_PREFIX
             + llm.TARGETED_TASK_PREFIX
             + llm.TARGETED_INTENT_INSTRUCTIONS
         )
-        self.assertTrue(audit_prompt.startswith(llm.TASK_INSTRUCTIONS))
+        self.assertTrue(audit_prompt.startswith(llm.SHARED_TASK_PREFIX))
+        self.assertIn("Is this email phishing?", llm.TASK_INSTRUCTIONS)
 
     def test_shared_prompt_keeps_critical_policy_rules(self):
-        fixed_prompt = llm.SYSTEM_MESSAGE + llm.TASK_INSTRUCTIONS
+        fixed_prompt = llm.SYSTEM_MESSAGE + llm.SHARED_TASK_PREFIX
         for rule in (
             "credentials when the recipient is asked to disclose",
             "delivers or displays a one-time security",
@@ -1215,7 +1217,7 @@ class BalancedPipelineTests(unittest.TestCase):
         self.assertEqual("clean", analysis["technical_risk"])
         self.assertEqual("review", analysis["final_verdict"])
 
-    def test_ungrounded_model_risk_hypothesis_is_discarded(self):
+    def test_ungrounded_model_risk_quote_is_discarded_without_erasing_the_warning(self):
         semantic = llm.normalize_semantic_extraction(
             _primary(
                 action="open_attachment",
@@ -1232,7 +1234,7 @@ class BalancedPipelineTests(unittest.TestCase):
             },
         )
 
-        self.assertEqual("benign", semantic["model_content_risk"])
+        self.assertEqual("phishing", semantic["model_content_risk"])
         self.assertEqual("", semantic["model_risk_evidence"])
 
     def test_audit_output_budget_scales_with_enabled_checks(self):

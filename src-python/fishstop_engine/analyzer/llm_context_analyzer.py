@@ -3485,6 +3485,17 @@ def apply_email_risk_policy(soc: dict, semantic: dict) -> dict:
         # request or an action through a channel supplied by the message.
         verdict = "phishing"
     elif (
+        semantic["model_content_risk"] in {"suspicious", "phishing"}
+        and (
+            (semantic.get("risk_verification") or {}).get("status") in {"disagreement", "unavailable"}
+            or not semantic.get("model_risk_evidence")
+            or (semantic["model_content_risk"] == "phishing" and not semantic.get("model_risk_rationale"))
+        )
+    ):
+        # Weak corroboration must not turn an unresolved AI warning into a
+        # phishing conviction. Strong independent findings above still apply.
+        verdict = "review"
+    elif (
         content_risk == "suspicious"
         and semantic.get("asks_for_payment")
         and bool(semantic.get("evidence_phrase"))

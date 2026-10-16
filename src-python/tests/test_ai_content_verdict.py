@@ -181,6 +181,13 @@ class AIContentVerdictTests(unittest.TestCase):
         self.assertEqual("phishing", result["ai_content_assessment"])
         self.assertEqual("", result["ai_content_evidence"])
 
+    def test_weak_technical_anomaly_cannot_convict_unresolved_ai_warning(self):
+        for status in ("disagreement", "unavailable"):
+            raw = dict(self.raw, risk_verification={"status": status})
+            with self.subTest(status=status), patch.object(llm, "_technical_risk", return_value=("uncertain", ["Unknown destination"])):
+                result = llm.apply_email_risk_policy(self.soc, raw)
+                self.assertEqual("review", result["final_verdict"])
+
 
 if __name__ == "__main__":
     unittest.main()

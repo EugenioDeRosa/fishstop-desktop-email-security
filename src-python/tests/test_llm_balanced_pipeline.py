@@ -1074,7 +1074,7 @@ class BalancedPipelineTests(unittest.TestCase):
         ):
             self.assertIn(rule, fixed_prompt)
 
-    def test_grounded_phishing_hypothesis_and_cross_domain_pdf_uri_are_correlated(self):
+    def test_phishing_hypothesis_without_rationale_and_cross_domain_pdf_uri_require_review(self):
         evidence = "Mais informações em anexo."
         soc = {
             "from_": "Account Service <personal.sender@gmail.com>",
@@ -1123,7 +1123,7 @@ class BalancedPipelineTests(unittest.TestCase):
 
         self.assertEqual("suspicious", analysis["content_risk"])
         self.assertEqual("uncertain", analysis["technical_risk"])
-        self.assertEqual("phishing", analysis["final_verdict"])
+        self.assertEqual("review", analysis["final_verdict"])
 
     def test_benign_pdf_with_external_uri_is_not_escalated_by_structure_alone(self):
         evidence = "Please review the attached employee handbook."

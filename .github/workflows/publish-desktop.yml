@@ -181,6 +181,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: lts/*
+      - name: Verify the Fast model is published before releasing installers
+        run: node scripts/verify_fast_release_model.mjs
       - name: Verify updater manifest before publishing
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

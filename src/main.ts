@@ -2560,7 +2560,7 @@ function setIdentityPanel(container: HTMLElement, analysis: NonNullable<Analysis
   const verified = assessment?.status === "consistent" && assessment?.decision === "none";
   const suspicious = assessment?.status === "inconsistent";
   const tone = verified ? "safe" : suspicious ? "danger" : "review";
-  const label = verified ? t("Identity verified") : suspicious ? t("Possible impersonation") : t("Verification unavailable");
+  const label = verified ? t("Identity verified") : suspicious ? t("Possible impersonation") : t("Identity not confirmed");
   const brand = assessment?.claimed_identity || analysis.entities?.find(item => item.name)?.name || "";
   const message = verified ? t("{0} matches the documented company identity.", [brand || t("The sender")])
     : suspicious ? t("{0} does not match the sender or requested destination.", [brand || t("The claimed company")])

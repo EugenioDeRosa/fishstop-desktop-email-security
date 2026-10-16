@@ -86,10 +86,11 @@ sensibili sono selezionate da CTA/ruolo `body_action`, non da tutti i link di
 una newsletter. Età e DMARC `p=none` sono contesto debole. Dati mancanti restano
 neutrali. Un dominio vecchio, un redirect o un provider condiviso non concedono fiducia.
 
-Una contraddizione del mittente rispetto a un riferimento pubblico risolto
-produce possibile impersonificazione e revisione, senza richiedere che il
-riferimento sia nel catalogo. L'autenticazione mancante resta distinta dalla
-contraddizione e non la nasconde. Una richiesta di verifica, credenziali o
+Un mittente assente dal solo riferimento pubblico resta non confermato e richiede
+revisione: un elenco di siti pubblici non enumera tutti i domini email aziendali.
+Una contraddizione con un registro mantenuto, un dominio imitativo o una
+destinazione sospetta può ancora produrre possibile impersonificazione.
+L'autenticazione mancante resta distinta dalla contraddizione. Una richiesta di verifica, credenziali o
 modifica dell'account verso una casella personale non documentata tramite
 `mailto:` genera una contraddizione sulla destinazione; diventa una prova forte
 quando il riferimento è un registro o catalogo indipendentemente mantenuto e
@@ -110,8 +111,9 @@ loro completamento. La cache Wikidata è versionata per non riutilizzare gli
 esiti ambigui della vecchia risoluzione.
 
 Le impostazioni non mostrano sezioni, moduli o configurazioni per la protezione dell’identità.
-Nel risultato si mostrano solo identità verificata, possibile impersonificazione
-o verifica indisponibile, con una spiegazione breve. I dettagli sono chiusi
+Nel risultato si mostrano identità verificata, possibile impersonificazione
+o identità non confermata, con una spiegazione breve. Gli errori di analisi
+restano verifiche indisponibili. I dettagli sono chiusi
 per impostazione predefinita e contengono solo domini, autenticazione e anomalie.
 Indice, confidenza e controlli mancanti restano nel report strutturato. I record
 non risolti non mostrano una falsa data di verifica. Il registro amministrativo resta disponibile nel backend per integrazioni gestite;
@@ -126,6 +128,22 @@ Se Wikidata non documenta un'azienda, l'app segnala informazioni insufficienti,
 senza chiedere all'utente di compilare un partner e senza indovinare la proprietà
 del dominio. CT, ASN e BIMI/VMC validato restano fuori dal punteggio iniziale.
 Il catalogo non pretende di enumerare tutti i mittenti o domini regionali di un brand.
+
+Per domini regionali con lo stesso nome registrabile, il sito HTTPS risolto
+indipendentemente può confermare una relazione tramite un indirizzo `mailto:`
+esplicito sul dominio del mittente. Si visitano al massimo tre pagine per sito,
+incluse pagine contatti e redirect solo all'interno del dominio ufficiale, entro
+il budget complessivo del lookup. Si conservano URL della fonte, data e scadenza
+(24 ore; tentativi senza evidenze: 5 minuti). La sola somiglianza, un link web
+generico o un redirect dal dominio del mittente non bastano. Questa prova
+aggiunge solo una relazione di mittente, non autentica il messaggio e non
+autorizza destinazioni per credenziali, pagamenti o altre azioni.
+
+Il link esatto HTTPS `aka.ms/LearnAboutSenderIdentification`, senza parametri,
+è classificato come avviso informativo del client di posta e rimane nel report
+senza essere una CTA. Il testo completo riconosciuto dell'avviso italiano o
+inglese viene rimosso dall'input AI; il contenuto originale resta disponibile.
+Altri percorsi, parametri e domini simili non ricevono questa classificazione.
 
 ## Aziende piccole e partner (solo amministratori)
 

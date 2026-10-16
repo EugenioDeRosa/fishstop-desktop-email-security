@@ -96,12 +96,22 @@ class ImpersonationTests(unittest.TestCase):
         self.assess()
         self.assertEqual(before, self.report)
 
-    def test_public_reference_mismatch_is_visible_as_possible_impersonation(self):
+    def test_public_reference_mismatch_is_unconfirmed(self):
         self.report["from_"] = "Acme <notice@unrelated.test>"
         self.reference[0]["contacts"][0]["matches_official"] = False
         result = self.assess()
-        self.assertEqual("inconsistent", result["status"])
+        self.assertEqual("insufficient_data", result["status"])
         self.assertEqual("review", result["decision"], "A public list alone cannot convict phishing")
+        self.reference[0]["resolution_source"] = "maintained_catalog"
+        self.assertEqual("inconsistent", self.assess()["status"])
+
+    def test_regional_domain_is_not_automatically_trusted(self):
+        self.report["from_"] = "Acme <notice@acme.it>"
+        self.reference[0]["contacts"][0]["matches_official"] = False
+        result = self.assess()
+        self.assertEqual("insufficient_data", result["status"])
+        self.assertIn("company_sender_relationship_unconfirmed", result["missing"])
+        self.assertFalse(result["coverage"]["authentication"])
 
     def test_account_verification_to_personal_mailbox_is_strong_destination_evidence(self):
         self.reference[0]["resolution_source"] = "maintained_catalog"

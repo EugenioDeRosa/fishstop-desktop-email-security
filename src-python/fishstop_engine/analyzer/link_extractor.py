@@ -340,6 +340,10 @@ def extract_links(
         if not _is_web_url_candidate(raw_url):
             return
         url = _normalize_malformed_userinfo(_with_scheme(raw_url))
+        from fishstop_engine.mail_notices import is_sender_identification_notice_url
+        if source != "attachment" and is_sender_identification_notice_url(url):
+            role = "mail_client_notice"
+            html_call_to_action = False
         dedupe_key = _url_dedupe_key(url)
         if not url:
             return

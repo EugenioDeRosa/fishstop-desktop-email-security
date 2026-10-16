@@ -8,7 +8,7 @@ from urllib.parse import urlparse
 from fishstop_engine.domain_utils import registered_domain, normalize_hostname, identity_mailbox
 from fishstop_engine.analyzer.lookalike import check_lookalike_domains
 
-RULE_VERSION = 2
+RULE_VERSION = 3
 WEIGHTS = {"free_mail_claim": 25, "sender_domain_mismatch": 15,
            "sender_lookalike": 35, "display_domain_deception": 35,
            "sensitive_external_action": 20, "action_lookalike": 35,
@@ -75,6 +75,7 @@ def assess_impersonation(report: dict, claimed_entities: list[dict], semantic: d
                 add("authenticated_documented_sender", "sender_identity", "An aligned DKIM signature independently authenticates the documented sender domain.", "independent_dkim")
         elif sender:
             add("sender_domain_mismatch", "sender_identity", f"The sender {sender_host} differs from the public domains for {brand}; an external sending service may still be legitimate.", source)
+            missing.append("company_sender_relationship_unconfirmed")
             if sender in FREE_MAIL_DOMAINS:
                 add("free_mail_claim", "sender_identity", f"The message represents {brand} using the personal mail provider {sender}.", "From")
             lookalikes = check_lookalike_domains([{"host": sender_host, "url": "https://" + sender_host}], known_brands=sorted(official))
@@ -147,7 +148,7 @@ def assess_impersonation(report: dict, claimed_entities: list[dict], semantic: d
     escalation = bool(represented and official and (len(strong) >= 2 or "action_destination" in strong))
     # A documented contradiction deserves review in the UI, even when it is
     # insufficient to convict phishing. Incomplete public references stay neutral.
-    documented_mismatch = represented and sender and official and any(
+    documented_mismatch = source in {"maintained_catalog", "administrator_confirmation", "signed_directory"} and represented and sender and official and any(
         item["id"] == "sender_domain_mismatch" for item in signals)
     destination_mismatch = represented and any(item["family"] == "action_destination" and item["weight"] > 0 for item in signals)
     status = "inconsistent" if strong or documented_mismatch or destination_mismatch else "consistent" if represented and documented_sender and authenticated else "insufficient_data"

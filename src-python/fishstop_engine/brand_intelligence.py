@@ -440,6 +440,79 @@ def _official_site(name: str) -> tuple[str, str]:
     return (websites[0] if websites else ""), message
 
 
+def _official_sender_evidence(websites: list[str], sender: str, deadline: float) -> dict:
+    """An explicit same-label mail contact on an independently resolved HTTPS site.
+
+    Generic links, redirects from the sender and shared infrastructure cannot
+    establish this relationship. No action destinations are authorised here.
+    """
+    eligible = [site for site in websites if _same_organisation_label(sender, _official_domain(site))
+                and sender != _official_domain(site)]
+    if not eligible:
+        return {}
+    key = "official-mail-contact-v1:" + sender + ":" + "|".join(sorted(eligible))
+    previous = cached(key)
+    if previous is not None:
+        return previous
+    session = requests.Session()
+    session.trust_env = False
+    evidence = {}
+    try:
+        for site in eligible[:2]:
+            queue = [site]
+            visited = set()
+            while queue and len(visited) < 3 and time.monotonic() < deadline:
+                url = queue.pop(0)
+                parsed = urlparse(url)
+                host = normalize_hostname(parsed.hostname or "")
+                if (parsed.scheme != "https" or parsed.username or parsed.password
+                        or parsed.port not in {None, 443} or _official_domain(url) != _official_domain(site)
+                        or not _resolves_only_to_public_addresses(host) or url in visited):
+                    continue
+                visited.add(url)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                with session.get(url, allow_redirects=False, stream=True, timeout=min(2, remaining),
+                                 headers=WIKIDATA_HEADERS) as response:
+                    if response.status_code in _REDIRECT_STATUSES:
+                        queue.insert(0, urljoin(url, response.headers.get("Location", "")))
+                        continue
+                    if response.status_code != 200 or "html" not in response.headers.get("Content-Type", "").lower():
+                        continue
+                    chunks, size = [], 0
+                    for chunk in response.iter_content(16384):
+                        size += len(chunk)
+                        if size > _MAX_OFFICIAL_PAGE_BYTES or time.monotonic() >= deadline:
+                            break
+                        chunks.append(chunk)
+                    else:
+                        from bs4 import BeautifulSoup
+                        soup = BeautifulSoup(b"".join(chunks), "html.parser")
+                        for anchor in soup.find_all("a", href=True):
+                            href = str(anchor["href"])
+                            target = urlparse(href)
+                            if target.scheme.lower() == "mailto" and re.fullmatch(r"[^@\s?,;]+@" + re.escape(sender), target.path, re.I):
+                                evidence = {"source": "official_site_mail_contact", "reference": url,
+                                            "domain": sender, "observed_at": time.time()}
+                                put(key, evidence, 86400)
+                                return evidence
+                            # Follow only a few contact pages on the resolved site.
+                            if re.search(r"contact|contatti|kontakt", href, re.I):
+                                queue.append(urljoin(url, href))
+    except (requests.RequestException, ValueError, UnicodeError):
+        pass
+    finally:
+        session.close()
+    put(key, evidence, 300)
+    return evidence
+
+
+def _public_sender_reference(name: str, sender: str, deadline: float) -> tuple:
+    websites, message = _official_sites(name, deadline)
+    return websites, message, _official_sender_evidence(websites, sender, deadline)
+
+
 def _auth_result(report: dict, name: str) -> dict:
     return (
         (report.get("effective_auth_results") or {}).get(name)
@@ -477,7 +550,7 @@ def assess_brand_coherence(report: dict, entities: list[dict]) -> list[dict]:
     pool = ThreadPoolExecutor(max_workers=4)
     candidates = [entity for entity in entities[:4] if entity.get("name") and _entity_is_brand_candidate(entity)]
     partners = {str(entity["name"]): resolve_partner(str(entity["name"])) for entity in candidates}
-    futures = {str(entity["name"]): pool.submit(_official_sites, str(entity["name"]), deadline)
+    futures = {str(entity["name"]): pool.submit(_public_sender_reference, str(entity["name"]), sender, deadline)
                for entity in candidates if not partners[str(entity["name"])]}
     dns_future = pool.submit(dns_observations, sender) if sender else None
     rdap_future = pool.submit(rdap_observations, sender) if sender and candidates else None
@@ -496,6 +569,7 @@ def assess_brand_coherence(report: dict, entities: list[dict]) -> list[dict]:
         if not name or not _entity_is_brand_candidate(entity):
             continue
         partner = partners.get(name)
+        sender_evidence = {}
         relations = partner.get("relations", []) if partner else []
         if partner:
             official_domains = [item["domain"] for item in relations if item["role"] == "official"]
@@ -506,7 +580,7 @@ def assess_brand_coherence(report: dict, entities: list[dict]) -> list[dict]:
             message = "Company-to-domain relationships are recorded in an unexpired, scoped identity registry."
         else:
             try:
-                websites, message = collected(futures.get(name), ([], "Public organisation lookup is currently unavailable."))
+                websites, message, sender_evidence = collected(futures.get(name), ([], "Public organisation lookup is currently unavailable.", {}))
             except (requests.RequestException, ValueError, KeyError, TypeError):
                 websites, message = [], "Public organisation lookup is currently unavailable."
             official_domains = list(dict.fromkeys(filter(None, (_official_domain(site) for site in websites))))
@@ -517,6 +591,8 @@ def assess_brand_coherence(report: dict, entities: list[dict]) -> list[dict]:
             expires_at = verified_at + 86400
         sender_domains = set(official_domains) if not partner else {
             item["domain"] for item in relations if "sender" in item["scopes"]}
+        if sender_evidence:
+            sender_domains.add(sender)
         # An unknown website, redirect, CT certificate or shared provider can never add an accepted domain.
         associated = sorted(sender_domains - set(official_domains))
         comparisons = []
@@ -534,7 +610,7 @@ def assess_brand_coherence(report: dict, entities: list[dict]) -> list[dict]:
                                 "redirects_to_official": False})
         mismatches = [item for item in comparisons if official_domains and item["mismatch_eligible"] and not item["matches_official"]]
         coherent = bool(sender and any(item["source"] == "From" and item["matches_official"] for item in comparisons))
-        status = "mismatch" if mismatches else "aligned" if coherent and authenticated else "unverified"
+        status = "mismatch" if mismatches and partner else "aligned" if coherent and authenticated else "unverified"
         action_relations = [item for item in relations if any(scope != "sender" and scope != "reply" for scope in item["scopes"])]
         external_reply = sorted({item["domain"] for item in comparisons if item["role"] == "reply_destination" and item["is_external"]})
         # Only independently authenticated, registry-associated messages update a baseline.
@@ -562,7 +638,7 @@ def assess_brand_coherence(report: dict, entities: list[dict]) -> list[dict]:
                         "contacts": comparisons, "mismatches": mismatches, "status": status, "message": message,
                         "reference_status": partner["source"] if partner else "public_reference" if official_domains else "unresolved",
                         "sender_authentication": "verified" if authenticated else "unverified",
-                        "evidence": [{"source": source, "reference": reference, "observed_at": verified_at, "expires_at": expires_at,
+                        "evidence": ([{**sender_evidence, "expires_at": sender_evidence["observed_at"] + 86400, "confidence": "medium"}] if sender_evidence else []) + [{"source": source, "reference": reference, "observed_at": verified_at, "expires_at": expires_at,
                                       "confidence": "high" if partner else "medium" if official_domains else "unknown"}] if official_domains else [],
                         "dns_observations": observation,
                         "registration_observations": registration,

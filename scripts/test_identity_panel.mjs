@@ -10,7 +10,7 @@ const escapeHtml = value => String(value).replaceAll('&', '&amp;').replaceAll('<
 const render = new Function('escapeHtml', `${compiled}; return setIdentityPanel;`)(escapeHtml);
 const panel = { innerHTML: '' };
 const container = { querySelector: () => panel };
-for (const [status, decision, label] of [['consistent', 'none', 'Identity verified'], ['inconsistent', 'review', 'Possible impersonation'], ['insufficient_data', 'none', 'Verification unavailable']]) {
+for (const [status, decision, label] of [['consistent', 'none', 'Identity verified'], ['inconsistent', 'review', 'Possible impersonation'], ['insufficient_data', 'none', 'Identity not confirmed']]) {
   render(container, { impersonation: { status, decision, claimed_identity: 'Microsoft', score: 35, missing: ['rdap_unavailable'] }, entities: [{ name: 'Microsoft' }] });
   assert.ok(panel.innerHTML.includes(label));
   assert.ok(!/Confidence:|Suspicion index|organisation candidates|rdap unavailable|Company references/.test(panel.innerHTML), 'Internal diagnostics do not clutter the user-facing card');
@@ -21,7 +21,7 @@ render(container, { impersonation: { status: 'insufficient_data', claimed_identi
 assert.ok(!panel.innerHTML.includes('<script>'));
 assert.ok(panel.innerHTML.includes('&lt;script&gt;'));
 render(container, { impersonation: { status: 'insufficient_data' } });
-assert.ok(panel.innerHTML.includes('Verification unavailable'));
+assert.ok(panel.innerHTML.includes('Identity not confirmed'));
 assert.ok(!panel.innerHTML.includes('<details'), 'No empty details are shown');
 render(container, { impersonation: { status: 'insufficient_data', decision: 'none', claimed_identity: 'Example Platform', claimed_role: 'third_party' } });
 assert.ok(panel.innerHTML.includes('named as a service or third party'));

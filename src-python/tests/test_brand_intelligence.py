@@ -27,6 +27,7 @@ class BrandIntelligenceTests(unittest.TestCase):
         patch("fishstop_engine.brand_intelligence.dns_observations", return_value={"provider": "Microsoft 365", "status": "observed"}).start()
         patch("fishstop_engine.brand_intelligence.rdap_observations", return_value={"identity_evidence": False}).start()
         self.lookup = patch("fishstop_engine.brand_intelligence._official_sites", return_value=(["https://acme.com/"], "Public reference.")).start()
+        self.sender_evidence = patch("fishstop_engine.brand_intelligence._official_sender_evidence", return_value={}).start()
 
     def partner(self, relations=None):
         return registry_operation({"operation": "add", "brand": "Acme", "identity_confirmed": True,
@@ -52,7 +53,7 @@ class BrandIntelligenceTests(unittest.TestCase):
     def test_redirects_ct_and_shared_provider_cannot_promote_attacker(self):
         with patch("fishstop_engine.brand_intelligence._redirects_to_official_domain", return_value=True) as redirects:
             result = assess_brand_coherence(message("acme-login.com"), [entity()])[0]
-        self.assertEqual("mismatch", result["status"])
+        self.assertEqual("unverified", result["status"])
         self.assertEqual([], result["associated_domains"])
         redirects.assert_not_called()
         self.assertEqual("Microsoft 365", result["dns_observations"]["provider"])

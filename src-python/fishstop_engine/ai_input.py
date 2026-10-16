@@ -2,6 +2,7 @@
 
 import re
 import unicodedata
+from fishstop_engine.mail_notices import remove_sender_identification_notice
 
 
 _HTML_TAG_RE = re.compile(
@@ -28,6 +29,7 @@ def compact_ai_body(body: str) -> str:
         char if char in "\n\t" or unicodedata.category(char) != "Cc" else " "
         for char in text
     )
+    text = remove_sender_identification_notice(text)
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r" *\n *", "\n", text)
     text = re.sub(r"\n{3,}", "\n\n", text)

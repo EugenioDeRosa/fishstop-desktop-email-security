@@ -193,7 +193,7 @@ class IdentityExtractionTests(unittest.TestCase):
         self.assertEqual("", result["analysis"]["claimed_brand"])
 
     def test_pipeline_keeps_one_model_and_one_separate_identity_call(self):
-        for selected in ("fishstop-fast:1.7b-finetuned-lite-v2-q4_k_m", "qwen3:1.7b-q4_K_M", "fishstop-qwen3:4b-finetuned-v5-q4_K_M"):
+        for selected in ("fishstop-fast:1.7b-finetuned-lite-v3-q4_k_m", "qwen3:1.7b-q4_K_M", "fishstop-qwen3:4b-finetuned-v5-q4_K_M"):
             with self.subTest(model=selected):
                 self._assert_single_model_pipeline(selected)
 

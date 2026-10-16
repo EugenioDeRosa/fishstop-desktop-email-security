@@ -18,8 +18,11 @@ use std::io::{Read, Write};
 
 pub const FINE_TUNED_MODEL: &str = "fishstop-qwen3:4b-finetuned-v5-q4_K_M";
 pub const MANAGED_MODEL: &str = FINE_TUNED_MODEL;
-pub const FAST_MODEL: &str = "fishstop-fast:1.7b-finetuned-lite-v2-q4_k_m";
-const PREVIOUS_FAST_MODEL: &str = "fishstop-fast:1.7b-finetuned-lite-v1-q4_k_m";
+pub const FAST_MODEL: &str = "fishstop-fast:1.7b-finetuned-lite-v3-q4_k_m";
+const PREVIOUS_FAST_MODELS: &[&str] = &[
+    "fishstop-fast:1.7b-finetuned-lite-v2-q4_k_m",
+    "fishstop-fast:1.7b-finetuned-lite-v1-q4_k_m",
+];
 
 #[derive(Default, Serialize, Deserialize, PartialEq, Debug)]
 #[serde(rename_all = "lowercase")]
@@ -71,8 +74,9 @@ pub fn select_startup_model(app: &AppHandle, runtime: &Arc<Mutex<OllamaRuntime>>
     let saved_path = app.path().app_data_dir().map_err(|error| error.to_string())?.join("ai-mode.json");
     let saved = fs::read(&saved_path).ok().and_then(|data| serde_json::from_slice::<AiMode>(&data).ok());
     // A saved choice is reusable only while that model is still installed.
-    // A previous Fast install still records the user's mode, but never makes v2 ready.
-    let fast_installed = current.fast_model_available || managed_model_installed(app, PREVIOUS_FAST_MODEL);
+    // Previous Fast installs preserve the user's mode, but never make v3 ready.
+    let fast_installed = current.fast_model_available
+        || PREVIOUS_FAST_MODELS.iter().any(|model| managed_model_installed(app, model));
     let mode = startup_mode(saved, fast_installed, current.fine_tuned_available,
         current.memory_bytes, current.accelerator != "CPU",
         thread::available_parallelism().map(|count| count.get()).unwrap_or(1));
@@ -1708,22 +1712,24 @@ mod tests {
     }
 
     #[test]
-    fn previous_fast_preserves_mode_without_marking_v2_installed() {
+    fn previous_fast_versions_preserve_mode_without_marking_v3_installed() {
         let directory = std::env::temp_dir().join(format!("fishstop-fast-upgrade-{}",
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
         let manifests = directory.join("manifests/registry.ollama.ai/library/fishstop-fast");
         std::fs::create_dir_all(&manifests).unwrap();
-        let previous_tag = super::PREVIOUS_FAST_MODEL.rsplit_once(':').unwrap().1;
         let current_tag = FAST_MODEL.rsplit_once(':').unwrap().1;
-        std::fs::write(manifests.join(previous_tag), b"{}").unwrap();
-        let previous_installed = super::model_manifest_installed(&directory, super::PREVIOUS_FAST_MODEL);
-        assert!(previous_installed);
-        assert!(!super::model_manifest_installed(&directory, FAST_MODEL));
-        assert_eq!(super::startup_mode(None, previous_installed, false,
-            Some(32 * 1024 * 1024 * 1024), true, 16), AiMode::Fast);
+        for previous_model in super::PREVIOUS_FAST_MODELS {
+            let previous_tag = previous_model.rsplit_once(':').unwrap().1;
+            std::fs::write(manifests.join(previous_tag), b"{}").unwrap();
+            let previous_installed = super::model_manifest_installed(&directory, previous_model);
+            assert!(previous_installed);
+            assert!(!super::model_manifest_installed(&directory, FAST_MODEL));
+            assert_eq!(super::startup_mode(None, previous_installed, false,
+                Some(32 * 1024 * 1024 * 1024), true, 16), AiMode::Fast);
+            std::fs::remove_file(manifests.join(previous_tag)).unwrap();
+        }
         std::fs::write(manifests.join(current_tag), b"{}").unwrap();
         assert!(super::model_manifest_installed(&directory, FAST_MODEL));
-        assert!(super::model_manifest_installed(&directory, super::PREVIOUS_FAST_MODEL));
         std::fs::remove_dir_all(directory).unwrap();
     }
 

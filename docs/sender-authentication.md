@@ -1,6 +1,6 @@
 # Sender identity and unavailable checks
 
-Policy `semantic-policy-v45-identity-context` keeps these observations separate:
+Policy `semantic-policy-v46-contextual-actions` keeps these observations separate:
 
 - SPF, DKIM and DMARC results reported in received headers.
 - Independent cryptographic verification of an aligned DKIM signature on the

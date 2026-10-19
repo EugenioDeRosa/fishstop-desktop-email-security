@@ -67,7 +67,6 @@ class IdentityContextTests(unittest.TestCase):
                'links': [{'url': 'mailto:notices@example.com', 'display_text': 'notices@example.com', 'scheme': 'mailto'}],
                'attachments': [{'filename': 'guide.pdf', 'pdf_security': {'text_excerpt': 'Download the application from its store.'}}]}
         self.assertEqual('', llm._explicit_link_action_evidence(soc))
-        self.assertEqual('', llm._security_cta_link_evidence(soc))
 
     def test_signature_context_does_not_enter_action_input_or_quoted_history(self):
         selected = 'Your requested guide is attached. Thanks.'

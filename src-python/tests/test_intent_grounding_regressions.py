@@ -32,6 +32,30 @@ class IntentGroundingRegressionTests(unittest.TestCase):
         result=llm.apply_email_risk_policy(soc,{'action':'open_attachment','channel':'reply','evidence':body})
         self.assertEqual('visit_link',result['requested_action'])
         self.assertEqual('supplied_link',result['action_channel'])
+    def test_editorial_account_title_cannot_override_ai_with_generic_button(self):
+        body = "Industry news: Alex joins as Strategic Account Director. Read more."
+        soc = self.soc(body, [{'url': 'https://news.example/articles', 'display_text': 'View in browser', 'actionable': True}])
+        for action in ('info', 'none', 'provide_information'):
+            with self.subTest(action=action):
+                result = llm.apply_email_risk_policy(soc, {
+                    'action': action, 'channel': 'none',
+                    'summary': 'The newsletter presents appointments and industry news.',
+                    'risk_assessment': 'legitimate',
+                    'risk_rationale': 'Editorial content without a deceptive request.'})
+                self.assertNotEqual('verify_account', result['requested_action'])
+                self.assertFalse(result['semantic_extraction']['asks_to_verify_account'])
+                self.assertNotIn('claimed account or security issue', result['content_summary'])
+
+    def test_grounded_ai_account_request_survives_without_automatic_promotion(self):
+        body = 'Verify your account using the button below.'
+        soc = self.soc(body, [{'url': 'https://service.example/check', 'display_text': 'Verify your account', 'actionable': True}])
+        result = llm.apply_email_risk_policy(soc, {
+            'action': 'verify_account', 'channel': 'link', 'evidence': body,
+            'risk_assessment': 'phishing', 'risk_evidence': body,
+            'risk_rationale': 'The message uses account verification as a deceptive lure.'})
+        self.assertEqual('verify_account', result['requested_action'])
+        self.assertTrue(result['semantic_extraction']['asks_to_verify_account'])
+
     def test_changed_account_requires_a_payment_request(self):
         self.assertTrue(llm._grounded_payment_diversion(self.soc('Usa il nuovo conto. Effettua il bonifico oggi.')))
         self.assertFalse(llm._grounded_payment_diversion(self.soc('Abbiamo registrato il nuovo conto. Nessun pagamento richiesto.')))

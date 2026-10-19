@@ -69,7 +69,7 @@ OLLAMA_AVAILABILITY_TTL = max(
     0.0,
     float(os.getenv("OLLAMA_AVAILABILITY_TTL", "5")),
 )
-PROMPT_VERSION = "semantic-policy-v45-identity-context"
+PROMPT_VERSION = "semantic-policy-v46-contextual-actions"
 
 _OLLAMA_AVAILABILITY_LOCK = Lock()
 _OLLAMA_AVAILABILITY_CACHE: tuple[float, tuple, bool] | None = None
@@ -1625,20 +1625,6 @@ def _explicit_link_action_evidence(soc: dict) -> str:
     return ""
 
 
-def _security_cta_link_evidence(soc: dict) -> str:
-    """Return a visible CTA label only in an account/security action context."""
-    context = _normalize_obfuscated_text(_message_evidence_text(soc))
-    if not _ACCOUNT_ACTION_CONTEXT_PATTERN.search(context):
-        return ""
-    for label in _actionable_link_texts(soc):
-        value = _clip_exact_span(label, 180)
-        if re.fullmatch(r"[^\s@]+@[^\s@]+", value):
-            continue
-        if len(value) >= 4 and not re.fullmatch(r"https?://\S+", value, re.IGNORECASE):
-            return value
-    return ""
-
-
 def _explicit_attachment_action_evidence(soc: dict) -> str:
     """Return a verbatim instruction to open or review an attachment, if present."""
     text = re.sub(r"(?<!\n)\n(?!\n)", " ", _body_context_for_llm(soc))
@@ -2602,22 +2588,9 @@ def _correlate_semantic_with_message_structure(soc: dict, semantic: dict) -> dic
         semantic["content_summary"] = "The email asks the recipient to submit an authentication secret."
         semantic["ambiguity"] = "low"
         action = "provide_credentials"
-    # A visible HTML CTA is actionable even when the sender did not write a
-    # separate 'click here' sentence.  Restrict this fallback to a claimed
-    # account/security context so ordinary newsletter buttons remain neutral.
-    if action in {"none", "informational", "provide_information"} and links:
-        cta_evidence = _security_cta_link_evidence(soc)
-        if cta_evidence:
-            semantic["requested_action"] = "verify_account"
-            semantic["action_channel"] = "supplied_link"
-            semantic["asks_to_click_link"] = True
-            semantic["asks_to_verify_account"] = True
-            semantic["evidence_phrase"] = cta_evidence
-            semantic["reason"] = "The email presents an account/security issue and a visible call-to-action link."
-            semantic["content_summary"] = "The email asks the recipient to use a supplied link to resolve a claimed account or security issue."
-            semantic["ambiguity"] = "low"
-            action = "verify_account"
-            channel = "supplied_link"
+    # Do not manufacture an account-verification action from a context word
+    # elsewhere in the email and an unrelated link caption. The contextual AI
+    # extraction/audit must establish that relationship before policy uses it.
     # A payment request in a commercial thread is not extortion unless the
     # email also contains a concrete harmful consequence.  Keep the payment
     # action available for the BEC/diversion checks, but remove an unsupported

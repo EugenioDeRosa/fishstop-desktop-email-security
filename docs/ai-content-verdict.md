@@ -1,6 +1,6 @@
 # AI content assessment
 
-Policy `semantic-policy-v45-identity-context` treats the model's assessment of
+Policy `semantic-policy-v46-contextual-actions` treats the model's assessment of
 the complete email independently of its extracted recipient action. Informational
 messages and messages without recognised links can still contain deceptive lures.
 This applies to both selected desktop models and all analysis modes.
@@ -88,3 +88,14 @@ No extra file logging or network request is introduced by trace collection.
 Saved reports contain email excerpts and should remain private.
 
 Sender-domain references, authentication availability and attachment destinations are described in [sender-authentication.md](sender-authentication.md).
+
+## Account context and unrelated links
+
+Policy does not turn an informational AI assessment into account verification
+merely because an account/security keyword occurs somewhere in the message and
+an unrelated link has a visible caption. In particular, editorial job titles,
+product descriptions and contact details cannot give a generic browser/article
+button a security purpose. The primary contextual extraction and adaptive audit
+remain responsible for establishing the actual requested action and its evidence.
+Grounded account-verification actions and independent phishing checks remain in
+place; newsletter headers or marketing language do not grant a safe verdict.

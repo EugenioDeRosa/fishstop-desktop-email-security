@@ -1184,7 +1184,16 @@ function verdictFlags(report: AnalysisReport): SocFlag[] {
   const dmarcPassed = ["pass", "bestguesspass"].includes(
     authFromEmlHeader(report, "DMARC").status.toLowerCase(),
   );
-  return (report.flags || []).filter((flag) => {
+  // Reclassify only the former standalone address-comparison warning in saved
+  // reports. Independent malicious-content or destination findings still apply.
+  return (report.flags || []).map((flag): SocFlag => {
+    if (flag.field.trim().toLowerCase() === "reply-to"
+      && flag.level === "HIGH"
+      && /^Reply-To \(.*\) differs da From \(.*\) - possible harvesting$/i.test(flag.message)) {
+      return { ...flag, level: "MEDIUM", message: "The reply address differs from the sender. This can occur with sharing or notification services; the difference alone is not evidence of phishing." };
+    }
+    return flag;
+  }).filter((flag) => {
     if (flag.field.trim().toLowerCase().startsWith("mime ")) return false;
     if (
       report.selected_target_authentication_scope === "embedded_unavailable"
@@ -1886,7 +1895,7 @@ function reportMarkup(report: AnalysisReport): string {
       senderConsistencyItem("neutral", t("Display name"), t("The recovered display name is quoted content and cannot be authenticated."), t("Unverified")),
     ].join("")
     : [
-      senderConsistencyItem(report.reply_to_mismatch ? "fail" : "pass", t("Reply-To address"), report.reply_to_mismatch ? t("The reply destination differs from the sender identity.") : t("No mismatch detected between the sender and reply destination."), report.reply_to_mismatch ? t("Mismatch detected") : t("Aligned"), report.reply_to_mismatch ? replyToAddress : ""),
+      senderConsistencyItem(report.reply_to_mismatch ? "warn" : "pass", t("Reply-To address"), report.reply_to_mismatch ? t("The reply address differs from the sender. This can occur with sharing or notification services; the difference alone is not evidence of phishing.") : t("No mismatch detected between the sender and reply destination."), report.reply_to_mismatch ? t("Review required") : t("Aligned"), report.reply_to_mismatch ? replyToAddress : ""),
       senderConsistencyItem(returnPathTone, t("Return-Path domain"), returnPathDetail, report.return_path_domain_mismatch ? returnPathDmarcPassed ? t("Mismatch · DMARC passed") : returnPathDmarcFailed ? t("Technical mismatch") : t("Weak mismatch") : t("Aligned"), report.return_path_domain_mismatch ? returnPathAddress : ""),
       senderConsistencyItem(displayNameSpoofed ? "fail" : "pass", t("Display name"), displayNameSpoofed ? displayNameSpoofing : t("No display-name impersonation detected."), displayNameSpoofed ? t("Impersonation detected") : t("Aligned")),
     ].join("");

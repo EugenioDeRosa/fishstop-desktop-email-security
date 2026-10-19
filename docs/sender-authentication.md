@@ -1,6 +1,6 @@
 # Sender identity and unavailable checks
 
-Policy `semantic-policy-v46-contextual-actions` keeps these observations separate:
+Policy `semantic-policy-v47-reply-routing` keeps these observations separate:
 
 - SPF, DKIM and DMARC results reported in received headers.
 - Independent cryptographic verification of an aligned DKIM signature on the
@@ -76,3 +76,23 @@ explicit conversation selection uses target messages rather than context message
 The quoted company must occur literally in the identity input. A signature
 establishes a declared identity only; domain ownership and authenticity still
 require independent evidence. The same extraction path serves Fast and Pro.
+
+## Reply routing is not impersonation proof
+
+A cross-domain Reply-To remains visible as a MEDIUM review finding, rather than
+HIGH severity or an allegation of harvesting. This is generic: shared-document,
+notification, support and other service mail can use a reply address belonging
+to a different person. No Google, customer-domain or sender-name allowlist is
+used. The parser retains the address difference, and the identity policy treats
+an undocumented reply relationship as uncertain rather than spoofing evidence.
+Authenticating the sending service does not authenticate the external person.
+The difference by itself cannot corroborate a deceptive security lure or convict
+a request to follow a document link. Independent impersonation, malicious
+content/destinations and authentication failures remain evaluated separately.
+The documented-sender exception for otherwise benign mail cannot clear an
+unresolved cross-domain reply relationship.
+
+The UI shows a review warning and an explanatory description. The exact former
+standalone HIGH address-comparison flag is displayed as MEDIUM in older reports;
+raw stored evidence is not modified. Old saved backend phishing verdicts are not
+silently rewritten: reanalyse the message with the updated engine.

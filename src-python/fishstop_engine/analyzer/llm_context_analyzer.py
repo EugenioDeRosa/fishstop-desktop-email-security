@@ -69,7 +69,7 @@ OLLAMA_AVAILABILITY_TTL = max(
     0.0,
     float(os.getenv("OLLAMA_AVAILABILITY_TTL", "5")),
 )
-PROMPT_VERSION = "semantic-policy-v46-contextual-actions"
+PROMPT_VERSION = "semantic-policy-v47-reply-routing"
 
 _OLLAMA_AVAILABILITY_LOCK = Lock()
 _OLLAMA_AVAILABILITY_CACHE: tuple[float, tuple, bool] | None = None
@@ -634,8 +634,6 @@ def _deterministic_identity_deception(soc: dict, semantic: dict) -> bool:
     """Require non-LLM identity evidence before escalating a security lure."""
     if soc.get("display_name_spoofing"):
         return True
-    if soc.get("reply_to_mismatch") and not soc.get("reply_to_mismatch_legitimate"):
-        return True
     if _claimed_brand_domain_mismatch(soc, semantic):
         return True
     return _sensitive_link_domain_mismatch(soc, semantic)
@@ -827,7 +825,7 @@ def _technical_context_lines(soc: dict, body_for_llm: str = "", link_reputation:
         lines.append(f"DMARC check did not pass: {dmarc_status}")
 
     if soc.get("reply_to_mismatch"):
-        lines.append("Reply-To mismatch detected")
+        lines.append("Reply-To differs from From: a routing difference only, not proof of impersonation or harvesting; assess the actual requested action and independent evidence")
     return_path_context = _return_path_mismatch_context(soc)
     if return_path_context:
         bulk_sender = bool(soc.get("is_bulk_sender"))
@@ -3006,6 +3004,8 @@ def _identity_risk(
         if impersonation.get("decision") == "phishing" and impersonation.get("confidence") == "high":
             return "spoofing_evidence", reasons
         if impersonation.get("status") == "consistent":
+            if soc.get("reply_to_mismatch") and not soc.get("reply_to_mismatch_legitimate"):
+                return "uncertain", reasons + ["the reply address differs from the sender; its relationship could not be independently confirmed"]
             return "verified", reasons
         if "domain_authentication" in soc and not _strongly_authenticated_sender(soc):
             reasons.append(_independent_authentication_caveat(soc))
@@ -3020,8 +3020,6 @@ def _identity_risk(
     )
     if soc.get("display_name_spoofing"):
         return "spoofing_evidence", ["display-name spoofing was detected"]
-    if soc.get("reply_to_mismatch") and not soc.get("reply_to_mismatch_legitimate"):
-        return "spoofing_evidence", ["Reply-To differs unexpectedly from the sender identity"]
     risky_brand_action = bool(
         semantic
         and semantic.get("action_channel") in {"supplied_link", "external_form", "supplied_attachment"}
@@ -3059,6 +3057,8 @@ def _identity_risk(
     if risky_brand_action and any(item.get("status") == "mismatch" and item.get("reference_status") == "public_reference"
                                   for item in ((soc.get("identity_analysis") or {}).get("coherence") or [])):
         return "uncertain", ["the sender differs from the public company-domain reference; its authorization could not be independently confirmed"]
+    if soc.get("reply_to_mismatch") and not soc.get("reply_to_mismatch_legitimate"):
+        return "uncertain", ["the reply address differs from the sender; this may be service routing and does not establish impersonation"]
     statuses = {name: _auth_status(soc, name) for name in ("SPF", "DKIM", "DMARC")}
     spf_result = (soc.get("effective_auth_results") or {}).get("SPF") or {}
     spf_path_conflict = bool(spf_result.get("path_conflict"))
@@ -3486,6 +3486,7 @@ def apply_email_risk_policy(soc: dict, semantic: dict) -> dict:
         and bool(semantic["model_risk_rationale"])
         and content_risk == "benign" and technical_risk == "clean"
         and _documented_sender_domain(soc)
+        and not soc.get("reply_to_mismatch")
         and semantic["requested_action"] in {"visit_link", "open_attachment", "informational"}
         and not any(_auth_status(soc, name) in {"fail", "softfail", "mixed", "permerror", "temperror"}
                     for name in ("SPF", "DKIM", "DMARC"))

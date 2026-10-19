@@ -1155,5 +1155,6 @@
   "Notify me when a new version is available.": "Avvisami quando è disponibile una nuova versione.",
   "Checks at startup and every hour.": "Verifica all’avvio e ogni ora.",
   "Automatic checks are off. You can check manually.": "Controlli automatici disattivati. Puoi verificare manualmente.",
-  "Could not save update preferences. Please try again.": "Impossibile salvare le preferenze di aggiornamento. Riprova."
+  "Could not save update preferences. Please try again.": "Impossibile salvare le preferenze di aggiornamento. Riprova.",
+  "The reply address differs from the sender. This can occur with sharing or notification services; the difference alone is not evidence of phishing.": "L’indirizzo di risposta è diverso dal mittente. Può accadere con i servizi di condivisione o di notifica; la sola differenza non è una prova di phishing."
 }

@@ -990,8 +990,8 @@ class EmlSOCAnalyzer:
 
         # Reply-To mismatch
         if report["reply_to_mismatch"]:
-            flag("HIGH", "Reply-To",
-                 f"Reply-To ({report['reply_to']}) differs da From ({report['from_']}) - possible harvesting")
+            flag("MEDIUM", "Reply-To",
+                 "The reply address differs from the sender. This can occur with sharing or notification services; the difference alone is not evidence of phishing.")
         elif report.get("reply_to_mismatch_legitimate"):
             flag(
                 "INFO",

@@ -1,6 +1,6 @@
 # AI content assessment
 
-Policy `semantic-policy-v46-contextual-actions` treats the model's assessment of
+Policy `semantic-policy-v47-reply-routing` treats the model's assessment of
 the complete email independently of its extracted recipient action. Informational
 messages and messages without recognised links can still contain deceptive lures.
 This applies to both selected desktop models and all analysis modes.

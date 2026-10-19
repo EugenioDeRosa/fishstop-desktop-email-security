@@ -753,8 +753,24 @@ class EmlSOCAnalyzer:
             combined_html and html_body_for_intent != html_clean
         ):
             bert_source = plain_body_for_ai
+        # Identity must see the selected message's contact card, even when
+        # HTML intent cleaning or the action model removes that signature.
+        identity_selection = (
+            html_ai_selection if html_is_structured
+            else plain_ai_selection
+        )
+        identity_body = identity_selection.get("body_for_identity") or ""
+        if html_is_structured:
+            full_html_selection = select_body_for_ai(html_clean)
+            if full_html_selection.get("body_context") == html_ai_selection.get("body_context"):
+                identity_body = full_html_selection.get("body_for_identity") or identity_body
+        if not plain_is_structured and not html_is_structured and html_clean:
+            html_identity = select_body_for_ai(html_clean).get("body_for_identity") or ""
+            if html_identity and html_identity != identity_body:
+                identity_body = (identity_body + "\n\n[HTML alternative]\n" + html_identity).strip()
         final_ai_selection = select_body_for_ai(bert_source)
         report.update(final_ai_selection)
+        report["body_for_identity"] = identity_body
         if plain_is_structured and final_ai_selection.get("body_context") == "normal":
             # ``bert_source`` is already the selected payload, so it no longer
             # contains the delimiter that originally proved it was forwarded.

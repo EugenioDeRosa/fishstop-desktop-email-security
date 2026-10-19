@@ -63,3 +63,16 @@ link into the email's requested destination. Identity scoring uses the extracted
 action channel rather than treating every embedded document URI as a sensitive
 action destination. File inspection and grounded phishing assessments still
 evaluate the document itself.
+
+## Declared identity in signatures
+
+The company extractor receives the selected message including its signature and
+contact card through `body_for_identity`, separately from the signature-trimmed
+action input. Personal names and job titles help locate an explicitly named
+organisation, including companies absent from the reference catalogue. Both
+visible MIME alternatives are retained when different. Reply boundaries exclude
+older signatures; forwarded extraction uses the newest embedded turn, and an
+explicit conversation selection uses target messages rather than context messages.
+The quoted company must occur literally in the identity input. A signature
+establishes a declared identity only; domain ownership and authenticity still
+require independent evidence. The same extraction path serves Fast and Pro.

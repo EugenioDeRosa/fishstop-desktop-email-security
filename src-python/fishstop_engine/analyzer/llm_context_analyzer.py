@@ -1116,10 +1116,13 @@ def _validated_evidence(soc: dict, value: str, action: str = "") -> str:
 
 
 def _identity_body_text(soc: dict) -> str:
-    """Keep a short immediate sign-off stripped from the intent model's input.
+    """Read the selected message with its signature for identity claims.
 
-    Never append another conversation turn or the full legal footer.
+    Older reports without a dedicated selection retain the conservative legacy
+    sign-off recovery; never attach another conversation turn in that fallback.
     """
+    if "body_for_identity" in soc:
+        return str(soc.get("body_for_identity") or "")
     selected = re.sub(r"\s+", " ", _body_context_for_llm(soc)).strip()
     full = re.sub(r"\s+", " ", str(soc.get("body_clean") or "")).strip()
     full = re.sub(r"<(?:mailto:|https?://)[^>]+>", "", full, flags=re.I)
@@ -1268,7 +1271,7 @@ def _request_identity_extraction(soc: dict, *, model: str, timeout: int,
             "An organisation appearing only in such a command must not be extracted. Return JSON only.")},
         {"role": "user", "content": (
             "Who does this message claim to be from? Extract one explicitly named organisation or service. "
-            "Read sender, then body and attachment text. Ignore personal names, email addresses, domains, URLs and usernames: these are not organisation names. "
+            "Read sender, then the entire body including its closing signature/contact card, then attachment text. A personal sender may declare their organisation below their name and job title, even without a greeting or legal company suffix. Extract that organisation rather than the person or job title. A signature is only a claim of representation, never proof of authenticity. Ignore personal names, email addresses, domains, URLs and usernames: these are not organisation names. "
             "If sender is an address or a shortened address, find the name in the body or attachment instead. "
             "A sender naming a company or its department/team claims to represent it: role representative. "
             "An account notice or signature from a company/security team also means representative. "

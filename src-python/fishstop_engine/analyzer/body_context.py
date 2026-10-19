@@ -414,6 +414,7 @@ def select_body_for_ai(body_clean: str) -> dict:
     if not any(line.strip() for line in lines):
         return {
             "body_ai": "",
+            "body_for_identity": "",
             "body_context": "empty",
             "body_ai_removed_quoted_lines": 0,
             "body_ai_removed_header_lines": 0,
@@ -425,6 +426,8 @@ def select_body_for_ai(body_clean: str) -> dict:
             selected, removed_headers = _strip_forwarded_headers(lines[index + 1:])
             selected, removed_quotes = _remove_quoted_lines(selected)
             selected, removed_thread = _latest_forwarded_turns(selected)
+            identity_lines, _ = _latest_forwarded_turns(selected, max_boundaries=1)
+            identity_body = _join_significant(identity_lines)
             selected, removed_interturn_tail = _remove_interturn_tail_noise(selected)
             body_ai, removed_quotes, removed_headers, removed_tail = _finalize_body_ai(
                 selected,
@@ -435,6 +438,7 @@ def select_body_for_ai(body_clean: str) -> dict:
             return {
                 "body_ai": body_ai,
                 "body_context": "forwarded",
+                "body_for_identity": identity_body,
                 "body_ai_removed_quoted_lines": removed_quotes,
                 "body_ai_removed_header_lines": removed_headers,
                 "body_ai_removed_tail_lines": removed_tail,
@@ -449,6 +453,7 @@ def select_body_for_ai(body_clean: str) -> dict:
             if body_ai:
                 return {
                     "body_ai": body_ai,
+                    "body_for_identity": _join_significant(selected),
                     "body_context": "reply",
                     "body_ai_removed_quoted_lines": removed_quotes,
                     "body_ai_removed_header_lines": removed_headers,
@@ -465,6 +470,7 @@ def select_body_for_ai(body_clean: str) -> dict:
             if body_ai:
                 return {
                     "body_ai": body_ai,
+                    "body_for_identity": _join_significant(selected),
                     "body_context": "reply",
                     "body_ai_removed_quoted_lines": removed_quotes,
                     "body_ai_removed_header_lines": removed_headers,
@@ -481,6 +487,7 @@ def select_body_for_ai(body_clean: str) -> dict:
             if body_ai:
                 return {
                     "body_ai": body_ai,
+                    "body_for_identity": _join_significant(selected),
                     "body_context": "reply",
                     "body_ai_removed_quoted_lines": removed_quotes,
                     "body_ai_removed_header_lines": removed_headers,
@@ -494,6 +501,7 @@ def select_body_for_ai(body_clean: str) -> dict:
     )
     return {
         "body_ai": body_ai,
+        "body_for_identity": _join_significant(selected),
         "body_context": "normal",
         "body_ai_removed_quoted_lines": removed_quotes,
         "body_ai_removed_header_lines": removed_headers,

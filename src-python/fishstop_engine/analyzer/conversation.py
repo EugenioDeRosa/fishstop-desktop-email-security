@@ -305,6 +305,7 @@ def apply_conversation_selection(report: dict, manifest: dict, selection: dict |
         sections.append(f"[{role} MESSAGE: {sender}]\n{segment.get('text') or ''}".strip())
     selected_body = "\n\n".join(section for section in sections if section).strip()
     report["selected_target_body"] = "\n\n".join(str(by_id[item].get("text") or "") for item in target_ids)
+    report["body_for_identity"] = report["selected_target_body"]
     if selected_body:
         report["body_ai"] = selected_body
         report["body_extracted"] = selected_body

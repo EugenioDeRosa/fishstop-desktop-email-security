@@ -48,6 +48,20 @@ class ConversationSelectionTests(unittest.TestCase):
         self.assertEqual("context", manifest["segments"][3]["recommended_role"])
         self.assertEqual("unavailable", manifest["segments"][2]["authentication_status"])
 
+    def test_identity_input_excludes_context_message_signatures(self):
+        from fishstop_engine.analyzer.llm_context_analyzer import _identity_body_text
+        manifest = inspect_conversation_bytes(CONVERSATION_EML)
+        target = manifest["segments"][2]
+        context = manifest["segments"][3]
+        target["text"] += "\nMario Rossi\nCurrent Orchard"
+        context["text"] += "\nPrevious Person\nPrevious Orchard"
+        report = {"links": [], "body_for_identity": "stale identity"}
+        apply_conversation_selection(report, manifest, {
+            "target_ids": [target["id"]], "context_ids": [context["id"]]})
+        self.assertIn("Current Orchard", _identity_body_text(report))
+        self.assertNotIn("Previous Orchard", _identity_body_text(report))
+        self.assertIn("Previous Orchard", report["body_for_ai"])
+
     def test_public_manifest_does_not_expose_full_bodies(self):
         manifest = public_conversation_manifest(inspect_conversation_bytes(CONVERSATION_EML))
 

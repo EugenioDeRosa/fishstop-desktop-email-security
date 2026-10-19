@@ -13,6 +13,50 @@ class IdentityExtractionTests(unittest.TestCase):
             {"status": "ok", "text": json.dumps(response)}])):
             return llm._request_identity_extraction(report, model="test", timeout=10)
 
+    def test_personal_signature_is_visible_and_grounded_without_catalogue(self):
+        from fishstop_engine.analyzer.body_context import select_body_for_ai
+        for closing in ("", "Grazie.\n", "Best regards,\n"):
+            body = "Here is the requested guide.\nPlease read it.\n\n" + closing + "Mario Rossi\nIT Manager\nUnlisted Orchard\nwww.orchard.example\nConfidentiality notice: private message"
+            selected = select_body_for_ai(body)
+            report = {**selected, "body_for_ai": selected["body_ai"], "from_": "Mario <mario@example.test>"}
+            response = {"name": "Unlisted Orchard", "role": "representative", "source": "body", "quote": "Unlisted Orchard"}
+            with patch.object(llm, "_stream_ollama", return_value=iter([{"status": "ok", "text": json.dumps(response)}])) as stream:
+                result = llm._request_identity_extraction(report, model="test", timeout=10)
+            self.assertEqual("ok", result["status"])
+            self.assertEqual("Unlisted Orchard", result["claimed_brand"])
+            self.assertIn("Unlisted Orchard", str(stream.call_args))
+            self.assertEqual(selected["body_ai"], llm._body_context_for_llm(report))
+
+    def test_signature_belongs_to_selected_reply_and_forward(self):
+        from fishstop_engine.analyzer.body_context import select_body_for_ai
+        current = "The guide is attached.\nPlease read it.\nThanks.\nMario Rossi\nUnlisted Orchard"
+        history = "\nOn Monday someone wrote:\nOld Company\nPrevious request"
+        for prefix in ("", "---------- Forwarded message ---------\nFrom: Mario <mario@example.test>\nSubject: Guide\n\n"):
+            with self.subTest(prefix=prefix):
+                selected = select_body_for_ai(prefix + current + history)
+                identity = llm._identity_body_text(selected)
+                self.assertIn("Unlisted Orchard", identity)
+                self.assertNotIn("Old Company", identity)
+
+    def test_html_contact_card_survives_parser_signature_removal(self):
+        import tempfile
+        from pathlib import Path
+        from email.message import EmailMessage
+        from fishstop_engine.analyzer.soc_analyzer import EmlSOCAnalyzer
+        message = EmailMessage()
+        message["From"] = "Mario <mario@example.test>"
+        message["To"] = "reader@example.test"
+        message["Subject"] = "Requested guide"
+        message.set_content("Here is the requested guide.\nPlease read it.\nMario Rossi\nPlain Orchard")
+        message.add_alternative('<p>Here is the requested guide.</p><p>Please read it.</p><div class="gmail_signature">Mario Rossi<br>IT Manager<br>HTML Orchard</div>', subtype="html")
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "signature.eml"
+            path.write_bytes(message.as_bytes())
+            report = EmlSOCAnalyzer().analyze(str(path))
+        self.assertIn("HTML Orchard", llm._identity_body_text(report))
+        self.assertIn("Plain Orchard", llm._identity_body_text(report))
+        self.assertNotIn("HTML Orchard", report["body_for_ai"])
+
     def test_names_without_catalogue_and_malformed_sender_punctuation(self):
         for name, sender in [("Binance", "Binance <notice@example.test>"),
                              ("Facebook", "Facebook ,_<notice@example.test>"),

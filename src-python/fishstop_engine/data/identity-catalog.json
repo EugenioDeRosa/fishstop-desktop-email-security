@@ -213,6 +213,33 @@
           ]
         }
       ]
+    },
+    {
+      "brand": "Cefla",
+      "aliases": [
+        "Cefla s.c.",
+        "Cefla s.c"
+      ],
+      "verified_at": 1792368000,
+      "expires_at": 1797552000,
+      "reference": "https://www.cefla.com/it/termini-e-condizioni/; https://www.cefla.com/it/privacy/",
+      "relations": [
+        {
+          "domain": "cefla.com",
+          "role": "official",
+          "scopes": [
+            "visit_link"
+          ]
+        },
+        {
+          "domain": "cefla.it",
+          "role": "official",
+          "scopes": [
+            "sender",
+            "reply"
+          ]
+        }
+      ]
     }
   ]
 }

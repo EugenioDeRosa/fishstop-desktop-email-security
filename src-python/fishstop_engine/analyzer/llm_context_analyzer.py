@@ -69,7 +69,7 @@ OLLAMA_AVAILABILITY_TTL = max(
     0.0,
     float(os.getenv("OLLAMA_AVAILABILITY_TTL", "5")),
 )
-PROMPT_VERSION = "semantic-policy-v44-content-reasoning"
+PROMPT_VERSION = "semantic-policy-v45-identity-context"
 
 _OLLAMA_AVAILABILITY_LOCK = Lock()
 _OLLAMA_AVAILABILITY_CACHE: tuple[float, tuple, bool] | None = None
@@ -569,6 +569,20 @@ def _qualified_aligned_spf_sender(soc: dict) -> bool:
         and soc.get("spf_sender_aligned") is True
         and not soc.get("return_path_domain_mismatch")
     )
+
+
+def _documented_sender_domain(soc: dict) -> bool:
+    """A current company reference corroborates a domain, not this email."""
+    from time import time
+    for reference in (soc.get("identity_analysis") or {}).get("coherence") or []:
+        if not any(contact.get("source") == "From" and contact.get("matches_official")
+                   for contact in reference.get("contacts", [])):
+            continue
+        if any(item.get("source") in {"maintained_catalog", "administrator_confirmation", "signed_directory", "official_site_mail_contact"}
+               and isinstance(item.get("expires_at"), (int, float)) and item["expires_at"] > time()
+               for item in reference.get("evidence", [])):
+            return True
+    return False
 
 
 def _requested_links_match_verified_organisation(soc: dict, semantic: dict | None = None) -> bool:
@@ -1108,8 +1122,14 @@ def _identity_body_text(soc: dict) -> str:
     """
     selected = re.sub(r"\s+", " ", _body_context_for_llm(soc)).strip()
     full = re.sub(r"\s+", " ", str(soc.get("body_clean") or "")).strip()
+    full = re.sub(r"<(?:mailto:|https?://)[^>]+>", "", full, flags=re.I)
     if selected and full.startswith(selected) and soc.get("selected_target_authentication_scope") not in {"embedded_unavailable", "mixed_outer_and_embedded"}:
-        tail = full[len(selected):len(selected) + 200]
+        tail = full[len(selected):len(selected) + 1200]
+        if re.search(r"\b(?:grazie|thanks|thank you|kind regards|cordiali saluti)[.!\s]*$", selected, re.I):
+            # Identity extraction may inspect the immediate signature, while
+            # action extraction continues to use the signature-free body.
+            signature = re.split(r"(?:\b(?:From|Da|Sent|Inviato):|[-_]{3,}\s*(?:Original|Forwarded)|\b(?:confidentiality|riservatezza|disclaimer)\b)", tail, maxsplit=1, flags=re.I)[0]
+            return selected + " " + signature
         signoff = re.match(r"\s*(?:grazie|thanks|thank you|kind regards|cordiali saluti)[,.!\s]+([^.!\n]{2,80})", tail, re.I)
         if signoff:
             return selected + " " + signoff.group(0)
@@ -1189,11 +1209,14 @@ def _visible_identity_fallback(soc: dict) -> tuple[str, str]:
         brand = re.escape(name).replace(r"\ ", r"[\s-]+")
         sender_claim = bool(re.fullmatch(r"(?:(?:dipartimento|department)\s+)?" + brand + r"(?:\s+" + role + r"){0,2}", display, re.I))
         signature_claim = bool(re.search(r"\b(?:grazie|thanks|thank you|kind regards|cordiali saluti)[,.!\s]+" + brand + r"(?=\s*(?:[.!]|Questo messaggio|$))", body, re.I))
+        legal_signature_claim = bool(re.search(
+            r"\b(?:grazie|thanks|thank you|kind regards|cordiali saluti)\b.{0,800}?\b"
+            + brand + r"\s+(?:s\s*\.\s*(?:c|r\s*\.\s*l|p\s*\.\s*a)\s*\.|ltd\b|inc\b|gmbh\b)", body, re.I))
         heading_claim = bool(re.match(r"^" + brand + r"\s+" + role + r"\b", body[:240], re.I))
         # Branded account/security headings must be followed by the organisation
         # addressing the reader, rather than a customer's description or citation.
         direct_notice = bool(re.search(r"\b(?:we\s+(?:detected|noticed|received)|your\s+account|abbiamo\s+(?:rilevato|ricevuto)|il\s+tuo\s+account)\b", body[:700], re.I))
-        if sender_claim or signature_claim or heading_claim and direct_notice:
+        if sender_claim or signature_claim or legal_signature_claim or heading_claim and direct_notice:
             candidates.add(name)
     # Prefer the longest exact alias only when it describes the same entity.
     from fishstop_engine.identity_store import resolve_partner
@@ -1582,7 +1605,8 @@ _REWARD_URGENCY_PATTERN = re.compile(
 
 def _explicit_link_action_evidence(soc: dict) -> str:
     """Return a verbatim instruction to follow a link, if the email has one."""
-    for segment in _evidence_segments(soc):
+    # Attachment instructions do not establish a request to follow a body link.
+    for segment in _evidence_segments({**soc, "attachments": []}):
         if _LINK_ACTION_PATTERN.search(segment) or (
             _actionable_links(soc) and re.search(r"\b(?:download|install|scarica|installa)\b.{0,70}\b(?:app|application|software|programma)\b", segment, re.I)
             and not re.search(r"\b(?:do\s+not|don't|never|non)\b.{0,30}\b(?:download|install|scarica|installa)\b", segment, re.I)
@@ -1605,6 +1629,8 @@ def _security_cta_link_evidence(soc: dict) -> str:
         return ""
     for label in _actionable_link_texts(soc):
         value = _clip_exact_span(label, 180)
+        if re.fullmatch(r"[^\s@]+@[^\s@]+", value):
+            continue
         if len(value) >= 4 and not re.fullmatch(r"https?://\S+", value, re.IGNORECASE):
             return value
     return ""
@@ -1979,6 +2005,15 @@ def _email_prompt_from_body(
             )
         ),
     }
+    references = (soc.get("identity_analysis") or {}).get("coherence") or []
+    if references:
+        observations["company_sender_references"] = [{
+            "company": _clip_exact_span(item.get("brand") or "", 80),
+            "sender_domain_documented": any(contact.get("source") == "From" and contact.get("matches_official")
+                                            for contact in item.get("contacts", [])),
+            "source": item.get("resolution_source") or "unresolved",
+            "message_authentication": item.get("sender_authentication") or "unverified",
+        } for item in references[:3]]
 
     return "\n".join([
         "APPLICATION_OBSERVATIONS: " + json.dumps(
@@ -2973,6 +3008,8 @@ def _content_risk(soc: dict, semantic: dict) -> tuple[str, list[str]]:
 def _independent_authentication_caveat(soc: dict) -> str:
     """Describe receiver assertions separately from independent verification."""
     statuses = {name: _auth_status(soc, name) for name in ("SPF", "DKIM", "DMARC")}
+    if (soc.get("domain_authentication") or {}).get("reason") == "signature_absent":
+        return "Independent DKIM verification is unavailable because the EML has no signature; reported SPF results are not an independent DKIM check"
     if all(status == "pass" for status in statuses.values()):
         return "SPF, DKIM and DMARC are reported as PASS in the message headers; the sender domain could not be independently verified"
     reported = [f"{name} {status.upper()}" for name, status in statuses.items()
@@ -3467,6 +3504,17 @@ def apply_email_risk_policy(soc: dict, semantic: dict) -> dict:
     failed_authentication_with_impersonation = (
         all_authentication_failed and identity_risk == "spoofing_evidence"
     )
+    identity_signals = (soc.get("impersonation") or (soc.get("identity_analysis") or {}).get("impersonation") or {}).get("signals", [])
+    benign_with_unavailable_identity = (
+        semantic["model_content_risk"] == "benign"
+        and bool(semantic["model_risk_rationale"])
+        and content_risk == "benign" and technical_risk == "clean"
+        and _documented_sender_domain(soc)
+        and semantic["requested_action"] in {"visit_link", "open_attachment", "informational"}
+        and not any(_auth_status(soc, name) in {"fail", "softfail", "mixed", "permerror", "temperror"}
+                    for name in ("SPF", "DKIM", "DMARC"))
+        and not any(item.get("polarity") == "suspicion" for item in identity_signals)
+    )
     if failed_authentication_with_risky_action:
         identity_reasons.append(
             "SPF, DKIM and DMARC failed while the message requests a concrete risky action"
@@ -3526,7 +3574,7 @@ def apply_email_risk_policy(soc: dict, semantic: dict) -> dict:
         and (identity_risk != "verified" or technical_risk != "clean")
     ):
         verdict = "review"
-    elif content_risk == "suspicious" or identity_risk == "spoofing_evidence" or (identity_risk == "uncertain" and supplied_action) or technical_risk == "uncertain":
+    elif content_risk == "suspicious" or identity_risk == "spoofing_evidence" or (identity_risk == "uncertain" and supplied_action and not benign_with_unavailable_identity) or technical_risk == "uncertain":
         verdict = "review"
     else:
         # Authentication failures alone describe uncertain identity, not malicious content.
@@ -4671,6 +4719,8 @@ def _request_content_risk_verification(soc: dict, *, model: str, timeout: int,
                     "Distinguish a delivered credential or an independently initiated account flow from collection of a secret. "
                     "A verified organisation destination is relevant context, not proof that the narrative is harmless. "
                     "Authentication success and no reputation detections do not establish benign content. "
+                    "A documented company sender domain is not an unknown domain, but does not prove this message is authentic. "
+                    "Different URI hosts inside a document are not by themselves evidence of deception or collection of credentials. "
                     "Give a brief factual explanation of the mechanism or uncertainty, not chain-of-thought, "
                     "In quote copy only 2 to 6 consecutive words EXACTLY as written in the email, "
                     "preserving spelling and punctuation. Choose a short phrase, not a whole sentence; "

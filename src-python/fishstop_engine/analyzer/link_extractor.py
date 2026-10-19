@@ -327,6 +327,7 @@ def extract_links(
     seen: set[str] = set()
     seen_signature_destinations: set[str] = set()
     links: list[dict] = []
+    presentation_urls: set[str] = set()
 
     def _add(
         url: str,
@@ -345,6 +346,8 @@ def extract_links(
             role = "mail_client_notice"
             html_call_to_action = False
         dedupe_key = _url_dedupe_key(url)
+        if source in {"plain_text", "html_text"} and dedupe_key in presentation_urls:
+            role = "inline_resource"
         if not url:
             return
         if dedupe_key in seen:
@@ -486,6 +489,9 @@ def extract_links(
     if body_html:
         if BeautifulSoup is not None:
             soup = BeautifulSoup(body_html, "html.parser")
+            for image in soup.find_all("img"):
+                if not image.find_parent("a") or _html_link_role(image) == "signature":
+                    presentation_urls.add(_url_dedupe_key(str(image.get("src") or "")))
             for anchor in soup.find_all("a", limit=max_links + 1):
                 href = anchor.get("href")
                 if href:

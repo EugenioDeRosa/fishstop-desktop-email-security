@@ -1,6 +1,6 @@
 # AI content assessment
 
-Policy `semantic-policy-v44-content-reasoning` treats the model's assessment of
+Policy `semantic-policy-v45-identity-context` treats the model's assessment of
 the complete email independently of its extracted recipient action. Informational
 messages and messages without recognised links can still contain deceptive lures.
 This applies to both selected desktop models and all analysis modes.
@@ -86,3 +86,5 @@ incomplete response and exhausted time. Completed structured responses are kept
 as short fields per numbered section, without duplicating the full email body.
 No extra file logging or network request is introduced by trace collection.
 Saved reports contain email excerpts and should remain private.
+
+Sender-domain references, authentication availability and attachment destinations are described in [sender-authentication.md](sender-authentication.md).

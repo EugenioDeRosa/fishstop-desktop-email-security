@@ -82,7 +82,7 @@ type AnalysisReport = {
   forwarded_identity?: { from?: string; to?: string; cc?: string; subject?: string; date?: string; display_name?: string; address?: string; domain?: string; authentication_status?: string; authentication_scope?: string };
   injection_ip_spf_authorized?: boolean; spf_sender_aligned?: boolean;
   eml_sha256?: string;
-  domain_authentication?: { status?: string; method?: string; verified_domains?: string[]; message?: string };
+  domain_authentication?: { status?: string; method?: string; reason?: string; spf_recalculated?: boolean; verified_domains?: string[]; message?: string };
   raw_eml_preview?: string;
   raw_eml_preview_error?: string;
   return_path_domain_mismatch?: boolean; reply_to_mismatch?: boolean; display_name_spoofing?: string;
@@ -124,7 +124,7 @@ type AnalysisReport = {
   effective_auth_results?: Record<string, AuthResult>;
   authentication_checkpoints?: AuthenticationCheckpoint[];
   received_hops?: ReceivedHop[];
-  identity_analysis?: { impersonation?: ImpersonationAssessment; status?: string; model?: string; backend?: string; message?: string; segments_analyzed?: number; entities?: Array<{ name?: string; confidence?: number; entity_type?: string; entity_types?: string[]; occurrences?: Array<{ source?: string; evidence?: string }> }>; coherence?: Array<{ brand?: string; official_website?: string; official_websites?: string[]; official_domain?: string; official_domains?: string[]; associated_domains?: string[]; trusted_action_domains?: string[]; external_reply_domains?: string[]; resolution_source?: string; reference_status?: string; sender_authentication?: string; evidence?: Array<{ source?: string; reference?: string; observed_at?: number; expires_at?: number; confidence?: string }>; dns_observations?: { provider?: string; bimi_present?: boolean }; anomalies?: string[]; status?: string; message?: string; mismatches?: Array<{ source?: string; domain?: string }> }> };
+  identity_analysis?: { impersonation?: ImpersonationAssessment; status?: string; model?: string; backend?: string; message?: string; segments_analyzed?: number; entities?: Array<{ name?: string; confidence?: number; entity_type?: string; entity_types?: string[]; occurrences?: Array<{ source?: string; evidence?: string }> }>; coherence?: Array<{ brand?: string; official_website?: string; official_websites?: string[]; official_domain?: string; official_domains?: string[]; associated_domains?: string[]; trusted_action_domains?: string[]; external_reply_domains?: string[]; resolution_source?: string; reference_status?: string; sender_authentication?: string; contacts?: Array<{ source?: string; matches_official?: boolean }>; evidence?: Array<{ source?: string; reference?: string; observed_at?: number; expires_at?: number; confidence?: string }>; dns_observations?: { provider?: string; bimi_present?: boolean }; anomalies?: string[]; status?: string; message?: string; mismatches?: Array<{ source?: string; domain?: string }> }> };
   phi4_analysis?: { status?: string; model?: string; duration_ms?: number; performance?: { analysis_mode?: string; llm_calls?: number; wall_duration_ms?: number; load_duration_ms?: number; prompt_tokens?: number; generated_tokens?: number; calls?: Array<{ stage?: string; wall_duration_ms?: number; load_duration_ms?: number; prompt_eval_count?: number; prompt_eval_duration_ms?: number; eval_count?: number; eval_duration_ms?: number }> }; analysis?: { final_verdict?: string; content_summary?: string; semantic_reason?: string; explanation?: string; confidence?: number; requested_action?: string; action_channel?: string; intent_evidence?: string; intent_signals?: string[]; signal_evidence?: string; content_risk?: string; identity_risk?: string; technical_risk?: string; ambiguity?: string; scam_type?: string; threat_type?: string; coercion?: boolean; claimed_brand?: string; payment_destination_change?: boolean; semantic_extraction?: { asks_for_credentials?: boolean; asks_for_payment?: boolean; asks_for_sensitive_information?: boolean; asks_to_change_account_settings?: boolean; asks_to_verify_account?: boolean; asks_to_open_attachment?: boolean; requested_external_action?: boolean; security_alert?: boolean; impersonation_or_deception?: boolean; identity_deception?: boolean; scam_type?: string; threat_type?: string; coercion?: boolean }; corroboration?: { supports_decision?: boolean; details?: string[]; caveats?: string[] } }; message?: string };
   ai_content_summary?: { status?: string; summary?: string; model?: string; backend?: string; message?: string };
   ai_summary?: { status?: string; summary?: string; model?: string; backend?: string; message?: string };
@@ -145,6 +145,7 @@ type SiemIndicator = {
   context?: Record<string, unknown>;
 };
 type SiemReport = {
+  identity?: Record<string, unknown>;
   schema_version: "1.0";
   event: Record<string, unknown>;
   email: Record<string, unknown>;
@@ -917,9 +918,14 @@ function buildStructuredReportData(report: AnalysisReport): SiemReport {
     },
     authentication: {
       spf: auth("SPF"), dkim: auth("DKIM"), dmarc: auth("DMARC"),
+      independent_domain_verification: report.domain_authentication,
       sender_aligned: report.spf_sender_aligned, injection_ip_authorized: report.injection_ip_spf_authorized,
       reply_to_mismatch: report.reply_to_mismatch, return_path_mismatch: report.return_path_domain_mismatch,
       display_name_spoofing: report.display_name_spoofing,
+    },
+    identity: {
+      assessment: report.identity_analysis?.impersonation,
+      references: report.identity_analysis?.coherence,
     },
     network: {
       source_ip: report.injection_sender_ip,
@@ -1136,6 +1142,13 @@ function normalizedDomain(value?: string): string {
 }
 
 function stronglyAuthenticatedSender(report: AnalysisReport): boolean {
+  if (report.domain_authentication) {
+    return report.domain_authentication.status === "verified"
+      && Boolean(report.from_registered_domain)
+      && (report.domain_authentication.verified_domains || []).some(domain =>
+        normalizedDomain(domain) === normalizedDomain(report.from_registered_domain)
+        || normalizedDomain(domain).endsWith("." + normalizedDomain(report.from_registered_domain)));
+  }
   const passed = (protocol: "SPF" | "DKIM" | "DMARC") =>
     ["pass", "bestguesspass"].includes(authFromEmlHeader(report, protocol).status.toLowerCase());
   const spf = authFromEmlHeader(report, "SPF").status.toLowerCase();
@@ -1146,6 +1159,7 @@ function stronglyAuthenticatedSender(report: AnalysisReport): boolean {
 }
 
 function qualifiedAlignedSpfSender(report: AnalysisReport): boolean {
+  if (report.domain_authentication) return false;
   const spf = authFromEmlHeader(report, "SPF");
   const dkim = authFromEmlHeader(report, "DKIM").status.toLowerCase();
   const dmarc = authFromEmlHeader(report, "DMARC").status.toLowerCase();
@@ -1268,6 +1282,27 @@ function sensitiveRequestedAction(report: AnalysisReport): boolean {
   );
 }
 
+function benignContentDecision(report: AnalysisReport): boolean {
+  const semantic = report.phi4_analysis?.analysis;
+  const identity = report.identity_analysis?.impersonation;
+  return semantic?.final_verdict === "legitimate"
+    && (["verified", "clean", "aligned"].includes(semantic.identity_risk || "") || documentedSenderDomain(report))
+    && semantic.content_risk === "benign" && semantic.technical_risk === "clean"
+    && semantic.identity_risk !== "spoofing_evidence"
+    && !report.reply_to_mismatch && !returnPathMismatchForVerdict(report) && !report.display_name_spoofing
+    && identity?.status !== "inconsistent" && identity?.decision !== "review"
+    && !(identity?.signals || []).some(item => item.polarity === "suspicion")
+    && !verdictFlags(report).some(flag => ["HIGH", "MEDIUM"].includes(flag.level));
+}
+
+function documentedSenderDomain(report: AnalysisReport): boolean {
+  return (report.identity_analysis?.coherence || []).some(reference =>
+    (reference.contacts || []).some(contact => contact.source === "From" && contact.matches_official)
+    && (reference.evidence || []).some(item =>
+      ["maintained_catalog", "administrator_confirmation", "signed_directory", "official_site_mail_contact"].includes(item.source || "")
+      && typeof item.expires_at === "number" && item.expires_at > Date.now() / 1000));
+}
+
 function authenticatedFirstPartySecurityNotice(report: AnalysisReport): boolean {
   const semantic = report.phi4_analysis?.analysis;
   const extraction = semantic?.semantic_extraction;
@@ -1345,12 +1380,14 @@ function unverifiedRequestedResourceReason(report: AnalysisReport): string | nul
       || returnPathMismatchForVerdict(report)
       || report.display_name_spoofing && !["none", "false", "no"].includes(String(report.display_name_spoofing).toLowerCase()),
     );
-    const benignLegitimateContext = (semantic?.final_verdict || "").toLowerCase() === "legitimate"
+    const benignLegitimateContext = benignContentDecision(report)
+      && (semantic?.final_verdict || "").toLowerCase() === "legitimate"
       && (semantic?.content_risk || "").toLowerCase() === "benign"
-      && ["verified", "clean", "aligned"].includes((semantic?.identity_risk || "").toLowerCase())
       && (semantic?.technical_risk || "").toLowerCase() === "clean"
-      && stronglyAuthenticatedSender(report)
       && !identityMismatch
+      && !["inconsistent"].includes(report.identity_analysis?.impersonation?.status || "")
+      && report.identity_analysis?.impersonation?.decision !== "review"
+      && !verdictFlags(report).some(flag => ["HIGH", "MEDIUM"].includes(flag.level))
       && !sensitiveRequestedAction(report);
     if (unverifiedLinks.some((link) =>
       !isAuthenticatedFirstPartyLink(report, link)
@@ -1364,6 +1401,13 @@ function unverifiedRequestedResourceReason(report: AnalysisReport): string | nul
     && ["verified", "clean", "aligned"].includes((semantic?.identity_risk || "").toLowerCase())
     && (semantic?.technical_risk || "").toLowerCase() === "clean"
     && qualifiedAlignedSpfSender(report);
+  const benignOrdinaryAttachment = benignContentDecision(report)
+    && action === "open_attachment"
+    && !semantic?.semantic_extraction?.asks_for_credentials
+    && !semantic?.semantic_extraction?.asks_for_sensitive_information
+    && !semantic?.semantic_extraction?.asks_for_payment
+    && !semantic?.semantic_extraction?.asks_to_change_account_settings
+    && !semantic?.semantic_extraction?.asks_to_verify_account;
   const locallyCleanAttachment = (attachment: NonNullable<AnalysisReport["attachments"]>[number]) => {
     const attachmentRisk = (attachment.attachment_security?.risk_level || "clean").toLowerCase();
     const pdfRisk = (attachment.pdf_security?.risk_level || "clean").toLowerCase();
@@ -1380,7 +1424,7 @@ function unverifiedRequestedResourceReason(report: AnalysisReport): string | nul
     attachment.actionable !== false
     && attachment.mime_role !== "inline_resource"
     && cannotVerify(attachment.file_reputation)
-    && !(benignAlignedSpfContext && locallyCleanAttachment(attachment))
+    && !((benignAlignedSpfContext || benignOrdinaryAttachment) && locallyCleanAttachment(attachment))
   )) {
     return t("The message asks you to open an attachment, but its reputation could not be verified.");
   }
@@ -1960,7 +2004,7 @@ function reportMarkup(report: AnalysisReport): string {
   const senderPanelTitle = targetAuthUnavailable ? t("Selected message identity") : t("Forwarding sender");
   const authenticationTitle = targetAuthUnavailable ? t("Authentication unavailable") : t("Authentication");
   const independentAuthentication = report.domain_authentication
-    ? html`<p class="quiet"><strong>Independent sender verification:</strong> ${report.domain_authentication.status === "verified" ? t("Verified on the original message.") : t("Not confirmed. Header PASS results do not establish independent verification.")}</p>`
+    ? html`<p class="quiet"><strong>${t("Sender verification")} · DKIM:</strong> ${report.domain_authentication.status === "verified" ? t("Verified on the original message.") : report.domain_authentication.reason === "signature_absent" ? t("No DKIM signature is available in this EML export") : t("Not confirmed. Header PASS results do not establish independent verification.")}</p>`
     : "";
   const authenticationDescription = targetAuthUnavailable
     ? t("This embedded message has no independent transport or authentication headers.")

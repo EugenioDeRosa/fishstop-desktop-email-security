@@ -51,7 +51,7 @@ class SenderRelationshipTests(unittest.TestCase):
         entities = [{"name": "Acme", "verified_claim": True, "entity_types": ["ORG"], "occurrences": [{"source": "sender", "evidence": "Acme"}]}]
         with patch("fishstop_engine.brand_intelligence.resolve_partner", return_value=None), patch(
                 "fishstop_engine.brand_intelligence._official_sites", return_value=(["https://acme.com/"], "Public reference")), patch(
-                "fishstop_engine.brand_intelligence._official_sender_evidence", return_value={"domain": "acme.it", "reference": "https://acme.com/", "observed_at": time.time()}), patch(
+                "fishstop_engine.brand_intelligence._official_sender_evidence", return_value={"source": "official_site_mail_contact", "domain": "acme.it", "reference": "https://acme.com/", "observed_at": time.time()}), patch(
                 "fishstop_engine.brand_intelligence.dns_observations", return_value={}), patch(
                 "fishstop_engine.brand_intelligence.rdap_observations", return_value={}):
             reference = assess_brand_coherence(report, entities)

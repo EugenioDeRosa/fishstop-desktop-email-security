@@ -86,8 +86,14 @@ def assess_impersonation(report: dict, claimed_entities: list[dict], semantic: d
                 add("display_domain_deception", "sender_identity", f"The display name shows an official domain, while the actual sender is {sender_host}.", "From", True)
 
         sensitive = semantic.get("requested_action") in SENSITIVE_ACTIONS and bool(semantic.get("evidence_phrase") or semantic.get("intent_evidence"))
+        # Opening a document does not designate every URL inside it as the
+        # destination of a credential/account action. Analyse active files in
+        # the technical axis; infer identity contradictions only for the
+        # channel the recipient is actually asked to use.
+        link_channel = not semantic.get("action_channel") or semantic.get("action_channel") in {"supplied_link", "external_form", "email_reply"}
         action_links = [item for item in report.get("links", []) if item.get("actionable") is not False
-                        and (item.get("html_call_to_action") or item.get("role") == "body_action")]
+                        and (item.get("html_call_to_action") or item.get("role") == "body_action")
+                        and link_channel]
         if sensitive and not action_links:
             missing.append("action_destination_not_identified")
         from fishstop_engine.identity_store import action_authorized

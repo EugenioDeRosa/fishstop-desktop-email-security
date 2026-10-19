@@ -450,7 +450,7 @@ def _official_sender_evidence(websites: list[str], sender: str, deadline: float)
                 and sender != _official_domain(site)]
     if not eligible:
         return {}
-    key = "official-mail-contact-v1:" + sender + ":" + "|".join(sorted(eligible))
+    key = "official-mail-contact-v2:" + sender + ":" + "|".join(sorted(eligible))
     previous = cached(key)
     if previous is not None:
         return previous
@@ -461,7 +461,7 @@ def _official_sender_evidence(websites: list[str], sender: str, deadline: float)
         for site in eligible[:2]:
             queue = [site]
             visited = set()
-            while queue and len(visited) < 3 and time.monotonic() < deadline:
+            while queue and len(visited) < 5 and time.monotonic() < deadline:
                 url = queue.pop(0)
                 parsed = urlparse(url)
                 host = normalize_hostname(parsed.hostname or "")
@@ -479,6 +479,7 @@ def _official_sender_evidence(websites: list[str], sender: str, deadline: float)
                         queue.insert(0, urljoin(url, response.headers.get("Location", "")))
                         continue
                     if response.status_code != 200 or "html" not in response.headers.get("Content-Type", "").lower():
+                        evidence = {"status": "unavailable", "reason": "http_error", "http_status": response.status_code, "reference": url}
                         continue
                     chunks, size = [], 0
                     for chunk in response.iter_content(16384):
@@ -498,10 +499,10 @@ def _official_sender_evidence(websites: list[str], sender: str, deadline: float)
                                 put(key, evidence, 86400)
                                 return evidence
                             # Follow only a few contact pages on the resolved site.
-                            if re.search(r"contact|contatti|kontakt", href, re.I):
+                            if re.search(r"contact|contatti|kontakt|privacy|terms|termini|impressum", href, re.I):
                                 queue.append(urljoin(url, href))
-    except (requests.RequestException, ValueError, UnicodeError):
-        pass
+    except (requests.RequestException, ValueError, UnicodeError) as exc:
+        evidence = {"status": "unavailable", "reason": type(exc).__name__}
     finally:
         session.close()
     put(key, evidence, 300)
@@ -591,7 +592,8 @@ def assess_brand_coherence(report: dict, entities: list[dict]) -> list[dict]:
             expires_at = verified_at + 86400
         sender_domains = set(official_domains) if not partner else {
             item["domain"] for item in relations if "sender" in item["scopes"]}
-        if sender_evidence:
+        contact_verified = sender_evidence.get("source") == "official_site_mail_contact"
+        if contact_verified:
             sender_domains.add(sender)
         # An unknown website, redirect, CT certificate or shared provider can never add an accepted domain.
         associated = sorted(sender_domains - set(official_domains))
@@ -638,7 +640,8 @@ def assess_brand_coherence(report: dict, entities: list[dict]) -> list[dict]:
                         "contacts": comparisons, "mismatches": mismatches, "status": status, "message": message,
                         "reference_status": partner["source"] if partner else "public_reference" if official_domains else "unresolved",
                         "sender_authentication": "verified" if authenticated else "unverified",
-                        "evidence": ([{**sender_evidence, "expires_at": sender_evidence["observed_at"] + 86400, "confidence": "medium"}] if sender_evidence else []) + [{"source": source, "reference": reference, "observed_at": verified_at, "expires_at": expires_at,
+                        "lookup_diagnostics": sender_evidence if sender_evidence and not contact_verified else {},
+                        "evidence": ([{**sender_evidence, "expires_at": sender_evidence["observed_at"] + 86400, "confidence": "medium"}] if contact_verified else []) + [{"source": source, "reference": reference, "observed_at": verified_at, "expires_at": expires_at,
                                       "confidence": "high" if partner else "medium" if official_domains else "unknown"}] if official_domains else [],
                         "dns_observations": observation,
                         "registration_observations": registration,

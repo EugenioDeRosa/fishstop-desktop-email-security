@@ -97,14 +97,17 @@ def resolve_partner(name: str) -> dict | None:
         pass
     for key in keys:
         for records, source in [(local, "local"), (catalog_records, "catalog")]:
-            matches = [entry for entry in records if key in {brand_key(entry["brand"]), *map(brand_key, entry.get("aliases", []))}]
+            matches = [entry for entry in records if key in {brand_key(entry["brand"]), *map(brand_key, entry.get("aliases", []))}
+                       and (source != "catalog" or entry.get("verified_at", catalog["verified_at"]) <= time.time()
+                            < min(entry.get("expires_at", catalog["expires_at"]), catalog["expires_at"]))]
             if matches:
                 if len(matches) != 1:
                     return None
                 if source == "local":
                     return matches[0]
                 return {**matches[0], "id": "catalog:" + brand_key(matches[0]["brand"]),
-                        "source": "maintained_catalog", "verified_at": catalog["verified_at"], "expires_at": catalog["expires_at"]}
+                        "source": "maintained_catalog", "verified_at": matches[0].get("verified_at", catalog["verified_at"]),
+                        "expires_at": min(matches[0].get("expires_at", catalog["expires_at"]), catalog["expires_at"])}
     return None
 
 

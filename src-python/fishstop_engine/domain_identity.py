@@ -8,9 +8,11 @@ from email.policy import default
 from email.utils import parseaddr, getaddresses
 
 import dns.resolver
+import requests
 
 from fishstop_engine.domain_utils import registered_domain, normalize_hostname
 from fishstop_engine.identity_store import cached, put
+from fishstop_engine.dns_lookup import resolve_records
 
 
 def rdap_observations(domain: str) -> dict:
@@ -67,6 +69,7 @@ def rdap_observations(domain: str) -> dict:
 
 def verify_message_domain(raw: bytes, report: dict) -> dict:
     base = {"status": "unverified", "method": "independent_dkim", "verified_domains": [],
+            "reason": "not_verified", "spf_recalculated": False,
             "message": "The sender domain has not been independently authenticated. Header assertions alone do not verify identity."}
     if report.get("selected_target_authentication_scope") in {"embedded_unavailable", "mixed_outer_and_embedded"}:
         return {**base, "message": "Original sender authentication is unavailable for the selected embedded message."}
@@ -75,6 +78,9 @@ def verify_message_domain(raw: bytes, report: dict) -> dict:
     except ImportError:
         return {**base, "message": "Independent DKIM verification is unavailable in this engine."}
     message = BytesParser(policy=default).parsebytes(raw, headersonly=True)
+    if not message.get_all("DKIM-Signature", []):
+        return {**base, "reason": "signature_absent",
+                "message": "Independent DKIM verification is unavailable: this EML has no DKIM signature. SPF results in headers are reported separately."}
     if len(message.get_all("From", [])) != 1:
         return base
     if len(getaddresses([str(message.get("From") or "")])) != 1:
@@ -89,10 +95,10 @@ def verify_message_domain(raw: bytes, report: dict) -> dict:
         if remaining <= 0:
             return None
         try:
-            answers = dns.resolver.resolve(name.decode("ascii").rstrip("."), "TXT", lifetime=min(remaining, 2))
+            answers = resolve_records(name.decode("ascii").rstrip("."), "TXT", lifetime=min(remaining, 2))
             records = [b"".join(item.strings) for item in answers]
             return records[0] if len(records) == 1 else None
-        except (dns.exception.DNSException, UnicodeError):
+        except (dns.exception.DNSException, UnicodeError, OSError, ValueError, requests.RequestException):
             return None
 
     verified = []
@@ -111,7 +117,7 @@ def verify_message_domain(raw: bytes, report: dict) -> dict:
         if time.monotonic() >= deadline:
             break
     if verified:
-        return {**base, "status": "verified", "verified_domains": sorted(set(verified)),
+        return {**base, "status": "verified", "reason": "aligned_signature_verified", "verified_domains": sorted(set(verified)),
                 "from_domain": from_domain, "message": "An aligned DKIM signature was independently verified on the original message. This authenticates its domain, not its company claim or safety."}
     return base
 
@@ -131,7 +137,7 @@ def dns_observations(domain: str) -> dict:
         if remaining <= 0:
             break
         try:
-            answers = dns.resolver.resolve(name, kind, lifetime=min(remaining, 1))
+            answers = resolve_records(name, kind, lifetime=min(remaining, 1))
             if kind == "MX":
                 result["mx"] = sorted({str(item.exchange).rstrip(".").lower() for item in answers})[:20]
             else:
@@ -143,7 +149,8 @@ def dns_observations(domain: str) -> dict:
                 else:
                     result[field] = matches
             result["status"] = "observed"
-        except dns.exception.DNSException:
+        except (dns.exception.DNSException, OSError, ValueError, requests.RequestException) as exc:
+            result.setdefault("lookup_errors", []).append({"record": kind, "name": name, "reason": type(exc).__name__})
             continue
     if any(host == "smtp.google.com" or host.endswith(".google.com") or host.endswith(".googlemail.com") for host in result["mx"]):
         result["provider"] = "Google Workspace"

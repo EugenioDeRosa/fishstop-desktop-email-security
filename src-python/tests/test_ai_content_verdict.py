@@ -28,7 +28,7 @@ class AIContentVerdictTests(unittest.TestCase):
         self.assertEqual("none", result["action_channel"])
         self.assertEqual(self.raw["risk_rationale"], result["ai_content_rationale"])
         self.assertIn(self.raw["risk_rationale"], llm.format_email_risk_analysis(result))
-        self.assertFalse(llm._needs_content_risk_verifier(self.soc, self.raw))
+        self.assertTrue(llm._needs_content_risk_verifier(self.soc, self.raw))
 
     def test_successful_authentication_does_not_erase_content_verdict(self):
         self.soc["effective_auth_results"] = {name: {"status": "pass"} for name in ("SPF", "DKIM", "DMARC")}
@@ -85,6 +85,41 @@ class AIContentVerdictTests(unittest.TestCase):
         self.assertEqual("unavailable", result["status"])
         stream.assert_not_called()
 
+    def test_independent_malicious_evidence_does_not_add_redundant_verification(self):
+        with patch.object(llm, "_technical_risk", return_value=("malicious", ["Confirmed malicious attachment"])):
+            self.assertFalse(llm._needs_content_risk_verifier(self.soc, self.raw))
+
+    def test_unsubstantiated_impersonation_tag_cannot_bypass_content_reasoning(self):
+        body = "Please enable camera permission in the attached setup guide."
+        soc = dict(self.soc, body_for_ai=body, attachments=[{"filename": "guide.pdf", "actionable": True}])
+        raw = dict(self.raw, action="change_settings", channel="attachment", evidence=body,
+                   signals=["impersonation"], risk_assessment="suspicious", risk_evidence=body)
+        with patch.object(llm, "_deterministic_identity_deception", return_value=False):
+            result = llm.apply_email_risk_policy(soc, raw)
+        self.assertEqual("review", result["final_verdict"])
+        with patch.object(llm, "_deterministic_identity_deception", return_value=True):
+            result = llm.apply_email_risk_policy(soc, raw)
+        self.assertEqual("phishing", result["final_verdict"])
+
+    def test_supported_narrative_survives_real_verification_without_an_action(self):
+        def stream(messages, model, timeout, **kwargs):
+            if kwargs["request_stage"] == "content-risk-verification":
+                response = {"verdict": "phishing", "quote": self.raw["risk_evidence"],
+                            "explanation": self.raw["risk_rationale"], "basis": "contextual_deception"}
+            else:
+                response = self.raw
+            yield {"status": "ok", "text": json.dumps(response)}
+        with patch.object(llm, "ANALYSIS_MODE", "fast"), patch.object(llm, "_use_ollama", return_value=True), \
+                patch.object(llm, "_request_identity_extraction", return_value={"status": "unavailable"}), \
+                patch.object(llm, "_stream_ollama", side_effect=stream):
+            result = list(llm.stream_phi4_email_analysis(dict(self.soc)))[-1]["analysis"]
+        self.assertEqual("phishing", result["final_verdict"])
+        self.assertEqual("informational", result["requested_action"])
+        trace = result["ai_content_trace"]
+        self.assertEqual("confirmed", trace["verification"]["status"])
+        self.assertEqual(64, len(trace["primary_sections"][0]["body_sha256"]))
+        self.assertEqual("informational", trace["primary_sections"][0]["after_action_audits"]["requested_action"])
+
     def test_action_winner_cannot_erase_risk_in_another_section(self):
         self.soc["body_for_ai"] += " Please review the attachment."
         self.soc["attachments"] = [{"filename": "handbook.pdf", "actionable": True}]
@@ -121,7 +156,7 @@ class AIContentVerdictTests(unittest.TestCase):
         def stream(messages, model, timeout, **kwargs):
             seen.extend(messages)
             self.assertEqual("content-risk-verification", kwargs["request_stage"])
-            yield {"status": "ok", "text": json.dumps({"verdict": self.raw["risk_assessment"], "quote": self.raw["risk_evidence"], "explanation": self.raw["risk_rationale"]})}
+            yield {"status": "ok", "text": json.dumps({"verdict": self.raw["risk_assessment"], "quote": self.raw["risk_evidence"], "explanation": self.raw["risk_rationale"], "basis": "contextual_deception"})}
         with patch.object(llm, "_stream_ollama", side_effect=stream):
             result = llm._request_content_risk_verification(self.soc, model="test", timeout=5)
         self.assertEqual("confirmed", result["status"])
@@ -137,6 +172,7 @@ class AIContentVerdictTests(unittest.TestCase):
         ]
         for raw, expected in responses:
             response = {alias: raw[key] for key, alias in (("risk_assessment", "verdict"), ("risk_evidence", "quote"), ("risk_rationale", "explanation")) if key in raw}
+            response["basis"] = "ordinary_context" if raw.get("risk_assessment") == "benign" else "contextual_deception"
             with self.subTest(raw=raw), patch.object(llm, "_stream_ollama", return_value=iter([{"status": "ok", "text": json.dumps(response)}])):
                 self.assertEqual(expected, llm._request_content_risk_verification(self.soc, model="test", timeout=5)["status"])
         with patch.object(llm, "_stream_ollama", return_value=iter([{"status": "error"}])):
@@ -145,7 +181,7 @@ class AIContentVerdictTests(unittest.TestCase):
     def test_pipeline_uses_ai_verdict_in_each_mode_and_model(self):
         for mode in ("fast", "balanced", "thorough"):
             for model in ("pro-test", "fast-test"):
-                with self.subTest(mode=mode, model=model), patch.object(llm, "ANALYSIS_MODE", mode), patch.object(llm, "_use_ollama", return_value=True), patch.object(llm, "_request_identity_extraction", return_value={"status": "unavailable"}), patch.object(llm, "_stream_ollama", return_value=iter([{"status": "ok", "text": json.dumps(self.raw)}])):
+                with self.subTest(mode=mode, model=model), patch.object(llm, "ANALYSIS_MODE", mode), patch.object(llm, "_use_ollama", return_value=True), patch.object(llm, "_request_identity_extraction", return_value={"status": "unavailable"}), patch.object(llm, "_request_content_risk_verification", return_value={"status": "confirmed", "evidence": self.raw["risk_evidence"], "rationale": self.raw["risk_rationale"]}), patch.object(llm, "_stream_ollama", return_value=iter([{"status": "ok", "text": json.dumps(self.raw)}])):
                     events = list(llm.stream_phi4_email_analysis(dict(self.soc), model=model))
                     self.assertEqual("ok", events[-1]["status"])
                     self.assertEqual("phishing", events[-1]["analysis"]["final_verdict"])
@@ -180,6 +216,56 @@ class AIContentVerdictTests(unittest.TestCase):
         self.assertEqual("review", result["final_verdict"])
         self.assertEqual("phishing", result["ai_content_assessment"])
         self.assertEqual("", result["ai_content_evidence"])
+
+    def test_verbatim_quote_and_phishing_vote_are_insufficient_without_mechanism(self):
+        for basis in ("isolated_feature", "ordinary_context", "uncertain"):
+            response = {"verdict": "phishing", "quote": self.raw["risk_evidence"],
+                        "explanation": "A supplied account alone does not establish deception.", "basis": basis}
+            with self.subTest(basis=basis), patch.object(llm, "_stream_ollama", return_value=iter([
+                {"status": "ok", "text": json.dumps(response)}
+            ])):
+                verification = llm._request_content_risk_verification(self.soc, model="test", timeout=5)
+            self.assertEqual("disagreement", verification["status"])
+            self.assertEqual(basis, verification["sections"][0]["basis"])
+            self.assertEqual(1, verification["sections"][0]["section"])
+            result = llm.apply_email_risk_policy(self.soc, dict(self.raw, risk_verification=verification))
+            self.assertEqual("review", result["final_verdict"])
+            self.assertEqual("phishing", result["ai_content_assessment"])
+
+    def test_failed_verification_records_the_actual_failure(self):
+        responses = [
+            ({"verdict": "phishing", "quote": "invented", "explanation": "A lure.",
+              "basis": "contextual_deception"}, "invalid_quote"),
+            ({"verdict": "phishing", "quote": self.raw["risk_evidence"], "explanation": "",
+              "basis": "contextual_deception"}, "missing_rationale"),
+            ({"verdict": "phishing"}, "invalid_structured_response"),
+        ]
+        for response, reason in responses:
+            with self.subTest(reason=reason), patch.object(llm, "_stream_ollama", return_value=iter([
+                {"status": "ok", "text": json.dumps(response)}
+            ])):
+                verification = llm._request_content_risk_verification(self.soc, model="test", timeout=5)
+            self.assertEqual("unavailable", verification["status"])
+            self.assertEqual(reason, verification["reason"])
+
+    def test_trace_preserves_initial_action_when_policy_corrects_it(self):
+        body = "Your temporary password is example123."
+        soc = dict(self.soc, body_for_ai=body)
+        raw = dict(self.raw, action="provide_credentials", risk_evidence=body, evidence=body)
+        verification = {"status": "disagreement", "reason": "no_supported_deceptive_mechanism",
+                        "basis": "isolated_feature", "assessment": "benign"}
+        with patch.object(llm, "ANALYSIS_MODE", "fast"), patch.object(llm, "_use_ollama", return_value=True), \
+                patch.object(llm, "_request_identity_extraction", return_value={"status": "unavailable"}), \
+                patch.object(llm, "_stream_ollama", return_value=iter([{"status": "ok", "text": json.dumps(raw)}])), \
+                patch.object(llm, "_request_content_risk_verification", return_value=verification):
+            result = list(llm.stream_phi4_email_analysis(soc))[-1]["analysis"]
+        trace = result["ai_content_trace"]
+        self.assertEqual("provide_credentials", trace["primary_sections"][0]["requested_action"])
+        self.assertEqual("informational", trace["final_action"])
+        self.assertEqual("phishing", trace["primary_sections"][0]["assessment"])
+        self.assertEqual("review", trace["final_verdict"])
+        self.assertIn("action_corrected_to_information", trace["verification_reasons"])
+        self.assertEqual(verification, trace["verification"])
 
     def test_weak_technical_anomaly_cannot_convict_unresolved_ai_warning(self):
         for status in ("disagreement", "unavailable"):

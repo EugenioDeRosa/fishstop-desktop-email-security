@@ -33,6 +33,7 @@ from .archive_analysis import ArchiveAnalysisBudget
 from fishstop_engine.office_analysis import OfficeAnalysisBudget
 from .attachment      import analyze_attachment
 from .body_context    import extract_forwarded_identity, select_body_for_ai
+from .essential_text import compact_repeated_blocks, merge_mime_alternatives
 from .html_deception  import analyze_html_copy_deception
 from .html_form_analysis import analyze_html_forms
 from .html_utils      import (
@@ -735,13 +736,15 @@ class EmlSOCAnalyzer:
         # MIME alternatives may disagree. Keep novel HTML content instead of
         # letting a decoy plain alternative silently replace the real request.
         divergent = False
+        body_mime_compaction = {}
         if not plain_is_structured and not html_is_structured and html_body_for_intent:
             plain_tokens = set(re.findall(r"\w+", plain_body_for_ai.casefold()))
             html_tokens = set(re.findall(r"\w+", html_body_for_intent.casefold()))
             divergent = bool(plain_body_for_ai and len(html_tokens - plain_tokens) >= 12
                              and len(html_tokens - plain_tokens) / max(1, len(html_tokens)) > 0.35)
             if divergent:
-                selected_body_for_intent = plain_body_for_ai + "\n\n[HTML alternative]\n" + html_body_for_intent
+                selected_body_for_intent, body_mime_compaction = merge_mime_alternatives(
+                    plain_body_for_ai, html_body_for_intent)
         report["body_alternatives_divergent"] = divergent
         report["body_for_intent"] = selected_body_for_intent.strip()
         # Apply reply/signature/footer selection to the structurally cleaned
@@ -760,6 +763,7 @@ class EmlSOCAnalyzer:
             else plain_ai_selection
         )
         identity_body = identity_selection.get("body_for_identity") or ""
+        identity_mime_compaction = {}
         if html_is_structured:
             full_html_selection = select_body_for_ai(html_clean)
             if full_html_selection.get("body_context") == html_ai_selection.get("body_context"):
@@ -767,10 +771,11 @@ class EmlSOCAnalyzer:
         if not plain_is_structured and not html_is_structured and html_clean:
             html_identity = select_body_for_ai(html_clean).get("body_for_identity") or ""
             if html_identity and html_identity != identity_body:
-                identity_body = (identity_body + "\n\n[HTML alternative]\n" + html_identity).strip()
+                identity_body, identity_mime_compaction = merge_mime_alternatives(
+                    identity_body, html_identity)
         final_ai_selection = select_body_for_ai(bert_source)
         report.update(final_ai_selection)
-        report["body_for_identity"] = identity_body
+        report["body_for_identity"], identity_compaction = compact_repeated_blocks(identity_body)
         if plain_is_structured and final_ai_selection.get("body_context") == "normal":
             # ``bert_source`` is already the selected payload, so it no longer
             # contains the delimiter that originally proved it was forwarded.
@@ -781,7 +786,17 @@ class EmlSOCAnalyzer:
                 "body_ai_removed_tail_lines",
             ):
                 report[key] = plain_ai_selection.get(key, report.get(key, 0))
-        report["body_extracted"] = report.get("body_ai") or bert_source
+        essential_body, body_compaction = compact_repeated_blocks(
+            report.get("body_ai") or bert_source)
+        report["body_ai"] = essential_body
+        report["ai_text_compaction"] = {
+            "body": body_compaction,
+            "identity": identity_compaction,
+            "mime_body": body_mime_compaction,
+            "mime_identity": identity_mime_compaction,
+            "method": "exact_repeated_blocks_and_mime_overlap",
+        }
+        report["body_extracted"] = essential_body
         report["body_for_ai"] = report["body_extracted"].strip()
         if len(report["body_for_ai"]) > MAX_AI_BODY_CHARS:
             report["body_for_ai"] = report["body_for_ai"][:MAX_AI_BODY_CHARS]

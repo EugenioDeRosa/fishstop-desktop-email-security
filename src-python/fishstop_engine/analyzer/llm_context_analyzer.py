@@ -18,6 +18,7 @@ from fishstop_engine.analysis_limits import (
 )
 from fishstop_engine.domain_utils import registered_domain, identity_mailbox
 from .lookalike import is_risky_lookalike_alert
+from .essential_text import without_compaction_notices
 
 OLLAMA_CHAT_ENDPOINT = os.getenv("OLLAMA_CHAT_ENDPOINT", "http://localhost:11434/api/chat")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3:4b-instruct-2507-q4_K_M")
@@ -69,7 +70,7 @@ OLLAMA_AVAILABILITY_TTL = max(
     0.0,
     float(os.getenv("OLLAMA_AVAILABILITY_TTL", "5")),
 )
-PROMPT_VERSION = "semantic-policy-v47-reply-routing"
+PROMPT_VERSION = "semantic-policy-v48-essential-input"
 
 _OLLAMA_AVAILABILITY_LOCK = Lock()
 _OLLAMA_AVAILABILITY_CACHE: tuple[float, tuple, bool] | None = None
@@ -499,7 +500,7 @@ def _html_call_to_action_evidence(soc: dict) -> str:
 def _message_evidence_text(soc: dict) -> str:
     parts = [
         str(soc.get("subject") or ""),
-        _body_context_for_llm(soc),
+        without_compaction_notices(_body_context_for_llm(soc)),
         _identity_attachment_text(soc),
         *_actionable_link_texts(soc),
     ]
@@ -1039,7 +1040,7 @@ def _validated_evidence(soc: dict, value: str, action: str = "") -> str:
         return ""
     searchable = "\n".join([
         str(soc.get("subject") or ""),
-        compact_ai_body(_body_context_for_llm(soc)),
+        compact_ai_body(without_compaction_notices(_body_context_for_llm(soc))),
         _identity_attachment_text(soc),
         *_actionable_link_texts(soc),
     ])
@@ -1120,7 +1121,7 @@ def _identity_body_text(soc: dict) -> str:
     sign-off recovery; never attach another conversation turn in that fallback.
     """
     if "body_for_identity" in soc:
-        return str(soc.get("body_for_identity") or "")
+        return without_compaction_notices(soc.get("body_for_identity") or "")
     selected = re.sub(r"\s+", " ", _body_context_for_llm(soc)).strip()
     full = re.sub(r"\s+", " ", str(soc.get("body_clean") or "")).strip()
     full = re.sub(r"<(?:mailto:|https?://)[^>]+>", "", full, flags=re.I)

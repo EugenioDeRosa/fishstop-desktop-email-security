@@ -82,7 +82,7 @@ FishStop viene distribuito per:
 - macOS con processore Intel (`x64`);
 - Windows a 64 bit (`x64`).
 
-Il primo avvio e la configurazione iniziale richiedono una connessione Internet. Il modello AI consigliato viene scaricato separatamente dall’app durante la preparazione del primo accesso: circa 1,1 GB per Fast Lite v2 o 2,5 GB per Pro v5. Servono ulteriore spazio per il runtime e i file temporanei; i modelli già installati vengono riutilizzati.
+Il primo avvio e la configurazione iniziale richiedono una connessione Internet. Il modello AI consigliato viene scaricato separatamente dall’app durante la preparazione del primo accesso: circa 1,1 GB per Fast Lite v4 o 2,5 GB per Pro v5. Servono ulteriore spazio per il runtime e i file temporanei; i modelli già installati vengono riutilizzati. Chi usava una versione precedente di Fast mantiene la modalità e scarica il nuovo modello verificato.
 
 ## Installazione su macOS
 
@@ -361,7 +361,8 @@ Il codice presente non rende queste funzionalità disponibili all’utente.
 
 - [Mappa dei collegamenti esterni e dei dati trasmessi](docs/privacy-data-flows.md).
 - [Model card FishStop AI v5](docs/model-card-v5.md).
-- [Model card Fast Lite v2](docs/model-card-lite-v2.md), con i limiti della provenienza disponibile.
+- [Model card Fast Lite v4](docs/model-card-lite-v4.md), con provenienza e limiti dell'artefatto.
+- [Model card storica Fast Lite v2](docs/model-card-lite-v2.md).
 - [Model card storica Fast Lite v1](docs/model-card-lite-v1.md).
 - [Provenienza, controlli e diritti dei dati di training](docs/training-data-rights.md).
 

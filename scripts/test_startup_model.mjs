@@ -6,7 +6,7 @@ const compiled = ts.transpileModule(readFileSync(new URL('../src/startup-model.t
 const exports = {};
 new Function('exports', 'require', compiled)(exports, () => globalThis.__fishstopI18n);
 const { ensureStartupModel } = exports;
-for (const model of ['fishstop-fast:1.7b-finetuned-lite-v3-q4_k_m', 'fishstop-qwen3:4b-finetuned-v5-q4_K_M']) {
+for (const model of ['fishstop-fast:1.7b-finetuned-lite-v4-q4_k_m', 'fishstop-qwen3:4b-finetuned-v5-q4_K_M']) {
   const installed = { model, model_ready: true, model_download_available: true };
   let installs = 0, releases = 0;
   const messages = [];
@@ -42,7 +42,7 @@ assert.doesNotMatch(installation, /warm_selected_model|warm_model|api\/generate/
 assert.match(installation, /model_download::install\(app, &endpoint, &ai_mode\(app\)\)/, 'Both modes use the verified catalog download/import');
 assert.doesNotMatch(installation, /api\/pull/, 'The fine-tuned Fast model must not pull the original registry model');
 
-const reused = { model: 'fishstop-fast:1.7b-finetuned-lite-v3-q4_k_m', model_ready: true, model_download_available: true };
+const reused = { model: 'fishstop-fast:1.7b-finetuned-lite-v4-q4_k_m', model_ready: true, model_download_available: true };
 let downloads = 0;
 for (let restart = 0; restart < 3; restart++) {
   await ensureStartupModel({

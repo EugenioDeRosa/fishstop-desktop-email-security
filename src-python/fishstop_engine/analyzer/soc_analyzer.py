@@ -30,6 +30,7 @@ from fishstop_engine.analysis_limits import (
 )
 from fishstop_engine.domain_utils import registered_domain, same_registered_domain, identity_mailbox, mailbox_candidates
 from .archive_analysis import ArchiveAnalysisBudget
+from .reply_routing import assess_reply_routing
 from fishstop_engine.office_analysis import OfficeAnalysisBudget
 from .attachment      import analyze_attachment
 from .body_context    import extract_forwarded_identity, select_body_for_ai
@@ -1004,16 +1005,10 @@ class EmlSOCAnalyzer:
             flag("INFO", "DMARC", "No DMARC result is available in this EML export")
 
         # Reply-To mismatch
-        if report["reply_to_mismatch"]:
-            flag("MEDIUM", "Reply-To",
-                 "The reply address differs from the sender. This can occur with sharing or notification services; the difference alone is not evidence of phishing.")
-        elif report.get("reply_to_mismatch_legitimate"):
-            flag(
-                "INFO",
-                "Reply-To",
-                f"Reply-To ({report['reply_to']}) differs from From ({report['from_']}), "
-                "but matches a common legitimate routing pattern.",
-            )
+        routing = assess_reply_routing(report)
+        report["reply_to_routing"] = routing
+        if routing["level"] != "NONE":
+            flag(routing["level"], "Reply-To", routing["message"])
 
         # Return-Path domain mismatch
         if report.get("return_path_domain_mismatch"):

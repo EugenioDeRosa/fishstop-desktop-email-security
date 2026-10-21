@@ -4,6 +4,7 @@ from pathlib import Path
 
 from fishstop_engine.analyzer.soc_analyzer import EmlSOCAnalyzer
 from fishstop_engine.analyzer import llm_context_analyzer as llm
+from fishstop_engine.analyzer.reply_routing import assess_reply_routing, refresh_reply_routing
 
 
 class ReplyRoutingTests(unittest.TestCase):
@@ -24,18 +25,18 @@ class ReplyRoutingTests(unittest.TestCase):
         report['domain_authentication'] = {'status': 'verified', 'verified_domains': ['service.example']}
         return report
 
-    def test_cross_domain_reply_is_visible_without_a_high_severity_accusation(self):
+    def test_unrecognized_cross_domain_reply_is_high_even_with_benign_ai(self):
         report = self.sharing_report()
         self.assertTrue(report['reply_to_mismatch'])
         flags = [f for f in report['flags'] if f['field'] == 'Reply-To']
-        self.assertEqual(['MEDIUM'], [f['level'] for f in flags])
-        self.assertIn('difference alone is not evidence of phishing', flags[0]['message'])
+        self.assertEqual(['HIGH'], [f['level'] for f in flags])
+        self.assertIn('no supported sharing or notification routing', flags[0]['message'])
         self.assertFalse(llm._deterministic_identity_deception(report, {'requested_action': 'visit_link'}))
         result = llm.apply_email_risk_policy(report, {
             'action': 'visit_link', 'channel': 'link', 'evidence': 'Open the document here.',
             'risk_assessment': 'legitimate', 'risk_rationale': 'An ordinary document-sharing notification.'})
         self.assertEqual('uncertain', result['identity_risk'])
-        self.assertEqual('review', result['final_verdict'])
+        self.assertEqual('phishing', result['final_verdict'])
         self.assertNotIn('spoofing_evidence', result['identity_risk'])
 
     def test_authenticated_service_does_not_authenticate_the_external_reply_person(self):
@@ -67,6 +68,10 @@ class ReplyRoutingTests(unittest.TestCase):
 
     def test_service_authentication_cannot_clear_ai_deceptive_content(self):
         report = self.sharing_report()
+        report['from_'] = 'drive-shares-dm-noreply@google.com'
+        report['links'] = [{'url': 'https://drive.google.com/file/d/123/view'}]
+        report['domain_authentication'] = {'status': 'verified', 'verified_domains': ['google.com']}
+        self.assertEqual('INFO', assess_reply_routing(report)['level'])
         body = 'Your account will be closed unless you disclose your password in the shared document.'
         report['body_for_ai'] = body
         report['body_for_intent'] = body
@@ -86,12 +91,56 @@ class ReplyRoutingTests(unittest.TestCase):
         result = llm.apply_email_risk_policy(report, {
             'action': 'visit_link', 'channel': 'link', 'evidence': 'Open the document here.',
             'risk_assessment': 'legitimate', 'risk_rationale': 'An ordinary document-sharing notification.'})
-        self.assertEqual('review', result['final_verdict'])
+        self.assertEqual('phishing', result['final_verdict'])
 
-    def test_same_domain_routing_keeps_existing_neutral_treatment(self):
+    def test_exact_address_policy_also_covers_same_domain_without_notification_evidence(self):
         report = self.parse('Notice <notice@company.example>', 'Person <person@company.example>')
         self.assertTrue(report['reply_to_mismatch_legitimate'])
         self.assertFalse(report['reply_to_mismatch'])
+        self.assertEqual('HIGH', assess_reply_routing(report)['level'])
+
+    def test_service_exception_requires_real_mailbox_and_official_destinations(self):
+        report = self.parse('"Person (via Google Drive)" <drive-shares-dm-noreply@google.com>', 'person@company.example')
+        report['links'] = [{'url': 'https://drive.google.com/file/d/123/view', 'actionable': True}]
+        self.assertEqual('MEDIUM', refresh_reply_routing(report)['level'])
+        report['domain_authentication'] = {'status': 'verified', 'verified_domains': ['google.com']}
+        self.assertEqual('INFO', refresh_reply_routing(report)['level'])
+        self.assertEqual('clean', llm._technical_risk(report)[0])
+        report['link_reputation'] = {report['links'][0]['url']: {'status': 'malicious'}}
+        self.assertEqual('malicious', llm._technical_risk(report)[0])
+        report['links'][0]['url'] = 'https://drive.google.com.attacker.example/file'
+        self.assertEqual('HIGH', refresh_reply_routing(report)['level'])
+
+    def test_bulk_claim_alone_cannot_bypass_policy(self):
+        report = self.sharing_report()
+        report['is_bulk_sender'] = True
+        self.assertEqual('HIGH', assess_reply_routing(report)['level'])
+        report['reply_to'] = 'support@service.example'
+        self.assertEqual('INFO', assess_reply_routing(report)['level'])
+        report['domain_authentication'] = {'status': 'disabled'}
+        self.assertEqual('HIGH', assess_reply_routing(report)['level'])
+
+    def test_additional_reply_recipient_cannot_hide_behind_matching_first_address(self):
+        report = self.parse('alice@company.example', 'alice@company.example, thief@external.example')
+        self.assertEqual('HIGH', assess_reply_routing(report)['level'])
+        report['reply_to'] = 'Alice <alice@company.example>'
+        self.assertEqual('NONE', assess_reply_routing(report)['level'])
+        report['reply_to'] = None
+        self.assertEqual('NONE', assess_reply_routing(report)['level'])
+
+    def test_outer_routing_does_not_apply_to_selected_embedded_message(self):
+        report = self.sharing_report()
+        report['selected_target_authentication_scope'] = 'embedded_unavailable'
+        self.assertEqual('NONE', refresh_reply_routing(report)['level'])
+        self.assertFalse(any(flag['field'] == 'Reply-To' for flag in report['flags']))
+
+    def test_sharepoint_notification_and_authentication_failure(self):
+        report = self.parse('no-reply@sharepointonline.com', 'person@company.example')
+        report['links'] = [{'url': 'https://company.sharepoint.com/sites/team/document'}]
+        report['domain_authentication'] = {'status': 'verified', 'verified_domains': ['sharepointonline.com']}
+        self.assertEqual('INFO', assess_reply_routing(report)['level'])
+        report['domain_authentication'] = {'status': 'failed'}
+        self.assertEqual('HIGH', assess_reply_routing(report)['level'])
 
 
 if __name__ == '__main__':

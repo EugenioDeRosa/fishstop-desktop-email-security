@@ -156,6 +156,8 @@ def analyze(path_value: str) -> dict[str, Any]:
     from fishstop_engine.domain_identity import verify_message_domain
     report["local_only"] = local_only
     report["domain_authentication"] = {"status": "disabled", "message": "Independent DNS/DKIM checks disabled by Local only"} if local_only else verify_message_domain(raw, report)
+    from fishstop_engine.analyzer.reply_routing import refresh_reply_routing
+    refresh_reply_routing(report)
     report["eml_sha256"] = hashlib.sha256(raw).hexdigest()
     disabled_providers = set(os.getenv("FISHSTOP_DISABLED_PROVIDERS", "spamhaus,geolocation").split(","))
     enrich_reputation(

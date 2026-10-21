@@ -86,6 +86,7 @@ type AnalysisReport = {
   raw_eml_preview?: string;
   raw_eml_preview_error?: string;
   return_path_domain_mismatch?: boolean; reply_to_mismatch?: boolean; display_name_spoofing?: string;
+  reply_to_routing?: { level: string; message: string; exception: boolean };
   links?: Array<{ url?: string; host?: string; registered_domain?: string; is_ip?: boolean; scheme?: string; source?: string; display_text?: string; display_host?: string; display_registered_domain?: string; display_mismatch?: boolean; resolved_display_destination?: boolean; signature_tracking_redirect?: boolean; html_call_to_action?: boolean; has_userinfo?: boolean; has_credentials?: boolean; nonstandard_port?: boolean; port?: number; nested_redirect_count?: number; redirect_hosts?: string[]; redirect_downloads?: Array<{ filename?: string; extension?: string; dangerous?: boolean }>; unicode_host?: boolean; unicode_path_or_query?: boolean; role?: string; actionable?: boolean; sources?: string[]; download_filename?: string; download_extension?: string; download_source?: string; dangerous_download?: boolean; financial_attachment_mismatch?: boolean; context_risk_level?: string; context_risk_message?: string }>;
   link_reputation?: Record<string, ReputationResult>;
   hop_reputation?: Record<string, ReputationResult>;
@@ -1184,13 +1185,12 @@ function verdictFlags(report: AnalysisReport): SocFlag[] {
   const dmarcPassed = ["pass", "bestguesspass"].includes(
     authFromEmlHeader(report, "DMARC").status.toLowerCase(),
   );
-  // Reclassify only the former standalone address-comparison warning in saved
-  // reports. Independent malicious-content or destination findings still apply.
+  // New reports carry the backend's service-routing assessment. Older reports
+  // retain their recorded result until the message is analyzed again.
   return (report.flags || []).map((flag): SocFlag => {
     if (flag.field.trim().toLowerCase() === "reply-to"
-      && flag.level === "HIGH"
-      && /^Reply-To \(.*\) differs da From \(.*\) - possible harvesting$/i.test(flag.message)) {
-      return { ...flag, level: "MEDIUM", message: "The reply address differs from the sender. This can occur with sharing or notification services; the difference alone is not evidence of phishing." };
+      && report.reply_to_routing && report.reply_to_routing.level !== "NONE") {
+      return { ...flag, level: report.reply_to_routing.level as SocFlag["level"], message: report.reply_to_routing.message };
     }
     return flag;
   }).filter((flag) => {
@@ -1895,7 +1895,7 @@ function reportMarkup(report: AnalysisReport): string {
       senderConsistencyItem("neutral", t("Display name"), t("The recovered display name is quoted content and cannot be authenticated."), t("Unverified")),
     ].join("")
     : [
-      senderConsistencyItem(report.reply_to_mismatch ? "warn" : "pass", t("Reply-To address"), report.reply_to_mismatch ? t("The reply address differs from the sender. This can occur with sharing or notification services; the difference alone is not evidence of phishing.") : t("No mismatch detected between the sender and reply destination."), report.reply_to_mismatch ? t("Review required") : t("Aligned"), report.reply_to_mismatch ? replyToAddress : ""),
+      senderConsistencyItem(report.reply_to_routing?.level === "HIGH" ? "fail" : report.reply_to_mismatch ? "warn" : "pass", t("Reply-To address"), report.reply_to_routing?.message ? engineText(report.reply_to_routing.message) : report.reply_to_mismatch ? t("The reply address differs from the sender. This can occur with sharing or notification services; the difference alone is not evidence of phishing.") : t("No mismatch detected between the sender and reply destination."), report.reply_to_routing?.level === "HIGH" ? t("High risk") : report.reply_to_mismatch ? t("Review required") : t("Aligned"), (report.reply_to_routing && report.reply_to_routing.level !== "NONE") || report.reply_to_mismatch ? replyToAddress : ""),
       senderConsistencyItem(returnPathTone, t("Return-Path domain"), returnPathDetail, report.return_path_domain_mismatch ? returnPathDmarcPassed ? t("Mismatch · DMARC passed") : returnPathDmarcFailed ? t("Technical mismatch") : t("Weak mismatch") : t("Aligned"), report.return_path_domain_mismatch ? returnPathAddress : ""),
       senderConsistencyItem(displayNameSpoofed ? "fail" : "pass", t("Display name"), displayNameSpoofed ? displayNameSpoofing : t("No display-name impersonation detected."), displayNameSpoofed ? t("Impersonation detected") : t("Aligned")),
     ].join("");

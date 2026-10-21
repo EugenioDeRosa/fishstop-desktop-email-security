@@ -52,7 +52,7 @@ _OUTER_DELIVERY_EVIDENCE_KEYS = (
     "dkim_signature_raw", "received_hops", "injection_sender_ip", "injection_server",
     "x_received", "spf_sender_aligned", "injection_ip_spf_authorized",
     "return_path_domain", "return_path_domain_mismatch", "reply_to_mismatch",
-    "reply_to_mismatch_legitimate", "display_name_spoofing",
+    "reply_to_mismatch_legitimate", "reply_to_routing", "display_name_spoofing",
 )
 
 
@@ -406,4 +406,5 @@ def apply_conversation_selection(report: dict, manifest: dict, selection: dict |
         report["injection_ip_spf_authorized"] = None
         report["display_name_spoofing"] = None
         report["forwarded_identity"] = None
+        report.pop("reply_to_routing", None)
     return report

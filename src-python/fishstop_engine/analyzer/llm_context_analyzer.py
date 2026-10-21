@@ -70,7 +70,7 @@ OLLAMA_AVAILABILITY_TTL = max(
     0.0,
     float(os.getenv("OLLAMA_AVAILABILITY_TTL", "5")),
 )
-PROMPT_VERSION = "semantic-policy-v48-essential-input"
+PROMPT_VERSION = "semantic-policy-v49-reply-routing-policy"
 
 _OLLAMA_AVAILABILITY_LOCK = Lock()
 _OLLAMA_AVAILABILITY_CACHE: tuple[float, tuple, bool] | None = None
@@ -825,8 +825,10 @@ def _technical_context_lines(soc: dict, body_for_llm: str = "", link_reputation:
     if dmarc_status in {"fail", "temperror", "permerror", "policy"}:
         lines.append(f"DMARC check did not pass: {dmarc_status}")
 
-    if soc.get("reply_to_mismatch"):
-        lines.append("Reply-To differs from From: a routing difference only, not proof of impersonation or harvesting; assess the actual requested action and independent evidence")
+    from .reply_routing import assess_reply_routing
+    routing = assess_reply_routing(soc)
+    if routing["level"] != "NONE":
+        lines.append("Reply-To routing check: " + routing["message"])
     return_path_context = _return_path_mismatch_context(soc)
     if return_path_context:
         bulk_sender = bool(soc.get("is_bulk_sender"))
@@ -3228,8 +3230,16 @@ def _sensitive_link_domain_mismatch(soc: dict, semantic: dict) -> bool:
 
 
 def _technical_risk(soc: dict, semantic: dict | None = None) -> tuple[str, list[str]]:
+    from .reply_routing import assess_reply_routing
     malicious = []
     suspicious = []
+    routing = assess_reply_routing(soc)
+    if routing["level"] == "HIGH":
+        # Explicit conservative product policy; this is not proof that the
+        # different reply recipient is malicious or that spoofing occurred.
+        malicious.append(routing["message"])
+    elif routing["level"] == "MEDIUM":
+        suspicious.append(routing["message"])
     if soc.get("body_analysis_incomplete"):
         suspicious.append("part of the email body exceeded the analysis budget and was not inspected")
     if soc.get("from_ambiguous"):

@@ -22,10 +22,16 @@ const report = {
 };
 assert.equal(context.assessment(report).tone, 'review');
 assert.equal(context.highSeverityStaticReason(report), null);
+const mismatch = structuredClone(report);
+mismatch.reply_to_routing = {level: 'HIGH', message: 'Unsupported reply routing', exception: false};
+mismatch.phi4_analysis.analysis.final_verdict = 'legitimate';
+assert.equal(context.assessment(mismatch).tone, 'danger', 'Reply policy takes precedence over benign AI content');
 const legacy = structuredClone(report);
 legacy.flags = [{ level: 'HIGH', field: 'Reply-To', message: 'Reply-To (person@company.example) differs da From (notice@service.example) - possible harvesting' }];
-assert.equal(context.assessment(legacy).tone, 'review', 'The former standalone warning must not keep causing HIGH RISK');
-assert.equal(context.verdictFlags(legacy)[0].message, message);
+assert.equal(context.assessment(legacy).tone, 'danger', 'Stored HIGH warnings remain authoritative until reanalysis');
+assert.equal(context.verdictFlags(legacy)[0].level, 'HIGH');
+legacy.reply_to_routing = {level: 'MEDIUM', message, exception: true};
+assert.equal(context.assessment(legacy).tone, 'review', 'Current service-routing assessment overrides a stale stored warning');
 assert.equal(legacy.flags[0].level, 'HIGH', 'Stored evidence stays intact');
 const malicious = structuredClone(report);
 malicious.phi4_analysis.analysis.final_verdict = 'phishing';

@@ -4068,7 +4068,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       if (event.payload.analysis_id !== analysisId || activeAnalysis !== session) return;
       const stage = event.payload.stage;
       if (stage === "model-loading") progress.enter("loading", performance.now());
-      else if (["model-ready", "content", "retry", "context-resplit", "primary-complete", "verification"].includes(stage)) progress.enter("ai", performance.now());
+      else if (["model-ready", "input-extraction", "content", "retry", "context-resplit", "primary-complete", "verification"].includes(stage)) progress.enter("ai", performance.now());
       // Merging is followed by another model call for identity extraction.
       else if (stage === "merge" || stage === "identity") progress.enter("identity", performance.now());
       if (stage === "content" || stage === "context-resplit") {

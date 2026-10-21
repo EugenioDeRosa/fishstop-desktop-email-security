@@ -20,6 +20,8 @@ from fishstop_engine.domain_utils import registered_domain, identity_mailbox
 from .lookalike import is_risky_lookalike_alert
 from .essential_text import without_compaction_notices
 from .response_templates import CONTENT_SUMMARY_SOURCE, content_summary_parts
+from .long_email import (SELECTION_SCHEMA, SELECTION_SYSTEM, SELECTION_TASK,
+                         numbered_passages, selection_batches, selected_ids, selection_messages)
 
 OLLAMA_CHAT_ENDPOINT = os.getenv("OLLAMA_CHAT_ENDPOINT", "http://localhost:11434/api/chat")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3:4b-instruct-2507-q4_K_M")
@@ -72,6 +74,8 @@ OLLAMA_AVAILABILITY_TTL = max(
     float(os.getenv("OLLAMA_AVAILABILITY_TTL", "5")),
 )
 PROMPT_VERSION = "semantic-policy-v50-template-summary"
+LONG_EMAIL_EXTRACTION = os.getenv("FISHSTOP_LONG_EMAIL_EXTRACTION", "0").strip().lower() in {"1", "true", "yes"}
+LONG_EMAIL_MIN_CHARS = 6000
 
 _OLLAMA_AVAILABILITY_LOCK = Lock()
 _OLLAMA_AVAILABILITY_CACHE: tuple[float, tuple, bool] | None = None
@@ -2039,9 +2043,13 @@ def build_fast_email_prompt(soc: dict) -> str:
 
 def _build_complete_email_prompts(
     soc: dict,
+    *,
+    body_override: str | None = None,
 ) -> list[tuple[str, str]]:
     """Return every body section and its prompt; no middle section is discarded."""
     subject, body, attachment_meta = _prepared_email_prompt_parts(soc)
+    if body_override is not None:
+        body = body_override
     if len(body) > MAX_AI_BODY_CHARS:
         raise EmailAnalysisLimitError(
             "The email body exceeds the supported Phi-4 analysis limit "
@@ -4778,6 +4786,87 @@ def _request_content_risk_verification(soc: dict, *, model: str, timeout: int,
     }
 
 
+def _extract_long_email(soc: dict, *, model: str, deadline: float, telemetry: list,
+                        cancellation_requested=None) -> tuple[str | None, dict]:
+    """Select original passages; all failures keep the full-text path available."""
+    subject, body, _ = _prepared_email_prompt_parts(soc)
+    started = monotonic()
+    metadata = {"status": "fallback", "original_characters": len(body),
+                "original_sha256": sha256(body.encode("utf-8")).hexdigest()}
+
+    def fallback(reason):
+        return None, {**metadata, "reason": reason, "elapsed_ms": round((monotonic() - started) * 1000)}
+
+    if len(body) < LONG_EMAIL_MIN_CHARS:
+        return fallback("below_threshold")
+    # A short extraction task can read larger sections than a detailed audit.
+    # Leave room for JSON framing, schema, the reply and tokenization variance.
+    fixed_tokens = (len((SELECTION_SYSTEM + SELECTION_TASK).encode("utf-8")) + 2) // 3
+    capacity = OLLAMA_NUM_CTX - fixed_tokens - 160 - 256
+    if capacity < 500:
+        return fallback("insufficient_context")
+    passages = numbered_passages(body)
+    try:
+        batches = selection_batches(passages, min(9000, int(capacity * 2.1)))
+    except ValueError as exc:
+        return fallback(str(exc))
+    if len(batches) > MAX_PHI4_SECTIONS:
+        return fallback("too_many_extraction_sections")
+    metadata.update(total_passages=len(passages), extraction_sections=len(batches), completed_sections=0)
+    selected = set()
+    # Do not let this optional pass consume the entire analysis budget.
+    extraction_deadline = min(deadline, monotonic() + min(90, max(1, (deadline - monotonic()) * 0.3)))
+    for number, batch in enumerate(batches, 1):
+        if cancellation_requested and cancellation_requested():
+            return fallback("cancelled")
+        if monotonic() >= extraction_deadline:
+            return fallback("extraction_time_budget")
+        completed = False
+        try:
+            for event in _stream_ollama(
+                selection_messages(batch, _clip(subject, 240)), model,
+                max(1, min(OLLAMA_REQUEST_TIMEOUT, int(extraction_deadline - monotonic()))),
+                output_schema=SELECTION_SCHEMA, request_stage=f"input-extraction:{number}",
+                telemetry=telemetry, num_predict=160,
+            ):
+                if cancellation_requested and cancellation_requested():
+                    return fallback("cancelled")
+                if event.get("status") == "error":
+                    return fallback("extraction_backend_error")
+                if event.get("status") != "ok":
+                    continue
+                if event.get("done_reason") in {"length", "max_tokens"}:
+                    return fallback("truncated_selection")
+                if event.get("response_complete") is False:
+                    return fallback("incomplete_response")
+                raw = _json_object_with_keys(event.get("text") or "", {"keep", "complete"})
+                selected.update(selected_ids(raw, batch))
+                metadata["completed_sections"] += 1
+                completed = True
+            if not completed:
+                return fallback("incomplete_response")
+        except (ValueError, json.JSONDecodeError) as exc:
+            return fallback("invalid_selection:" + str(exc)[:100])
+    if not selected:
+        return fallback("empty_selection")
+    # Keep source order and exact source text. IDs cannot introduce prose.
+    compacted = "\n\n".join(passages[i - 1] for i in sorted(selected))
+    metadata.update(selected_characters=len(compacted), selected_passage_ids=sorted(selected),
+                    selected_sha256=sha256(compacted.encode("utf-8")).hexdigest())
+    if len(compacted) > len(body) * 0.65:
+        return fallback("insufficient_reduction")
+    try:
+        if len(_build_complete_email_prompts(soc, body_override=compacted)) >= len(_build_complete_email_prompts(soc)):
+            return fallback("no_primary_pass_saved")
+    except EmailAnalysisLimitError:
+        return fallback("compacted_context_limit")
+    return compacted, {**metadata, "status": "applied", "selected_characters": len(compacted),
+                       "elapsed_ms": round((monotonic() - started) * 1000),
+                       "selected_sha256": sha256(compacted.encode("utf-8")).hexdigest(),
+                       "selected_passage_ids": sorted(selected), "total_passages": len(passages),
+                       "extraction_sections": len(batches)}
+
+
 def stream_phi4_email_analysis(
     soc: dict,
     model: str = OLLAMA_MODEL,
@@ -4811,8 +4900,26 @@ def stream_phi4_email_analysis(
         }
         return
 
+    ollama_calls: list[dict] = []
+    input_compaction = {"status": "disabled"}
+    compacted_body = None
     try:
         prompt_sections = _build_complete_email_prompts(soc)
+    except EmailAnalysisLimitError as exc:
+        yield {"status": "error", "message": str(exc), "text": ""}
+        return
+    if LONG_EMAIL_EXTRACTION and len(_prepared_email_prompt_parts(soc)[1]) >= LONG_EMAIL_MIN_CHARS:
+        yield {"status": "progress", "stage": "input-extraction",
+               "message": "Selecting original passages and context from the long email"}
+        compacted_body, input_compaction = _extract_long_email(
+            soc, model=model, deadline=pipeline_deadline, telemetry=ollama_calls,
+            cancellation_requested=cancellation_requested)
+        if cancellation_requested and cancellation_requested():
+            yield {"status": "cancelled", "text": ""}
+            return
+    try:
+        if compacted_body is not None:
+            prompt_sections = _build_complete_email_prompts(soc, body_override=compacted_body)
     except EmailAnalysisLimitError as exc:
         yield {
             "status": "error",
@@ -4825,7 +4932,6 @@ def stream_phi4_email_analysis(
     raw_outputs: list[str] = []
     content_trace: list[dict] = []
     final_backend_event: dict = {}
-    ollama_calls: list[dict] = []
     grounded_diversion = _grounded_payment_diversion(soc)
 
     section_index = 0
@@ -5200,6 +5306,7 @@ def stream_phi4_email_analysis(
             "final_content_risk": analysis["content_risk"],
             "final_verdict": analysis["final_verdict"],
             "policy_evidence": analysis["evidence"]["content"],
+            "input_compaction": input_compaction,
         }
     except (ValueError, json.JSONDecodeError) as exc:
         yield {
@@ -5227,6 +5334,7 @@ def stream_phi4_email_analysis(
             "analysis_mode": ANALYSIS_MODE,
             "identity_extraction_seconds": identity_seconds,
             "identity_model": identity_model,
+            "input_compaction": input_compaction,
         },
     }
 
@@ -5623,5 +5731,7 @@ def _stream_ollama(
         "model": model,
         "backend": "ollama",
         "text": "".join(chunks).strip(),
+        "done_reason": done_event.get("done_reason"),
+        "response_complete": bool(done_event.get("done")),
         "metrics": call_metrics,
     }

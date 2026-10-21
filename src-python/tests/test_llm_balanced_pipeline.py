@@ -611,7 +611,7 @@ class BalancedPipelineTests(unittest.TestCase):
         self.assertEqual("suspicious", analysis["content_risk"])
         self.assertEqual("review", analysis["final_verdict"])
         self.assertEqual(
-            "The email provides a one-time authentication code for an independently initiated verification flow.",
+            "The email provides information without a clearly identified recipient action.",
             analysis["content_summary"],
         )
 

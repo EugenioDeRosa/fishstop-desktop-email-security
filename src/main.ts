@@ -126,7 +126,7 @@ type AnalysisReport = {
   authentication_checkpoints?: AuthenticationCheckpoint[];
   received_hops?: ReceivedHop[];
   identity_analysis?: { impersonation?: ImpersonationAssessment; status?: string; model?: string; backend?: string; message?: string; segments_analyzed?: number; entities?: Array<{ name?: string; confidence?: number; entity_type?: string; entity_types?: string[]; occurrences?: Array<{ source?: string; evidence?: string }> }>; coherence?: Array<{ brand?: string; official_website?: string; official_websites?: string[]; official_domain?: string; official_domains?: string[]; associated_domains?: string[]; trusted_action_domains?: string[]; external_reply_domains?: string[]; resolution_source?: string; reference_status?: string; sender_authentication?: string; contacts?: Array<{ source?: string; matches_official?: boolean }>; evidence?: Array<{ source?: string; reference?: string; observed_at?: number; expires_at?: number; confidence?: string }>; dns_observations?: { provider?: string; bimi_present?: boolean }; anomalies?: string[]; status?: string; message?: string; mismatches?: Array<{ source?: string; domain?: string }> }> };
-  phi4_analysis?: { status?: string; model?: string; duration_ms?: number; performance?: { analysis_mode?: string; llm_calls?: number; wall_duration_ms?: number; load_duration_ms?: number; prompt_tokens?: number; generated_tokens?: number; calls?: Array<{ stage?: string; wall_duration_ms?: number; load_duration_ms?: number; prompt_eval_count?: number; prompt_eval_duration_ms?: number; eval_count?: number; eval_duration_ms?: number }> }; analysis?: { final_verdict?: string; content_summary?: string; semantic_reason?: string; explanation?: string; confidence?: number; requested_action?: string; action_channel?: string; intent_evidence?: string; intent_signals?: string[]; signal_evidence?: string; content_risk?: string; identity_risk?: string; technical_risk?: string; ambiguity?: string; scam_type?: string; threat_type?: string; coercion?: boolean; claimed_brand?: string; payment_destination_change?: boolean; semantic_extraction?: { asks_for_credentials?: boolean; asks_for_payment?: boolean; asks_for_sensitive_information?: boolean; asks_to_change_account_settings?: boolean; asks_to_verify_account?: boolean; asks_to_open_attachment?: boolean; requested_external_action?: boolean; security_alert?: boolean; impersonation_or_deception?: boolean; identity_deception?: boolean; scam_type?: string; threat_type?: string; coercion?: boolean }; corroboration?: { supports_decision?: boolean; details?: string[]; caveats?: string[] } }; message?: string };
+  phi4_analysis?: { status?: string; model?: string; duration_ms?: number; performance?: { analysis_mode?: string; llm_calls?: number; wall_duration_ms?: number; load_duration_ms?: number; prompt_tokens?: number; generated_tokens?: number; calls?: Array<{ stage?: string; wall_duration_ms?: number; load_duration_ms?: number; prompt_eval_count?: number; prompt_eval_duration_ms?: number; eval_count?: number; eval_duration_ms?: number }> }; analysis?: { final_verdict?: string; content_summary?: string; content_summary_source?: string; content_summary_parts?: string[]; semantic_reason?: string; explanation?: string; confidence?: number; requested_action?: string; action_channel?: string; intent_evidence?: string; intent_signals?: string[]; signal_evidence?: string; content_risk?: string; identity_risk?: string; technical_risk?: string; ambiguity?: string; scam_type?: string; threat_type?: string; coercion?: boolean; claimed_brand?: string; payment_destination_change?: boolean; semantic_extraction?: { asks_for_credentials?: boolean; asks_for_payment?: boolean; asks_for_sensitive_information?: boolean; asks_to_change_account_settings?: boolean; asks_to_verify_account?: boolean; asks_to_open_attachment?: boolean; requested_external_action?: boolean; security_alert?: boolean; impersonation_or_deception?: boolean; identity_deception?: boolean; scam_type?: string; threat_type?: string; coercion?: boolean }; corroboration?: { supports_decision?: boolean; details?: string[]; caveats?: string[] } }; message?: string };
   ai_content_summary?: { status?: string; summary?: string; model?: string; backend?: string; message?: string };
   ai_summary?: { status?: string; summary?: string; model?: string; backend?: string; message?: string };
   authentication_scope?: string;
@@ -1452,9 +1452,14 @@ function authenticationReviewReason(report: AnalysisReport): string | null {
   return null;
 }
 
+function templateContentSummary(analysis?: NonNullable<NonNullable<AnalysisReport["phi4_analysis"]>["analysis"]>): string {
+  if (analysis?.content_summary_source !== "template-v1") return "";
+  return (analysis.content_summary_parts || []).map(part => engineText(part)).join(" ");
+}
+
 function conciseAiVerdict(report: AnalysisReport, fallback: string): string {
   const analysis = report.phi4_analysis?.analysis;
-  const summary = (analysis?.content_summary || analysis?.semantic_reason || "").replace(/\s+/g, " ").trim();
+  const summary = (templateContentSummary(analysis) || analysis?.content_summary || analysis?.semantic_reason || "").replace(/\s+/g, " ").trim();
   const evidence = (analysis?.corroboration?.details || []).filter(Boolean).slice(0, 2).join("; ");
   const combined = [summary, evidence].filter(Boolean).join(" · ");
   return combined || fallback;
@@ -2702,7 +2707,7 @@ function setPhiSemanticPanel(container: HTMLElement, analysis: NonNullable<NonNu
     ...(corroboration.caveats || []).filter(meaningful).filter(value => !isIdentityEvidence(value)).map((item) => t("Note: {0}", [item.trim()])),
   ])).slice(0, 5);
   const signalEvidence = meaningful(analysis.signal_evidence) && !isIdentityEvidence(analysis.signal_evidence) ? analysis.signal_evidence.trim() : "";
-  const contentSummary = generatedContentSummary?.replace(/\s+/g, " ").trim() || analysis.content_summary || analysis.explanation || t("Content analysis complete.");
+  const contentSummary = templateContentSummary(analysis) || generatedContentSummary?.replace(/\s+/g, " ").trim() || analysis.content_summary || analysis.explanation || t("Content analysis complete.");
   const passCount = performance?.llm_calls;
   const passSummary = passCount ? t("{0} local {1} · ", [passCount, passCount === 1 ? t("pass") : t("passes")]) : "";
   panel.innerHTML = html`<p class="page-kicker">LOCAL AI</p><h3>Content summary</h3><p class="semantic-summary">${escapeHtml(contentSummary)}</p>${signals.length || details.length || signalEvidence ? html`<details class="semantic-details"><summary>Reasoning and evidence <span>${signals.length + details.length + Number(Boolean(signalEvidence))}</span></summary>${signals.length ? html`<p><b>Signals:</b> ${escapeHtml(signals.map(semanticLabel).join(" · "))}</p>` : ""}${signalEvidence ? html`<p><b>Context:</b> ${escapeHtml(signalEvidence)}</p>` : ""}${details.length ? html`<ul>${details.map((item) => html`<li>${escapeHtml(item)}</li>`).join("")}</ul>` : ""}</details>` : ""}<small class="semantic-meta">${durationMs ? `${formatNumber(durationMs / 1000, 1)} s · ` : ""}${passSummary}${corroboration.supports_decision ? t("Supporting evidence is available") : t("Review the available message details")}</small>`;
@@ -2756,7 +2761,7 @@ async function runAiAnalysis(user: AuthUser, report: AnalysisReport, recordId: s
   if (!isCurrent()) return;
   if (report.phi4_analysis?.status === "ok" && report.phi4_analysis.analysis) {
     const structuredSummary = (report.phi4_analysis.analysis.content_summary || report.phi4_analysis.analysis.explanation || "Content analysis complete.").replace(/\s+/g, " ").trim();
-    report.ai_content_summary = { status: "ok", summary: structuredSummary, model, backend: "ollama-structured" };
+    report.ai_content_summary = { status: "ok", summary: structuredSummary, model, backend: report.phi4_analysis.analysis.content_summary_source === "template-v1" ? "local-template" : "ollama-structured" };
     setPhiSemanticPanel(container, report.phi4_analysis.analysis, report.phi4_analysis.model || model, report.phi4_analysis.duration_ms, structuredSummary, report.phi4_analysis.performance);
     onSettled?.("content-summary");
     const policySummary = assessment({ ...report, ai_summary: undefined }).detail;

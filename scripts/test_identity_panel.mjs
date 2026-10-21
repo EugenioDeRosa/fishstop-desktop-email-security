@@ -38,7 +38,7 @@ assert.ok(panel.innerHTML.includes('semantic-verdict semantic-danger'));
 assert.ok(panel.innerHTML.includes('Possible impersonation of Microsoft.'));
 assert.ok(panel.innerHTML.includes('Sender identity could not be verified.'));
 assert.equal(panel.innerHTML.split(semantic.signal_evidence).length - 1, 1, 'Identity evidence is deduplicated');
-const semanticFunctions = source.statements.filter(item => ts.isFunctionDeclaration(item) && ['setPhiSemanticPanel', 'isIdentityEvidence', 'semanticLabel'].includes(item.name?.text));
+const semanticFunctions = source.statements.filter(item => ts.isFunctionDeclaration(item) && ['setPhiSemanticPanel', 'isIdentityEvidence', 'semanticLabel', 'templateContentSummary'].includes(item.name?.text));
 const semanticRender = new Function('escapeHtml', `${ts.transpileModule(semanticFunctions.map(item => item.getText(source)).join('\n'), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText}; return setPhiSemanticPanel;`)(escapeHtml);
 semanticRender(container, semantic, 'test');
 assert.ok(!panel.innerHTML.includes('impersonation'));

@@ -1,5 +1,10 @@
 # AI content assessment
 
+The current primary prompt (`semantic-policy-v50-template-summary`) keeps the
+grounded verdict and brief risk explanation but builds the displayed content
+summary from action/channel codes. See [structured content summaries](response-templates.md)
+for the output contract and validation limits.
+
 Policy `semantic-policy-v47-reply-routing` treats the model's assessment of
 the complete email independently of its extracted recipient action. Informational
 messages and messages without recognised links can still contain deceptive lures.

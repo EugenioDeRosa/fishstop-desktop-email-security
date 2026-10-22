@@ -6,6 +6,8 @@ Il corpus è ricostruito senza ereditare le etichette v3-v6: 36 famiglie, 288 te
 
 Contrasti principali: notifiche bancarie e contatto facoltativo; VPN/QR non ispezionati; attestati e firme già archiviati; newsletter e documenti; credenziali ricevute rispetto a segreti richiesti; codici nella propria app rispetto a codici consegnati a un operatore; pagamenti concordati e deviazioni; citazioni educative e ricatti reali. I dati mancanti non sono prova di frode. Le chiamate di verifica devono rispettare gli stessi vincoli dell'analisi primaria.
 
+Rafforzato il contrasto osservato nel report storico Pro di E013: assistenza condizionale nelle notifiche di operazioni completate non è autenticazione e non prova impersonificazione. Esempi sintetici separati per train/test distinguono contatto facoltativo, richiesta telefonica di OTP, chiamata urgente incondizionata e cambio recapito non confermato. Il numero non viene dichiarato ufficiale dal modello: la verifica indipendente dei recapiti resta un controllo tecnico separato. Nessuna implicazione “identità verificata = contenuto legittimo”. Il report storico non è una misurazione del candidato o della versione attuale.
+
 Allenamento dal Qwen3-1.7B originale a revisione fissata, una epoca, LoRA 16, learning rate 2e-5, contesto massimo 4096 e perdita soltanto sulle risposte. Non si prosegue dal GGUF o dall'adapter v6. Prompt e schema corrispondono all'app attuale. Non sono stati introdotti controlli applicativi basati su parole chiave.
 
 ## Uso

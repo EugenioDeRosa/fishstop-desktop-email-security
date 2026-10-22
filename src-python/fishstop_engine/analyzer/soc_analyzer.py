@@ -22,6 +22,7 @@ from typing import Optional
 from fishstop_engine.analysis_limits import (
     EmailAnalysisLimitError,
     MAX_AI_BODY_CHARS,
+    MAX_BODY_PART_SOURCE_CHARS,
     MAX_ATTACHMENTS,
     MAX_DECODED_TEXT_CHARS,
     MAX_MIME_DEPTH,
@@ -34,7 +35,7 @@ from .reply_routing import assess_reply_routing
 from fishstop_engine.office_analysis import OfficeAnalysisBudget
 from .attachment      import analyze_attachment
 from .body_context    import extract_forwarded_identity, select_body_for_ai
-from .essential_text import compact_repeated_blocks, merge_mime_alternatives
+from .essential_text import compact_repeated_blocks, merge_mime_alternatives, normalize_ai_text
 from .html_deception  import analyze_html_copy_deception
 from .html_form_analysis import analyze_html_forms
 from .html_utils      import (
@@ -158,7 +159,7 @@ BULK_OR_CRM_HEADERS = {
 }
 
 BULK_SENDER_SIGNAL_THRESHOLD = 4
-_ENCODED_NOISE_LINE_RE = re.compile(r"[A-Za-z0-9+/=_-]{64,}")
+_ENCODED_NOISE_LINE_RE = re.compile(r"[A-Za-z0-9+/@.=_-]{64,}")
 _ENCODED_NOISE_MIN_LINES = 8
 _ENCODED_NOISE_MIN_CHARS = 4096
 _FINANCIAL_REQUEST_RE = re.compile(
@@ -333,7 +334,9 @@ def _strip_plaintext_noise_blocks(value: str) -> tuple[str, int, int]:
 
     for line in lines:
         stripped = line.strip()
-        if _ENCODED_NOISE_LINE_RE.fullmatch(stripped) and len(set(stripped)) >= 12:
+        is_destination = stripped.lower().startswith(("http://", "https://", "ftp://", "www.")) or (
+            len(stripped) <= 254 and re.fullmatch(r"[^\s@]{1,64}@[^\s@]{1,253}", stripped))
+        if not is_destination and _ENCODED_NOISE_LINE_RE.fullmatch(stripped) and len(set(stripped)) >= 12:
             candidate.append(line)
             continue
         flush_candidate()
@@ -596,6 +599,7 @@ class EmlSOCAnalyzer:
 
         # ── 9. Body e allegati ────────────────────────────────────────────
         body_parts       = []
+        plain_original_parts = []
         html_parts       = []
         attachments_info = []
         qr_payloads = []
@@ -604,6 +608,8 @@ class EmlSOCAnalyzer:
         plain_noise_removed_lines = 0
         plain_noise_removed_chars = 0
         decoded_text_chars = 0
+        decoded_source_chars = 0
+        source_truncated = False
 
         for part in msg.walk():
             ct       = part.get_content_type()
@@ -655,14 +661,17 @@ class EmlSOCAnalyzer:
             if ct == "text/plain":
                 text = _decode_text_part(part)
                 if text and text.strip():
-                    remaining = max(0, min(MAX_AI_BODY_CHARS, MAX_DECODED_TEXT_CHARS - decoded_text_chars))
+                    decoded_source_chars += len(text)
+                    remaining = max(0, min(MAX_BODY_PART_SOURCE_CHARS, MAX_DECODED_TEXT_CHARS - decoded_text_chars))
                     if len(text) > remaining:
                         report["body_analysis_incomplete"] = True
+                        source_truncated = True
                         text = text[:remaining]
                     decoded_text_chars += len(text)
                     if _looks_like_html(text):
                         html_parts.append(text)
                     else:
+                        plain_original_parts.append(text)
                         text, removed_lines, removed_chars = _strip_plaintext_noise_blocks(text)
                         plain_noise_removed_lines += removed_lines
                         plain_noise_removed_chars += removed_chars
@@ -671,16 +680,18 @@ class EmlSOCAnalyzer:
             elif ct == "text/html":
                 text = _decode_text_part(part)
                 if text and text.strip():
-                    remaining = max(0, min(MAX_AI_BODY_CHARS, MAX_DECODED_TEXT_CHARS - decoded_text_chars))
+                    decoded_source_chars += len(text)
+                    remaining = max(0, min(MAX_BODY_PART_SOURCE_CHARS, MAX_DECODED_TEXT_CHARS - decoded_text_chars))
                     if len(text) > remaining:
                         report["body_analysis_incomplete"] = True
+                        source_truncated = True
                         text = text[:remaining]
                     decoded_text_chars += len(text)
                     html_parts.append(text)
 
         combined_html = "\n".join(html_parts)
-        html_clean = strip_html(combined_html) if combined_html else ""
-        plain_clean = re.sub(r"\n{3,}", "\n\n", "\n".join(body_parts)).strip() if body_parts else ""
+        html_clean, html_normalization = normalize_ai_text(strip_html(combined_html) if combined_html else "")
+        plain_clean, plain_normalization = normalize_ai_text("\n".join(body_parts))
         prefer_html_for_ai = _prefer_html_over_link_heavy_plain(plain_clean, html_clean)
         body_clean = html_clean if prefer_html_for_ai else (plain_clean or html_clean)
 
@@ -689,6 +700,8 @@ class EmlSOCAnalyzer:
         report["body_html_safe"] = sanitize_html_for_preview(combined_html) if html_parts else None
         report["body_html_clean"] = html_clean
         report["body_plain_clean"] = plain_clean
+        report["body_plain_original"] = "\n".join(plain_original_parts)
+        report["body_text_normalization"] = {"plain": plain_normalization, "html": html_normalization}
         report["html_form_analysis"] = analyze_html_forms(
             combined_html,
             from_domain=_extract_domain(from_addr or ""),
@@ -708,18 +721,20 @@ class EmlSOCAnalyzer:
         report["body_plain_noise_removed_lines"] = plain_noise_removed_lines
         report["body_plain_noise_removed_chars"] = plain_noise_removed_chars
         report["attachments"] = attachments_info
-        plain_ai_selection = select_body_for_ai(report["body_clean"])
+        # Compare the actual plain alternative, even when HTML is preferred.
+        # Opaque tracking URLs stay in the original and in the link inventory.
+        plain_comparison = _RAW_URL_TOKEN_RE.sub("", plain_clean) if prefer_html_for_ai else plain_clean
+        plain_ai_selection = select_body_for_ai(plain_comparison or html_clean)
         report.update(plain_ai_selection)
         plain_body_for_ai = report.get("body_ai") or report["body_clean"]
         report["body_clean_full"] = report["body_clean"]
-        html_body_for_intent = (
-            strip_html_for_intent(combined_html) if combined_html else ""
-        )
+        html_body_for_intent = normalize_ai_text(strip_html_for_intent(combined_html) if combined_html else "")[0]
         html_ai_selection = (
             select_body_for_ai(html_body_for_intent)
             if html_body_for_intent
             else {}
         )
+        html_selected_for_intent = html_ai_selection.get("body_ai") or html_body_for_intent
         plain_is_structured = plain_ai_selection.get("body_context") in {"forwarded", "reply"}
         html_is_structured = html_ai_selection.get("body_context") in {"forwarded", "reply"}
         # HTML-to-text normalization can flatten a visible forwarding separator.
@@ -732,20 +747,19 @@ class EmlSOCAnalyzer:
             selected_body_for_intent = plain_body_for_ai
         else:
             report.update(html_ai_selection)
-            selected_body_for_intent = html_body_for_intent or plain_body_for_ai
+            selected_body_for_intent = html_selected_for_intent or plain_body_for_ai
         report["body_for_intent"] = selected_body_for_intent.strip()
         # MIME alternatives may disagree. Keep novel HTML content instead of
         # letting a decoy plain alternative silently replace the real request.
         divergent = False
         body_mime_compaction = {}
-        if not plain_is_structured and not html_is_structured and html_body_for_intent:
-            plain_tokens = set(re.findall(r"\w+", plain_body_for_ai.casefold()))
-            html_tokens = set(re.findall(r"\w+", html_body_for_intent.casefold()))
-            divergent = bool(plain_body_for_ai and len(html_tokens - plain_tokens) >= 12
-                             and len(html_tokens - plain_tokens) / max(1, len(html_tokens)) > 0.35)
-            if divergent:
-                selected_body_for_intent, body_mime_compaction = merge_mime_alternatives(
-                    plain_body_for_ai, html_body_for_intent)
+        if plain_clean and not plain_is_structured and not html_is_structured and html_body_for_intent:
+            # One changed word (including a negation) can change the request.
+            # Exact paragraph comparison retains changes in either direction.
+            first, second = (html_selected_for_intent, plain_body_for_ai) if prefer_html_for_ai else (plain_body_for_ai, html_selected_for_intent)
+            selected_body_for_intent, body_mime_compaction = merge_mime_alternatives(
+                first, second, alternative_kind="Plain text" if prefer_html_for_ai else "HTML")
+            divergent = body_mime_compaction.get("alternatives_differ", False)
         report["body_alternatives_divergent"] = divergent
         report["body_for_intent"] = selected_body_for_intent.strip()
         # Apply reply/signature/footer selection to the structurally cleaned
@@ -799,9 +813,20 @@ class EmlSOCAnalyzer:
         }
         report["body_extracted"] = essential_body
         report["body_for_ai"] = report["body_extracted"].strip()
+        useful_chars = len(report["body_for_ai"])
         if len(report["body_for_ai"]) > MAX_AI_BODY_CHARS:
             report["body_for_ai"] = report["body_for_ai"][:MAX_AI_BODY_CHARS]
             report["body_analysis_incomplete"] = True
+        report["body_analysis_limits"] = {
+            "decoded_source_characters": decoded_source_chars,
+            "inspected_source_characters": decoded_text_chars,
+            "source_character_limit": MAX_DECODED_TEXT_CHARS,
+            "source_part_character_limit": MAX_BODY_PART_SOURCE_CHARS,
+            "source_truncated": source_truncated,
+            "useful_characters_before_limit": useful_chars,
+            "ai_character_limit": MAX_AI_BODY_CHARS,
+            "ai_text_truncated": useful_chars > MAX_AI_BODY_CHARS,
+        }
         # Both AI engines must consume the same reply/forward/footer-cleaned
         # content. Keeping the earlier intent source here would reintroduce
         # legal notices and contact cards for Ollama only.
@@ -828,7 +853,9 @@ class EmlSOCAnalyzer:
                 attachments_info[index]["embedded_urls"] = list(dict.fromkeys([
                     *attachments_info[index].get("embedded_urls", []), *inspection.get("urls", [])]))[:25]
         report["links"] = extract_links(
-            body_plain=plain_clean,
+            # Read destinations from the inspected source, not the deobfuscated
+            # AI view: removing an invisible character must not rewrite a URL.
+            body_plain="\n".join(body_parts),
             body_html=report.get("body_html") or "",
             embedded_urls=[
                 {"url": url, "label": attachment.get("filename") or "Attachment URL",

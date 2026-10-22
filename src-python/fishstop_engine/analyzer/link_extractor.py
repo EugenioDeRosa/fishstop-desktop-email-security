@@ -16,6 +16,7 @@ except ImportError:  # pragma: no cover - fallback per ambienti minimali
     BeautifulSoup = None
 
 from .html_utils import strip_html
+from .essential_text import normalize_ai_text
 from .lookalike import is_ip_url
 from .constants import DANGEROUS_ATTACHMENT_EXTENSIONS
 from fishstop_engine.analysis_limits import EmailAnalysisLimitError, MAX_LINKS
@@ -346,18 +347,43 @@ def extract_links(
             role = "mail_client_notice"
             html_call_to_action = False
         dedupe_key = _url_dedupe_key(url)
+        display = normalize_ai_text(display)[0]
         if source in {"plain_text", "html_text"} and dedupe_key in presentation_urls:
             role = "inline_resource"
         if not url:
             return
         if dedupe_key in seen:
-            if html_call_to_action:
-                for existing in links:
-                    if _url_dedupe_key(existing.get("url") or "") == dedupe_key:
+            for existing in links:
+                if _url_dedupe_key(existing.get("url") or "") == dedupe_key:
+                    if html_call_to_action:
                         existing["html_call_to_action"] = True
                         if source == "html_button":
                             existing["source"] = source
-                        break
+                    if role == "body_action" and source in {"html_href", "html_button"} and display:
+                        labels = existing.setdefault("action_labels", [])
+                        if display[:120] not in labels:
+                            if len(labels) < 8:
+                                labels.append(display[:120])
+                            else:
+                                existing["action_labels_truncated"] = True
+                        if not existing.get("display_text") or existing.get("actionable") is False:
+                            existing["display_text"] = display[:120]
+                            existing["display_url"], existing["display_host"] = (
+                                ("", "") if existing.get("scheme") == "mailto"
+                                else _extract_display_destination(display))
+                            existing["display_registered_domain"] = registered_domain(existing["display_host"])
+                        if existing.get("scheme") in _WEB_SCHEMES:
+                            _, displayed_host = _extract_display_destination(display)
+                            redirect_hosts = existing.get("redirect_hosts") or []
+                            matches_redirect = bool(
+                                displayed_host and redirect_hosts
+                                and same_registered_domain(displayed_host, redirect_hosts[-1]))
+                            existing["display_mismatch"] |= bool(
+                                displayed_host
+                                and not same_registered_domain(displayed_host, existing["host"])
+                                and not matches_redirect)
+                        existing.update(role="body_action", actionable=True, signature_tracking_redirect=False)
+                    break
             return
         if len(links) >= max_links:
             raise EmailAnalysisLimitError(
@@ -442,6 +468,7 @@ def extract_links(
         links.append({
             "url": url,
             "display_text": display_text[:120],
+            "action_labels": [display_text[:120]] if display_text and role == "body_action" and source in {"html_href", "html_button"} else [],
             "display_url": display_url,
             "display_host": display_host,
             "display_mismatch": bool(
@@ -497,7 +524,7 @@ def extract_links(
                 if href:
                     _add(
                         href,
-                        anchor.get_text(" ", strip=True),
+                        strip_html(str(anchor)),
                         "html_href",
                         role=_html_link_role(anchor),
                         html_call_to_action=_html_anchor_is_call_to_action(anchor),

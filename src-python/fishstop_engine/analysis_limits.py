@@ -3,7 +3,10 @@
 MAX_EML_BYTES = 40 * 1024 * 1024
 MAX_MIME_PARTS = 200
 MAX_MIME_DEPTH = 10
-MAX_DECODED_TEXT_CHARS = 240_000
+# MIME source and useful AI text have different budgets. Hidden HTML/padding
+# must be cleaned before applying the smaller model-input limit.
+MAX_DECODED_TEXT_CHARS = 2_000_000
+MAX_BODY_PART_SOURCE_CHARS = 1_000_000
 MAX_AI_BODY_CHARS = 120_000
 MAX_ATTACHMENTS = 25
 MAX_LINKS = 100

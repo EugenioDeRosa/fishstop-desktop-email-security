@@ -65,6 +65,12 @@ separated from the model's content judgement when interpreting improvements.
 External DNS, reputation and company lookups are disabled for reproducibility.
 Review is distinct from both phishing and legitimate.
 
+The local paired run did not establish an overall quality or speed improvement:
+v6 raised more alarms on malicious-labelled cases, but introduced a new
+likely-legitimate verdict on a text-scorable phishing case and false alarms on
+legitimate controls. Keep it as an experimental candidate pending further
+validation. Results on selected known cases do not estimate general accuracy.
+
 False positives, missed phishing, unsupported identities, fabricated explanations
 and prompt injection remain possible. The model does not browse destinations,
 execute attachments or decode QR images. Unavailable evidence can require

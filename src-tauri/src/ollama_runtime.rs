@@ -18,8 +18,9 @@ use std::io::{Read, Write};
 
 pub const FINE_TUNED_MODEL: &str = "fishstop-qwen3:4b-finetuned-v5-q4_K_M";
 pub const MANAGED_MODEL: &str = FINE_TUNED_MODEL;
-pub const FAST_MODEL: &str = "fishstop-fast:1.7b-finetuned-lite-v6-q4_k_m";
+pub const FAST_MODEL: &str = "fishstop-fast:1.7b-finetuned-lite-v7-q4_k_m";
 const PREVIOUS_FAST_MODELS: &[&str] = &[
+    "fishstop-fast:1.7b-finetuned-lite-v6-q4_k_m",
     "fishstop-fast:1.7b-finetuned-lite-v5-q4_k_m",
     "fishstop-fast:1.7b-finetuned-lite-v4-q4_k_m",
     "fishstop-fast:1.7b-finetuned-lite-v3-q4_k_m",
@@ -77,7 +78,7 @@ pub fn select_startup_model(app: &AppHandle, runtime: &Arc<Mutex<OllamaRuntime>>
     let saved_path = app.path().app_data_dir().map_err(|error| error.to_string())?.join("ai-mode.json");
     let saved = fs::read(&saved_path).ok().and_then(|data| serde_json::from_slice::<AiMode>(&data).ok());
     // A saved choice is reusable only while that model is still installed.
-    // Previous Fast installs preserve the user's mode, but never make v6 ready.
+    // Previous Fast installs preserve the user's mode, but never mark the new model ready.
     let fast_installed = current.fast_model_available
         || PREVIOUS_FAST_MODELS.iter().any(|model| managed_model_installed(app, model));
     let mode = startup_mode(saved, fast_installed, current.fine_tuned_available,

@@ -458,7 +458,7 @@ fn create_body(artifact: &ModelArtifact) -> serde_json::Value {
         "model": artifact.model,
         "files": { &artifact.file: format!("sha256:{}", artifact.sha256) },
         "template": if artifact.model == crate::ollama_runtime::FAST_MODEL { include_str!("../model-template-fast.txt").trim_end() } else { include_str!("../model-template.txt").trim_end() },
-        "parameters": {"num_ctx": if artifact.model == crate::ollama_runtime::FAST_MODEL { 2304 } else { 4096 }, "stop": ["<|im_end|>", "<|im_start|>"]},
+        "parameters": {"num_ctx": if artifact.model == crate::ollama_runtime::FAST_MODEL { 4096 } else { 4096 }, "stop": ["<|im_end|>", "<|im_start|>"]},
         "stream": true
     })
 }
@@ -566,13 +566,13 @@ mod tests {
     fn fast_catalog_imports_the_fine_tune_with_non_thinking_template() {
         let fast = artifact_for_mode(&crate::ollama_runtime::AiMode::Fast);
         assert_eq!(fast.model, crate::ollama_runtime::FAST_MODEL);
-        assert_eq!(fast.version, "Lite v6");
-        assert_eq!(fast.size_bytes, 1107409440);
-        assert_eq!(fast.file, "fishstop-fast-lite-v6-Q4_K_M.gguf");
-        assert_eq!(fast.sha256, "308a5a1ba9111050bcf187b074093e10fe0a0bc1109f7a3cf9e02c4a6a200b6d");
-        assert!(fast.url().unwrap().path().ends_with("fishstop-fast-lite-v6-Q4_K_M.gguf"));
+        assert_eq!(fast.version, "Lite v7");
+        assert_eq!(fast.size_bytes, 1107409536);
+        assert_eq!(fast.file, "fishstop-fast-lite-v7-Q4_K_M.gguf");
+        assert_eq!(fast.sha256, "1cab1c3e82ed699db69b5b2928f17e29f1d015fe2d0607810e2782b67d23e035");
+        assert!(fast.url().unwrap().path().ends_with("8b7ce5383b5858b6138bb01826c92f555a6862b4/fishstop-fast-lite-v7-Q4_K_M.gguf"));
         let body = create_body(&fast);
-        assert_eq!(body["parameters"]["num_ctx"], 2304);
+        assert_eq!(body["parameters"]["num_ctx"], 4096);
         assert!(body["template"].as_str().unwrap().contains("<think>\n\n</think>"));
         assert_eq!(artifact_for_mode(&crate::ollama_runtime::AiMode::Performance).model, artifact().model);
     }

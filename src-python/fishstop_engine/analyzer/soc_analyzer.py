@@ -44,7 +44,8 @@ from .html_utils      import (
     strip_html,
     strip_html_for_intent,
 )
-from .link_extractor  import extract_links
+from .link_extractor  import extract_links, extract_unsafe_scheme_links
+from .link_deception  import refresh_link_alerts
 from .lookalike       import check_lookalike_domains
 from .received_parser import (
     build_authentication_checkpoints,
@@ -867,11 +868,7 @@ class EmlSOCAnalyzer:
         # `mailto:` actions are retained for identity coherence, but are not
         # web destinations and therefore must not alter Streamlit-equivalent
         # lookalike/typosquatting checks.
-        report["lookalike_alerts"] = check_lookalike_domains([
-            link for link in report["links"]
-            if str(link.get("scheme") or "").lower() in {"http", "https"}
-            and link.get("actionable") is not False
-        ])
+        refresh_link_alerts(report, extract_unsafe_scheme_links(report.get("body_html") or ""))
         report["link_context_alerts"] = self._assess_link_context(report)
         # ── 11. Flag SOC ──────────────────────────────────────────────────
         report["flags"] = self._build_flags(report)
@@ -1261,6 +1258,8 @@ class EmlSOCAnalyzer:
                 "punycode_idna": "Punycode/IDNA domain",
                 "punycode_homograph": "Punycode homograph attack",
                 "typosquatting": "Typosquatting",
+                "combosquatting": "Brand name in unrelated domain",
+                "brand_subdomain": "Official domain used as subdomain",
             }.get(alert["technique"], alert["technique"])
             matched_brand = alert.get("matched_brand") or "-"
             if matched_brand == "-":
@@ -1274,5 +1273,24 @@ class EmlSOCAnalyzer:
             if level not in {"HIGH", "MEDIUM", "LOW", "INFO"}:
                 level = "HIGH"
             flag(level, "Lookalike Domain", message)
+
+        for alert in report.get("sender_lookalike_alerts") or []:
+            level = str(alert.get("level") or "MEDIUM").upper()
+            target = (
+                "the recipient organisation domain"
+                if alert.get("organization_domain") else f"`{alert.get('matched_brand')}`"
+            )
+            flag(level if level in {"HIGH", "MEDIUM"} else "MEDIUM", "Sender lookalike",
+                 f"The {alert.get('field') or 'sender'} domain `{alert.get('host')}` imitates {target}. "
+                 f"{alert.get('detail') or ''}".strip())
+
+        for alert in report.get("display_mismatch_alerts") or []:
+            flag(str(alert.get("level") or "MEDIUM"), "Masked link", str(alert.get("message") or ""))
+
+        for item in (report.get("unsafe_scheme_links") or [])[:5]:
+            label = f" (text: '{item['display_text']}')" if item.get("display_text") else ""
+            flag("HIGH", "Link",
+                 f"A clickable {item.get('element') or 'HTML'} element uses a {item.get('scheme')}: target{label}. "
+                 "Email links should never execute script or embed a document.")
 
         return flags

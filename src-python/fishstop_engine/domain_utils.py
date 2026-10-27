@@ -31,6 +31,15 @@ def identity_mailbox(value: str) -> tuple[str, str]:
     return "", ""
 
 try:
+    # Maintained package that bundles a recent Public Suffix List snapshot,
+    # including private suffixes of shared hosting platforms (pages.dev,
+    # vercel.app, r2.dev...). No network access is performed at runtime.
+    from publicsuffixlist import PublicSuffixList as _PublicSuffixList
+    _PSL = _PublicSuffixList(accept_unknown=False, only_icann=False)
+except ImportError:  # pragma: no cover - packaged engines include it
+    _PSL = None
+
+try:
     from publicsuffix2 import get_sld, get_tld
 except ImportError:  # Static parsing remains conservative in minimal environments.
     get_sld = None
@@ -71,6 +80,15 @@ def registered_domain(value: str) -> str:
     except ValueError:
         pass
 
+    if _PSL is not None:
+        try:
+            # accept_unknown=False is deliberate: an unknown suffix such as
+            # .example must keep the complete host instead of collapsing
+            # unrelated names to the same registrable value.
+            registrable = _PSL.privatesuffix(host)
+        except (TypeError, ValueError, UnicodeError):
+            return host
+        return normalize_hostname(str(registrable)) if registrable else host
     if get_sld is None or get_tld is None:
         return host
     try:
@@ -100,13 +118,18 @@ def is_public_suffix(value: str) -> bool:
     not evidence that every customer subdomain is malicious.
     """
     host = normalize_hostname(value)
-    if not host or get_tld is None:
+    if not host or (get_tld is None and _PSL is None):
         return False
     try:
         ipaddress.ip_address(host)
         return False
     except ValueError:
         pass
+    if _PSL is not None:
+        try:
+            return bool(_PSL.is_public(host))
+        except (TypeError, ValueError, UnicodeError):
+            return False
     try:
         with warnings.catch_warnings():
             warnings.filterwarnings(

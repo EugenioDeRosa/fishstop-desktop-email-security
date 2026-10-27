@@ -46,6 +46,8 @@ def main() -> None:
         "pypdfium2",
         "--collect-all",
         "zxingcpp",
+        "--collect-data",
+        "publicsuffixlist",
         "--add-data",
         f"{ENGINE_DATA_DIRECTORY}{os.pathsep}fishstop_engine/data",
         "--exclude-module",

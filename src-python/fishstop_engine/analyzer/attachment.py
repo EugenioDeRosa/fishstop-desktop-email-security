@@ -1034,9 +1034,12 @@ def analyze_attachment(
     entry["extension_match"] = not mismatches
     anomaly_parts = [part for part in (payload_warning, "; ".join(mismatches)) if part]
     attachment_security = entry.get("attachment_security") or {}
-    if ct_base == "text/html" or file_ext in {"html", "htm"} or magic_fmt == "html":
+    is_svg = ct_base == "image/svg+xml" or file_ext in {"svg", "svgz"} or (
+        raw_bytes[:512].lstrip().lower().startswith((b"<svg", b"<?xml")) and b"<svg" in raw_bytes[:2048].lower())
+    if (ct_base in {"text/html", "application/xhtml+xml"} or file_ext in {"html", "htm", "xhtml", "xht", "shtml"}
+            or magic_fmt == "html" or is_svg):
         from .html_attachment_analysis import analyze_html_attachment
-        entry["html_security"] = analyze_html_attachment(raw_bytes, from_domain)
+        entry["html_security"] = analyze_html_attachment(raw_bytes, from_domain, is_svg=is_svg)
         html_security = entry["html_security"]
         if html_security["risk_level"] in {"medium", "high"}:
             previous = attachment_security["summary"] if attachment_security["findings"] else ""

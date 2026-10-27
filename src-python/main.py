@@ -26,7 +26,7 @@ from fishstop_engine.analyzer.conversation import (
     inspect_conversation_bytes,
     public_conversation_manifest,
 )
-from fishstop_engine.analyzer.lookalike import check_lookalike_domains
+from fishstop_engine.analyzer.link_deception import refresh_link_alerts
 from fishstop_engine.otx_intelligence import apply_on_demand_otx_intelligence
 from fishstop_engine.parser import _sanitize_eml_bytes
 from fishstop_engine.reputation import enrich as enrich_reputation
@@ -132,11 +132,7 @@ def analyze(path_value: str) -> dict[str, Any]:
         normalized_path.unlink(missing_ok=True)
     apply_conversation_selection(report, conversation_manifest, conversation_selection)
     if conversation_selection and conversation_manifest.get("requires_selection"):
-        report["lookalike_alerts"] = check_lookalike_domains([
-            link for link in report.get("links") or []
-            if str(link.get("scheme") or "").lower() in {"http", "https"}
-            and link.get("actionable") is not False
-        ])
+        refresh_link_alerts(report)
         report["link_context_alerts"] = EmlSOCAnalyzer._assess_link_context(report)
         report["flags"] = EmlSOCAnalyzer._build_flags(report)
         if report.get("selected_target_authentication_scope") == "embedded_unavailable":

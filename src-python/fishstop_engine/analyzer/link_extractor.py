@@ -52,7 +52,13 @@ _NON_ACTION_CONTAINER_MARKER_RE = re.compile(
 _REDIRECT_PARAM_NAMES = {
     "url", "u", "uri", "target", "to", "dest", "destination", "redirect",
     "redirect_uri", "return", "returnurl", "next", "continue", "goto", "link",
+    # Open redirectors frequently abused in phishing (google.com/url?q=,
+    # generic ?r= / ?out= / ?go= trackers).
+    "q", "r", "redirect_url", "redirecturl", "target_url", "targeturl",
+    "dest_url", "desturl", "out", "go", "forward", "jump", "ru", "rurl",
 }
+_UNSAFE_LINK_SCHEMES = ("javascript:", "vbscript:", "data:", "file:")
+_META_REFRESH_URL_RE = re.compile(r"url\s*=\s*['\"]?(?P<url>https?://[^'\"\s>]+)", re.IGNORECASE)
 _NESTED_WEB_URL_RE = re.compile(r"https?://[^\s<>{}\"']+", re.IGNORECASE)
 _BUTTON_CLASS_RE = re.compile(r"(?:^|[-_\s])(?:btn|button|cta|call[-_ ]?to[-_ ]?action)(?:$|[-_\s])", re.IGNORECASE)
 _BUTTON_URL_RE = re.compile(
@@ -529,7 +535,19 @@ def extract_links(
                         role=_html_link_role(anchor),
                         html_call_to_action=_html_anchor_is_call_to_action(anchor),
                     )
-            for control in soup.find_all(["button", "input"], limit=max_links + 1):
+            for area in soup.find_all("area", limit=max_links + 1):
+                href = area.get("href")
+                if href:
+                    _add(href, str(area.get("alt") or area.get("title") or ""), "html_href",
+                         role=_html_link_role(area), html_call_to_action=True)
+            for meta in soup.find_all("meta", attrs={"http-equiv": re.compile(r"^refresh$", re.I)}):
+                match = _META_REFRESH_URL_RE.search(str(meta.get("content") or ""))
+                if match:
+                    _add(match.group("url"), "", "html_meta_refresh")
+            for control in soup.find_all(
+                lambda tag: tag.name in {"button", "input"} or tag.has_attr("onclick"),
+                limit=max_links + 1,
+            ):
                 onclick = str(control.get("onclick") or "")
                 data_target = str(control.get("data-href") or control.get("data-url") or "")
                 match = _BUTTON_URL_RE.search(onclick)
@@ -580,3 +598,33 @@ def extract_links(
         )
 
     return links
+
+
+def extract_unsafe_scheme_links(body_html: str, *, limit: int = 20) -> list[dict]:
+    """Return clickable HTML targets that use script, data or file schemes.
+
+    These targets are never web destinations and are therefore not part of
+    the URL pipeline, but a clickable javascript:/data: link in an email is a
+    strong deception indicator. Nothing is decoded or executed.
+    """
+    if not body_html or BeautifulSoup is None:
+        return []
+    soup = BeautifulSoup(body_html, "html.parser")
+    results: list[dict] = []
+    for element in soup.find_all(["a", "area", "form", "iframe"], limit=500):
+        target = str(element.get("href") or element.get("action") or element.get("src") or "")
+        compact = re.sub(r"[\s\x00-\x1f]+", "", target).lower()
+        scheme = next((item for item in _UNSAFE_LINK_SCHEMES if compact.startswith(item)), "")
+        if not scheme:
+            continue
+        if scheme == "data:" and element.name == "iframe" and compact.startswith("data:image/"):
+            continue
+        results.append({
+            "scheme": scheme.rstrip(":"),
+            "element": element.name,
+            "display_text": normalize_ai_text(element.get_text(" ", strip=True))[0][:120],
+            "target_preview": target.strip()[:120],
+        })
+        if len(results) >= limit:
+            break
+    return results

@@ -92,7 +92,7 @@ class DomainPolicyTests(unittest.TestCase):
         )
         self.assertTrue(any(
             alert["matched_brand"] == "paypal.com"
-            and alert["technique"] == "edit_distance"
+            and alert["technique"] in {"edit_distance", "typosquatting"}
             for alert in alerts
         ))
 

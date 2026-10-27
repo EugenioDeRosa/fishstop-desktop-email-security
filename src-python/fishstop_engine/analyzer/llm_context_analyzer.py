@@ -17,7 +17,7 @@ from fishstop_engine.analysis_limits import (
     MAX_AI_BODY_CHARS,
     MAX_PHI4_SECTIONS,
 )
-from fishstop_engine.domain_utils import registered_domain, identity_mailbox
+from fishstop_engine.domain_utils import registered_domain, identity_mailbox, mailbox_candidates
 from .lookalike import is_risky_lookalike_alert
 from .essential_text import without_compaction_notices
 from .response_templates import CONTENT_SUMMARY_SOURCE, content_summary_parts
@@ -3298,6 +3298,15 @@ def _sensitive_link_domain_mismatch(soc: dict, semantic: dict) -> bool:
     )
 
 
+def _reply_leaves_sender_organisation(soc: dict) -> bool:
+    senders = [address for _, address in mailbox_candidates(soc.get("from_") or "")]
+    replies = [address for _, address in mailbox_candidates(soc.get("reply_to") or "")]
+    if len(senders) != 1 or not replies:
+        return False
+    sender_domain = registered_domain(senders[0].rsplit("@", 1)[-1])
+    return any(registered_domain(reply.rsplit("@", 1)[-1]) != sender_domain for reply in replies)
+
+
 def _technical_risk(soc: dict, semantic: dict | None = None) -> tuple[str, list[str]]:
     from .reply_routing import assess_reply_routing
     malicious = []
@@ -3336,9 +3345,9 @@ def _technical_risk(soc: dict, semantic: dict | None = None) -> tuple[str, list[
         attachment_security = att.get("attachment_security") or {}
         html_security = att.get("html_security") or {}
         if html_security.get("risk_level") == "high":
-            malicious.append("an HTML attachment contains a credential-harvesting form")
+            malicious.append("an HTML or SVG attachment contains a credential form or an automatic redirect, obfuscated or file-smuggling script")
         elif html_security.get("risk_level") == "medium":
-            suspicious.append("an HTML attachment contains sensitive input fields requiring review")
+            suspicious.append("an HTML or SVG attachment contains scripts or sensitive input fields requiring review")
         dangerous_file_type = str(attachment_security.get("risk_level") or "").lower() in {
             "high",
             "critical",
@@ -3427,6 +3436,29 @@ def _technical_risk(soc: dict, semantic: dict | None = None) -> tuple[str, list[
         suspicious.append("the message contains a direct-IP URL")
     if any(is_risky_lookalike_alert(alert) for alert in (soc.get("lookalike_alerts") or [])):
         suspicious.append("a lookalike or deceptive domain was detected")
+    sender_lookalikes = soc.get("sender_lookalike_alerts") or []
+    if any(str(alert.get("level") or "").upper() == "HIGH" and alert.get("field") == "From" for alert in sender_lookalikes):
+        malicious.append("the sender domain imitates a protected brand or the recipient organisation")
+    elif sender_lookalikes:
+        suspicious.append("a sender, reply or bounce domain resembles a protected brand or the recipient organisation")
+    masked = soc.get("display_mismatch_alerts") or []
+    if any(str(alert.get("level") or "").upper() == "HIGH" for alert in masked):
+        malicious.append("a link displays a protected brand or organisation domain but opens an unrelated host")
+    elif masked:
+        suspicious.append("a link displays a different domain than the one it opens")
+    if soc.get("unsafe_scheme_links"):
+        malicious.append("a clickable element uses a javascript:, data: or file: target")
+    if (
+        semantic
+        and routing["level"] in {"MEDIUM", "LOW"}
+        and not routing.get("exception")
+        and semantic.get("action_channel") == "email_reply"
+        and (semantic.get("asks_for_payment") or semantic.get("asks_for_credentials")
+             or semantic.get("asks_for_sensitive_information"))
+        and bool(semantic.get("evidence_phrase"))
+        and _reply_leaves_sender_organisation(soc)
+    ):
+        malicious.append("a payment, credential or sensitive-data request asks for a reply to an address outside the sender's organisation")
     for link in (soc.get("links") or []):
         if link.get("actionable") is False or not link.get("financial_attachment_mismatch"):
             continue

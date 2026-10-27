@@ -25,18 +25,20 @@ class ReplyRoutingTests(unittest.TestCase):
         report['domain_authentication'] = {'status': 'verified', 'verified_domains': ['service.example']}
         return report
 
-    def test_unrecognized_cross_domain_reply_is_high_even_with_benign_ai(self):
+    def test_unrecognized_cross_domain_reply_requires_review_with_benign_ai(self):
+        # A different reply domain alone is a routing anomaly (helpdesk/CRM
+        # services use one), not a phishing conviction.
         report = self.sharing_report()
         self.assertTrue(report['reply_to_mismatch'])
         flags = [f for f in report['flags'] if f['field'] == 'Reply-To']
-        self.assertEqual(['HIGH'], [f['level'] for f in flags])
-        self.assertIn('no supported sharing or notification routing', flags[0]['message'])
+        self.assertEqual(['MEDIUM'], [f['level'] for f in flags])
+        self.assertIn('different domain than the sender', flags[0]['message'])
         self.assertFalse(llm._deterministic_identity_deception(report, {'requested_action': 'visit_link'}))
         result = llm.apply_email_risk_policy(report, {
             'action': 'visit_link', 'channel': 'link', 'evidence': 'Open the document here.',
             'risk_assessment': 'legitimate', 'risk_rationale': 'An ordinary document-sharing notification.'})
         self.assertEqual('uncertain', result['identity_risk'])
-        self.assertEqual('phishing', result['final_verdict'])
+        self.assertEqual('review', result['final_verdict'])
         self.assertNotIn('spoofing_evidence', result['identity_risk'])
 
     def test_authenticated_service_does_not_authenticate_the_external_reply_person(self):
@@ -91,13 +93,14 @@ class ReplyRoutingTests(unittest.TestCase):
         result = llm.apply_email_risk_policy(report, {
             'action': 'visit_link', 'channel': 'link', 'evidence': 'Open the document here.',
             'risk_assessment': 'legitimate', 'risk_rationale': 'An ordinary document-sharing notification.'})
-        self.assertEqual('phishing', result['final_verdict'])
+        self.assertEqual('review', result['final_verdict'])
 
-    def test_exact_address_policy_also_covers_same_domain_without_notification_evidence(self):
+    def test_same_domain_different_mailbox_is_reported_without_affecting_the_verdict(self):
         report = self.parse('Notice <notice@company.example>', 'Person <person@company.example>')
         self.assertTrue(report['reply_to_mismatch_legitimate'])
         self.assertFalse(report['reply_to_mismatch'])
-        self.assertEqual('HIGH', assess_reply_routing(report)['level'])
+        self.assertEqual('LOW', assess_reply_routing(report)['level'])
+        self.assertEqual('clean', llm._technical_risk(report)[0])
 
     def test_service_exception_requires_real_mailbox_and_official_destinations(self):
         report = self.parse('"Person (via Google Drive)" <drive-shares-dm-noreply@google.com>', 'person@company.example')
@@ -109,16 +112,44 @@ class ReplyRoutingTests(unittest.TestCase):
         report['link_reputation'] = {report['links'][0]['url']: {'status': 'malicious'}}
         self.assertEqual('malicious', llm._technical_risk(report)[0])
         report['links'][0]['url'] = 'https://drive.google.com.attacker.example/file'
-        self.assertEqual('HIGH', refresh_reply_routing(report)['level'])
+        self.assertEqual('MEDIUM', refresh_reply_routing(report)['level'])
 
     def test_bulk_claim_alone_cannot_bypass_policy(self):
         report = self.sharing_report()
         report['is_bulk_sender'] = True
-        self.assertEqual('HIGH', assess_reply_routing(report)['level'])
-        report['reply_to'] = 'support@service.example'
-        self.assertEqual('INFO', assess_reply_routing(report)['level'])
+        # Authenticated bulk sender with a CRM/helpdesk reply domain.
+        self.assertEqual('LOW', assess_reply_routing(report)['level'])
         report['domain_authentication'] = {'status': 'disabled'}
+        # Bulk headers are sender-controlled: without authentication they
+        # cannot lower the cross-domain reply below review.
+        self.assertEqual('MEDIUM', assess_reply_routing(report)['level'])
+        report['reply_to'] = 'support@service.example'
+        self.assertEqual('LOW', assess_reply_routing(report)['level'])
+        report['domain_authentication'] = {'status': 'verified', 'verified_domains': ['service.example']}
+        self.assertEqual('INFO', assess_reply_routing(report)['level'])
+
+    def test_corroborated_reply_hijack_patterns_remain_high(self):
+        report = self.parse('Billing <billing@company.example>', 'Billing <company.billing.office@gmail.com>')
         self.assertEqual('HIGH', assess_reply_routing(report)['level'])
+        self.assertEqual('malicious', llm._technical_risk(report)[0])
+        report['domain_authentication'] = {'status': 'verified', 'verified_domains': ['company.example']}
+        self.assertEqual('MEDIUM', assess_reply_routing(report)['level'])
+        report = self.parse('Accounts <accounts@supplier-company.example>', 'Accounts <accounts@supplier-cornpany.example>')
+        self.assertEqual('HIGH', assess_reply_routing(report)['level'])
+        report = self.parse('PayPal <service@paypal.com>', 'Support <support@paypal-help-desk.example>')
+        self.assertEqual('HIGH', assess_reply_routing(report)['level'])
+
+    def test_sensitive_request_by_reply_to_external_domain_is_phishing(self):
+        report = self.parse('Finance <finance@company.example>', 'Finance <finance@payments-office.example>')
+        body = 'Please reply with the bank account details for the transfer of 12,000 EUR today.'
+        report['body_for_ai'] = body
+        report['body_for_intent'] = body
+        result = llm.apply_email_risk_policy(report, {
+            'action': 'pay', 'channel': 'reply', 'evidence': body, 'signals': ['payment'],
+            'risk_assessment': 'suspicious', 'risk_evidence': body,
+            'risk_rationale': 'Payment request answered through a different organisation.'})
+        self.assertEqual('MEDIUM', report['reply_to_routing']['level'])
+        self.assertEqual('phishing', result['final_verdict'])
 
     def test_additional_reply_recipient_cannot_hide_behind_matching_first_address(self):
         report = self.parse('alice@company.example', 'alice@company.example, thief@external.example')

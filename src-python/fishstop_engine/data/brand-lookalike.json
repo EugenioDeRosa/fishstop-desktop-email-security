@@ -1,0 +1,471 @@
+{
+  "version": 1,
+  "description": "Brands monitored by the static lookalike/combosquatting check. 'domains' are registrable domains operated by the brand and are never reported. 'tokens' are labels that identify the brand inside an unrelated domain. Extend with care: an incomplete 'domains' list produces review findings on legitimate brand infrastructure.",
+  "lure_words": [
+    "access",
+    "account",
+    "accounts",
+    "alert",
+    "auth",
+    "authenticate",
+    "billing",
+    "bonus",
+    "check",
+    "confirm",
+    "confirmation",
+    "customer",
+    "delivery",
+    "gift",
+    "help",
+    "helpdesk",
+    "id",
+    "invoice",
+    "login",
+    "logon",
+    "mfa",
+    "notice",
+    "notification",
+    "online",
+    "parcel",
+    "pay",
+    "payment",
+    "portal",
+    "recover",
+    "recovery",
+    "refund",
+    "renew",
+    "reset",
+    "reward",
+    "rewards",
+    "secure",
+    "security",
+    "service",
+    "services",
+    "shipping",
+    "signin",
+    "sso",
+    "support",
+    "team",
+    "track",
+    "tracking",
+    "unlock",
+    "update",
+    "user",
+    "validate",
+    "verify",
+    "verification",
+    "wallet",
+    "web",
+    "webmail",
+    "accesso",
+    "aggiorna",
+    "aggiornamento",
+    "area",
+    "assistenza",
+    "avviso",
+    "clienti",
+    "conferma",
+    "consegna",
+    "conto",
+    "giacenza",
+    "notifica",
+    "pacco",
+    "pagamento",
+    "pagamenti",
+    "riservata",
+    "rimborso",
+    "sblocco",
+    "servizio",
+    "servizi",
+    "sicurezza",
+    "sicuro",
+    "spedizione",
+    "utente",
+    "verifica",
+    "italia",
+    "italiane",
+    "notifiche",
+    "avvisi"
+  ],
+  "brands": [
+    {
+      "brand": "PayPal",
+      "tokens": [
+        "paypal"
+      ],
+      "domains": [
+        "paypal.com",
+        "paypal.it",
+        "paypal.me",
+        "paypalobjects.com"
+      ]
+    },
+    {
+      "brand": "Amazon",
+      "tokens": [
+        "amazon"
+      ],
+      "domains": [
+        "amazon.com",
+        "amazon.it",
+        "amazon.de",
+        "amazon.fr",
+        "amazon.es",
+        "amazon.co.uk",
+        "amazon.nl",
+        "amazonaws.com",
+        "amazon-adsystem.com",
+        "media-amazon.com",
+        "ssl-images-amazon.com",
+        "amazonses.com",
+        "amazon.jobs"
+      ]
+    },
+    {
+      "brand": "Apple",
+      "tokens": [
+        "apple",
+        "appleid",
+        "icloud"
+      ],
+      "domains": [
+        "apple.com",
+        "icloud.com",
+        "me.com",
+        "mzstatic.com",
+        "apple.news"
+      ]
+    },
+    {
+      "brand": "Microsoft",
+      "tokens": [
+        "microsoft",
+        "office365",
+        "outlook",
+        "onedrive",
+        "sharepoint",
+        "hotmail"
+      ],
+      "domains": [
+        "microsoft.com",
+        "microsoftonline.com",
+        "microsoft365.com",
+        "live.com",
+        "outlook.com",
+        "hotmail.com",
+        "office.com",
+        "office365.com",
+        "office.net",
+        "sharepoint.com",
+        "sharepointonline.com",
+        "onedrive.com",
+        "msn.com",
+        "azure.com",
+        "windows.net",
+        "windows.com",
+        "skype.com",
+        "bing.com",
+        "xbox.com",
+        "msauth.net",
+        "msftauth.net",
+        "cloud.microsoft"
+      ]
+    },
+    {
+      "brand": "Google",
+      "tokens": [
+        "google",
+        "gmail"
+      ],
+      "domains": [
+        "google.com",
+        "google.it",
+        "gmail.com",
+        "googlemail.com",
+        "googleusercontent.com",
+        "googleapis.com",
+        "gstatic.com",
+        "youtube.com",
+        "withgoogle.com",
+        "g.co",
+        "goo.gl"
+      ]
+    },
+    {
+      "brand": "Meta",
+      "tokens": [
+        "facebook",
+        "instagram",
+        "whatsapp"
+      ],
+      "domains": [
+        "facebook.com",
+        "fb.com",
+        "facebookmail.com",
+        "meta.com",
+        "instagram.com",
+        "whatsapp.com",
+        "whatsapp.net",
+        "messenger.com"
+      ]
+    },
+    {
+      "brand": "LinkedIn",
+      "tokens": [
+        "linkedin"
+      ],
+      "domains": [
+        "linkedin.com",
+        "licdn.com"
+      ]
+    },
+    {
+      "brand": "X",
+      "tokens": [
+        "twitter"
+      ],
+      "domains": [
+        "twitter.com",
+        "x.com",
+        "t.co"
+      ]
+    },
+    {
+      "brand": "Dropbox",
+      "tokens": [
+        "dropbox"
+      ],
+      "domains": [
+        "dropbox.com",
+        "dropboxusercontent.com"
+      ]
+    },
+    {
+      "brand": "Netflix",
+      "tokens": [
+        "netflix"
+      ],
+      "domains": [
+        "netflix.com",
+        "netflix.net",
+        "nflxext.com"
+      ]
+    },
+    {
+      "brand": "Spotify",
+      "tokens": [
+        "spotify"
+      ],
+      "domains": [
+        "spotify.com",
+        "scdn.co"
+      ]
+    },
+    {
+      "brand": "eBay",
+      "tokens": [
+        "ebay"
+      ],
+      "domains": [
+        "ebay.com",
+        "ebay.it",
+        "ebay.de",
+        "ebay.co.uk",
+        "ebayimg.com"
+      ]
+    },
+    {
+      "brand": "DHL",
+      "tokens": [
+        "dhl"
+      ],
+      "domains": [
+        "dhl.com",
+        "dhl.it",
+        "dhl.de"
+      ]
+    },
+    {
+      "brand": "FedEx",
+      "tokens": [
+        "fedex"
+      ],
+      "domains": [
+        "fedex.com"
+      ]
+    },
+    {
+      "brand": "UPS",
+      "tokens": [
+        "ups"
+      ],
+      "domains": [
+        "ups.com"
+      ]
+    },
+    {
+      "brand": "BRT",
+      "tokens": [
+        "brt",
+        "bartolini"
+      ],
+      "domains": [
+        "brt.it"
+      ]
+    },
+    {
+      "brand": "GLS",
+      "tokens": [
+        "gls"
+      ],
+      "domains": [
+        "gls-italy.com",
+        "gls-group.eu",
+        "gls-group.com"
+      ]
+    },
+    {
+      "brand": "Chase",
+      "tokens": [
+        "chase"
+      ],
+      "domains": [
+        "chase.com",
+        "jpmorganchase.com",
+        "jpmorgan.com"
+      ]
+    },
+    {
+      "brand": "Wells Fargo",
+      "tokens": [
+        "wellsfargo"
+      ],
+      "domains": [
+        "wellsfargo.com",
+        "wf.com"
+      ]
+    },
+    {
+      "brand": "Bank of America",
+      "tokens": [
+        "bankofamerica"
+      ],
+      "domains": [
+        "bankofamerica.com"
+      ]
+    },
+    {
+      "brand": "Intesa Sanpaolo",
+      "tokens": [
+        "intesasanpaolo",
+        "intesa"
+      ],
+      "domains": [
+        "intesasanpaolo.com"
+      ]
+    },
+    {
+      "brand": "UniCredit",
+      "tokens": [
+        "unicredit"
+      ],
+      "domains": [
+        "unicredit.it",
+        "unicredit.eu",
+        "unicreditgroup.eu"
+      ]
+    },
+    {
+      "brand": "Poste Italiane",
+      "tokens": [
+        "poste",
+        "posteitaliane",
+        "postepay",
+        "bancoposta"
+      ],
+      "domains": [
+        "poste.it",
+        "postepay.it",
+        "posteitaliane.it"
+      ]
+    },
+    {
+      "brand": "Agenzia delle Entrate",
+      "tokens": [
+        "agenziaentrate"
+      ],
+      "domains": [
+        "agenziaentrate.gov.it",
+        "agenziaentrateriscossione.gov.it"
+      ]
+    },
+    {
+      "brand": "INPS",
+      "tokens": [
+        "inps"
+      ],
+      "domains": [
+        "inps.it"
+      ]
+    },
+    {
+      "brand": "Nexi",
+      "tokens": [
+        "nexi"
+      ],
+      "domains": [
+        "nexi.it",
+        "nexigroup.com"
+      ]
+    },
+    {
+      "brand": "DocuSign",
+      "tokens": [
+        "docusign"
+      ],
+      "domains": [
+        "docusign.com",
+        "docusign.net"
+      ]
+    },
+    {
+      "brand": "Adobe",
+      "tokens": [
+        "adobe"
+      ],
+      "domains": [
+        "adobe.com",
+        "adobesign.com",
+        "adobelogin.com"
+      ]
+    },
+    {
+      "brand": "WeTransfer",
+      "tokens": [
+        "wetransfer"
+      ],
+      "domains": [
+        "wetransfer.com",
+        "we.tl"
+      ]
+    },
+    {
+      "brand": "Booking.com",
+      "tokens": [
+        "booking"
+      ],
+      "domains": [
+        "booking.com"
+      ]
+    },
+    {
+      "brand": "Revolut",
+      "tokens": [
+        "revolut"
+      ],
+      "domains": [
+        "revolut.com"
+      ]
+    }
+  ]
+}

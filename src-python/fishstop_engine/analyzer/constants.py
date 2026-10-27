@@ -108,6 +108,10 @@ DANGEROUS_ATTACHMENT_EXTENSIONS: frozenset[str] = frozenset({
     "sh", "bash", "zsh", "fish", "py", "pyw", "pl", "rb", "jar",
     "iso", "img", "vhd", "vhdx",
     "apk", "appx", "appxbundle", "msix", "msixbundle", "deb", "rpm", "dmg", "pkg",
+    # Formats abused after the Office macro block: OneNote, compiled help,
+    # Excel add-ins, management consoles, scriptlets and ClickOnce/shell links.
+    "one", "chm", "xll", "msc", "inf", "sct", "wsc", "cab",
+    "appref-ms", "application", "library-ms", "settingcontent-ms", "iqy",
 })
 
 DANGEROUS_ATTACHMENT_MIME_TYPES: frozenset[str] = frozenset({

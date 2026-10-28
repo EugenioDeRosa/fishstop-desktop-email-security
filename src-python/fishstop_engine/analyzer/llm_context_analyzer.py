@@ -3439,6 +3439,8 @@ def _technical_risk(soc: dict, semantic: dict | None = None) -> tuple[str, list[
         suspicious.append("a link displays a different domain than the one it opens")
     if soc.get("unsafe_scheme_links"):
         malicious.append("a clickable element uses a javascript:, data: or file: target")
+    if any(str(alert.get("level") or "").upper() == "MEDIUM" for alert in (soc.get("calendar_alerts") or [])):
+        suspicious.append("a calendar invitation with links comes from an organiser who does not match the sender")
     threading = soc.get("reply_threading") or {}
     if threading.get("level") in {"HIGH", "MEDIUM"} and soc.get("selected_target_authentication_scope") != "embedded_unavailable":
         sensitive_request = bool(semantic) and bool(
@@ -3469,6 +3471,15 @@ def _technical_risk(soc: dict, semantic: dict | None = None) -> tuple[str, list[
     if semantic and semantic.get("requested_action") in {"pay_or_transfer", "provide_credentials", "change_account_settings"}:
         for item in ((soc.get("identity_analysis") or {}).get("coherence") or []):
             suspicious.extend(item.get("anomalies") or [])
+    # Single severity table: the same static findings that make the interface
+    # show HIGH RISK or REVIEW raise the technical axis here.
+    if soc.get("flags"):
+        from .signal_policy import technical_effect
+        effect, fields = technical_effect(soc)
+        if effect == "decisive" and not malicious:
+            malicious.append("a high-severity static check requires blocking the message: " + ", ".join(fields[:4]))
+        elif effect == "supporting" and not malicious and not suspicious:
+            suspicious.append("a static check requires review: " + ", ".join(fields[:4]))
     malicious = list(dict.fromkeys(malicious))
     suspicious = list(dict.fromkeys(suspicious))
     if malicious:

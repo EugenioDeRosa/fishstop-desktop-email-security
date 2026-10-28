@@ -28,7 +28,7 @@ ogni cache separata. Sign out non elimina la cronologia. La disinstallazione non
 | Spamhaus ZEN / zen.spamhaus.org e resolver DNS | Solo dopo attivazione esplicita, durante analisi; indipendente da AbuseIPDB | IP invertito nella query DNSBL; il resolver vede la query | Bloccato |
 | ipwho.is | Solo dopo attivazione esplicita della geolocalizzazione | IP pubblici della catena di recapito | Bloccato |
 | Resolver DNS configurato dal sistema | Verifica DKIM indipendente e osservazioni DNS | Nomi DNS, inclusi selettore DKIM e dominio; TXT/MX/NS e altri record previsti dal controllo | Bloccato |
-| rdap.org e server RDAP dei registri | Analisi reputazione domini; verifiche identità | Dominio interrogato; rdap.org può redirigere al registro competente | Bloccato |
+| rdap.org e server RDAP dei registri | Analisi reputazione domini; verifiche identità; età dei domini dei link (al massimo 5 domini registrabili per email, con cache) | Dominio interrogato, mai l'URL completo; rdap.org può redirigere al registro competente | Bloccato |
 | data.iana.org | Caricamento/aggiornamento della tabella bootstrap RDAP | Richiesta della tabella dns.json, senza corpo email | Bloccato |
 | Wikidata / www.wikidata.org | Analisi semantica con entità e verifica online del marchio, salvo cache | Nome del marchio/organizzazione estratto, ID di entità, richieste di proprietà | Bloccato |
 | crt.sh | Helper legacy presente, senza chiamanti nel percorso attivo verificato | Se riattivato: ricerca di etichetta marchio in Certificate Transparency | Non usato; guard blocca richieste esterne |

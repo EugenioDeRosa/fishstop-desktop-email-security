@@ -47,6 +47,8 @@ from .html_utils      import (
 from .link_extractor  import extract_links, extract_unsafe_scheme_links
 from .link_deception  import refresh_link_alerts
 from .thread_integrity import assess_reply_threading, threading_headers
+from .payment_details  import assess_payment_details
+from .calendar_analysis import assess_calendar_invites, is_calendar_part, parse_calendar
 from .conversation    import inspect_conversation_bytes
 from .lookalike       import check_lookalike_domains
 from .received_parser import (
@@ -615,6 +617,7 @@ class EmlSOCAnalyzer:
         decoded_source_chars = 0
         source_truncated = False
 
+        calendar_invites: list[dict] = []
         for part in msg.walk():
             ct       = part.get_content_type()
             disp     = str(part.get("Content-Disposition") or "")
@@ -622,6 +625,11 @@ class EmlSOCAnalyzer:
             filename = part.get_filename() or ""
             is_attach = "attachment" in disp.lower()
 
+            if is_calendar_part(ct, filename) and not (is_attach or filename):
+                calendar_payload = part.get_payload(decode=True)
+                if isinstance(calendar_payload, bytes) and len(calendar_invites) < 5:
+                    calendar_invites.append(parse_calendar(calendar_payload))
+                continue
             if is_attach or filename:
                 if len(attachments_info) >= MAX_ATTACHMENTS:
                     raise EmailAnalysisLimitError(
@@ -866,8 +874,15 @@ class EmlSOCAnalyzer:
                  "source": "attachment_qr" if url in (attachment.get("qr_inspection") or {}).get("urls", []) else "attachment"}
                 for attachment in attachments_info
                 for url in (attachment.get("embedded_urls") or [])
+            ] + [
+                {"url": url, "label": "Calendar invitation", "source": "calendar"}
+                for invite in calendar_invites for url in (invite.get("urls") or [])
             ],
         )
+        calendar_invites.extend(
+            attachment["calendar_security"] for attachment in attachments_info if attachment.get("calendar_security"))
+        report["calendar_invites"] = calendar_invites
+        report["calendar_alerts"] = assess_calendar_invites(report, calendar_invites)
         # `mailto:` actions are retained for identity coherence, but are not
         # web destinations and therefore must not alter Streamlit-equivalent
         # lookalike/typosquatting checks.
@@ -878,6 +893,7 @@ class EmlSOCAnalyzer:
             conversation_segments = []
         report["reply_threading"] = assess_reply_threading(
             report, report.get("threading_headers") or {}, conversation_segments)
+        report["payment_details"] = assess_payment_details(report, conversation_segments)
         report["link_context_alerts"] = self._assess_link_context(report)
         # ── 11. Flag SOC ──────────────────────────────────────────────────
         report["flags"] = self._build_flags(report)
@@ -1292,6 +1308,18 @@ class EmlSOCAnalyzer:
             flag(level if level in {"HIGH", "MEDIUM"} else "MEDIUM", "Sender lookalike",
                  f"The {alert.get('field') or 'sender'} domain `{alert.get('host')}` imitates {target}. "
                  f"{alert.get('detail') or ''}".strip())
+
+        for alert in (report.get("payment_details") or {}).get("alerts") or []:
+            flag(str(alert.get("level") or "MEDIUM"), "Payment details", str(alert.get("message") or ""))
+        for alert in report.get("link_hosting_alerts") or []:
+            flag(str(alert.get("level") or "INFO"), "Link hosting", str(alert.get("message") or ""))
+        for alert in report.get("recipient_link_alerts") or []:
+            flag(str(alert.get("level") or "MEDIUM"), "Personalised link", str(alert.get("message") or ""))
+        for alert in report.get("calendar_alerts") or []:
+            flag(str(alert.get("level") or "INFO"), "Calendar invite", str(alert.get("message") or ""))
+        for att in report.get("attachments") or []:
+            for finding in ((att.get("calendar_security") or {}).get("findings") or [])[:3]:
+                flag("MEDIUM", "Calendar invite", f"'{att.get('filename')}': {finding.get('label')}")
 
         threading = report.get("reply_threading") or {}
         if threading.get("level") in {"HIGH", "MEDIUM", "LOW"}:

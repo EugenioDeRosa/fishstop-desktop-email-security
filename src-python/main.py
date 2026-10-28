@@ -155,6 +155,11 @@ def analyze(path_value: str) -> dict[str, Any]:
     from fishstop_engine.analyzer.reply_routing import refresh_reply_routing
     refresh_reply_routing(report)
     report["eml_sha256"] = hashlib.sha256(raw).hexdigest()
+    from fishstop_engine.analyzer.payment_details import apply_payment_memory
+    for alert in apply_payment_memory(report, report["eml_sha256"]):
+        report.setdefault("payment_details", {}).setdefault("alerts", []).append(alert)
+        report.setdefault("flags", []).append({"level": alert["level"], "field": "Payment details", "message": alert["message"]})
+    (report.get("payment_details") or {}).pop("_body_ibans_raw", None)
     disabled_providers = set(os.getenv("FISHSTOP_DISABLED_PROVIDERS", "spamhaus,geolocation").split(","))
     enrich_reputation(
         report,
@@ -162,10 +167,15 @@ def analyze(path_value: str) -> dict[str, Any]:
         os.getenv("ABUSEIPDB_API_KEY", ""),
         disabled_providers=disabled_providers,
     )
+    from fishstop_engine.analyzer.link_domain_age import apply_link_domain_age
+    apply_link_domain_age(report, disabled_providers)
     if "otx" not in disabled_providers and "local_only" not in disabled_providers:
         apply_on_demand_otx_intelligence(report, os.getenv("OTX_API_KEY", ""))
     else:
         report["otx_intelligence"] = {"status": "disabled", "message": "Disabled in Settings", "matches": []}
+    from fishstop_engine.analyzer.signal_policy import signal_policy, verdict_signals
+    report["verdict_signals"] = verdict_signals(report)
+    report["signal_policy_version"] = signal_policy().get("version")
     return _json_safe(report)
 
 

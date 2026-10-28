@@ -36,8 +36,10 @@ try:
     # vercel.app, r2.dev...). No network access is performed at runtime.
     from publicsuffixlist import PublicSuffixList as _PublicSuffixList
     _PSL = _PublicSuffixList(accept_unknown=False, only_icann=False)
+    _ICANN_PSL = _PublicSuffixList(accept_unknown=False, only_icann=True)
 except ImportError:  # pragma: no cover - packaged engines include it
     _PSL = None
+    _ICANN_PSL = None
 
 try:
     from publicsuffix2 import get_sld, get_tld
@@ -108,6 +110,22 @@ def registered_domain(value: str) -> str:
     if not public_suffix or not registrable:
         return host
     return normalize_hostname(str(registrable)) or host
+
+
+def icann_registered_domain(value: str) -> str:
+    """Registry-level registrable domain (ignores private suffixes such as pages.dev).
+
+    This is the domain a registry RDAP service knows; tenants of shared
+    platforms return the platform domain.
+    """
+    host = normalize_hostname(value)
+    if not host or _ICANN_PSL is None:
+        return registered_domain(host)
+    try:
+        registrable = _ICANN_PSL.privatesuffix(host)
+    except (TypeError, ValueError, UnicodeError):
+        return ""
+    return normalize_hostname(str(registrable)) if registrable else ""
 
 
 def is_public_suffix(value: str) -> bool:

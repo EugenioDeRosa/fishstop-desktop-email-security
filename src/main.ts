@@ -126,6 +126,8 @@ type AnalysisReport = {
   authentication_checkpoints?: AuthenticationCheckpoint[];
   received_hops?: ReceivedHop[];
   identity_analysis?: { impersonation?: ImpersonationAssessment; status?: string; model?: string; backend?: string; message?: string; segments_analyzed?: number; entities?: Array<{ name?: string; confidence?: number; entity_type?: string; entity_types?: string[]; occurrences?: Array<{ source?: string; evidence?: string }> }>; coherence?: Array<{ brand?: string; official_website?: string; official_websites?: string[]; official_domain?: string; official_domains?: string[]; associated_domains?: string[]; trusted_action_domains?: string[]; external_reply_domains?: string[]; resolution_source?: string; reference_status?: string; sender_authentication?: string; contacts?: Array<{ source?: string; matches_official?: boolean }>; evidence?: Array<{ source?: string; reference?: string; observed_at?: number; expires_at?: number; confidence?: string }>; dns_observations?: { provider?: string; bimi_present?: boolean }; anomalies?: string[]; status?: string; message?: string; mismatches?: Array<{ source?: string; domain?: string }> }> };
+  verdict_signals?: Array<{ id?: string; category?: string; field?: string; level?: string; effect?: string; message?: string }>;
+  signal_policy_version?: number;
   phi4_analysis?: { status?: string; model?: string; duration_ms?: number; performance?: { analysis_mode?: string; llm_calls?: number; wall_duration_ms?: number; load_duration_ms?: number; prompt_tokens?: number; generated_tokens?: number; calls?: Array<{ stage?: string; wall_duration_ms?: number; load_duration_ms?: number; prompt_eval_count?: number; prompt_eval_duration_ms?: number; eval_count?: number; eval_duration_ms?: number }> }; analysis?: { final_verdict?: string; content_summary?: string; content_summary_source?: string; content_summary_parts?: string[]; semantic_reason?: string; explanation?: string; confidence?: number; requested_action?: string; action_channel?: string; intent_evidence?: string; intent_signals?: string[]; signal_evidence?: string; content_risk?: string; identity_risk?: string; technical_risk?: string; ambiguity?: string; scam_type?: string; threat_type?: string; coercion?: boolean; claimed_brand?: string; payment_destination_change?: boolean; semantic_extraction?: { asks_for_credentials?: boolean; asks_for_payment?: boolean; asks_for_sensitive_information?: boolean; asks_to_change_account_settings?: boolean; asks_to_verify_account?: boolean; asks_to_open_attachment?: boolean; requested_external_action?: boolean; security_alert?: boolean; impersonation_or_deception?: boolean; identity_deception?: boolean; scam_type?: string; threat_type?: string; coercion?: boolean }; corroboration?: { supports_decision?: boolean; details?: string[]; caveats?: string[] } }; message?: string };
   ai_content_summary?: { status?: string; summary?: string; model?: string; backend?: string; message?: string };
   ai_summary?: { status?: string; summary?: string; model?: string; backend?: string; message?: string };
@@ -889,10 +891,16 @@ function buildStructuredReportData(report: AnalysisReport): SiemReport {
     if (attachment.hash_sha256) addIndicator({ type: "sha256", value: attachment.hash_sha256, source: "attachment", risk: attachment.file_reputation?.status, reputation: publicReputation(attachment.file_reputation), context: compactObject({ filename: attachment.filename }) });
   });
 
-  const findings: Array<Record<string, unknown>> = verdictFlags(report).map((flag, index) => compactObject({
-    id: `static.${String(flag.field || "finding").toLowerCase().replace(/[^a-z0-9]+/g, "_")}.${index + 1}`,
-    severity: flag.level.toLowerCase(), category: "static_analysis", field: flag.field, description: flag.message,
-  }));
+  // Reports produced with the shared severity table carry stable signal ids.
+  const signals = report.verdict_signals || [];
+  const findings: Array<Record<string, unknown>> = verdictFlags(report).map((flag, index) => {
+    const signal = signals.find((item) => item.field === flag.field && item.message === flag.message);
+    return compactObject({
+      id: signal?.id ? `${signal.id}.${index + 1}` : `static.${String(flag.field || "finding").toLowerCase().replace(/[^a-z0-9]+/g, "_")}.${index + 1}`,
+      severity: flag.level.toLowerCase(), category: signal?.category || "static_analysis", field: flag.field,
+      verdict_effect: signal?.effect, description: flag.message,
+    });
+  });
   (report.lookalike_alerts || []).forEach((alert, index) => findings.push(compactObject({
     id: `identity.lookalike.${index + 1}`, severity: (alert.level || "HIGH").toLowerCase(), category: "identity",
     field: "domain", description: alert.detail || t("Possible lookalike domain for {0}.", [alert.matched_brand || t("a known brand")]),

@@ -1049,6 +1049,9 @@ def analyze_attachment(
             attachment_security["summary"] = "; ".join(filter(None, [previous, html_security["summary"]]))
             if html_security["risk_level"] == "high":
                 anomaly_parts.append(html_security["summary"])
+    from .calendar_analysis import is_calendar_part, parse_calendar
+    if is_calendar_part(content_type, filename) and isinstance(raw_bytes, bytes):
+        entry["calendar_security"] = parse_calendar(raw_bytes)
     if attachment_security.get("risk_level") == "high":
         anomaly_parts.append(
             f"High-risk attachment: {attachment_security.get('summary')}"
@@ -1067,9 +1070,10 @@ def analyze_attachment(
     archive_urls = archive_security.get("urls") or []
     office_urls = (entry.get("office_security") or {}).get("urls") or []
     html_urls = (entry.get("html_security") or {}).get("urls") or []
-    entry["embedded_urls"] = list(dict.fromkeys([*pdf_urls, *archive_urls, *office_urls, *html_urls]))[:25]
+    calendar_urls = (entry.get("calendar_security") or {}).get("urls") or []
+    entry["embedded_urls"] = list(dict.fromkeys([*pdf_urls, *archive_urls, *office_urls, *html_urls, *calendar_urls]))[:25]
     entry["anomaly"] = "; ".join(anomaly_parts) if anomaly_parts else None
-    scans = [entry[key] for key in ("pdf_security", "archive_security", "office_security", "html_security") if entry.get(key)]
+    scans = [entry[key] for key in ("pdf_security", "archive_security", "office_security", "html_security", "calendar_security") if entry.get(key)]
     incomplete = [scan for scan in scans if scan.get("analysis_complete") is False]
     entry["inspection"] = {
         "status": "partial" if incomplete else "complete" if scans else "type_only",

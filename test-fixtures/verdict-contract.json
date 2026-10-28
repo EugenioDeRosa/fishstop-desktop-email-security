@@ -1,0 +1,4969 @@
+[
+ {
+  "name": "legitimate_order",
+  "python_verdict": "legitimate",
+  "report": {
+   "delivered_to": null,
+   "to": "mario@gmail.com",
+   "from_": "Shop <orders@shop.example>",
+   "from_registered_domain": "shop.example",
+   "subject": "Ordine spedito",
+   "threading_headers": {},
+   "date": "Mon, 26 Oct 2026 10:00:00 +0000",
+   "message_id": "<synthetic@fishstop.invalid>",
+   "importance": null,
+   "mime_version": "1.0",
+   "content_type": "multipart/alternative; boundary=\"===============5254190749490069070==\"",
+   "bulk_sender_signals": [],
+   "bulk_sender_signal_count": 0,
+   "is_bulk_sender": false,
+   "return_path": null,
+   "errors_to": null,
+   "reply_to": null,
+   "from_mailbox_candidates": [
+    "orders@shop.example"
+   ],
+   "from_ambiguous": false,
+   "reply_to_mismatch_legitimate": false,
+   "reply_to_mismatch": false,
+   "return_path_domain_mismatch": false,
+   "return_path_domain": "",
+   "display_name_spoofing": null,
+   "x_google_smtp_source": null,
+   "x_received": null,
+   "arc_seal": null,
+   "arc_message_signature": null,
+   "arc_authentication_results": "",
+   "received_hops": [],
+   "closest_to_recipient": {},
+   "injection_server": {},
+   "closest_to_sender": {},
+   "injection_sender_ip": null,
+   "received_spf_raw": "",
+   "received_spf_results": {},
+   "authentication_results_raw": "",
+   "auth_results": {},
+   "arc_auth_results": {},
+   "effective_auth_results": {},
+   "authentication_checkpoints": [],
+   "injection_ip_spf_authorized": false,
+   "spf_sender_aligned": false,
+   "dkim_signature_present": false,
+   "dkim_signature_raw": "",
+   "body": "See the HTML version.",
+   "body_html_safe": "<div data-fishstop-email-preview=\"true\"><a title=\"Link removed for safety: use the Links found in the email section.\">Visualizza ordine</a>\n</div>",
+   "body_html_clean": "Visualizza ordine",
+   "body_plain_clean": "See the HTML version.",
+   "body_plain_original": "See the HTML version.\n",
+   "body_text_normalization": {
+    "plain": {
+     "formatting_controls_removed": 0,
+     "joiner_padding_runs_removed": 0,
+     "before_characters": 21,
+     "after_characters": 21
+    },
+    "html": {
+     "formatting_controls_removed": 0,
+     "joiner_padding_runs_removed": 0,
+     "before_characters": 17,
+     "after_characters": 17
+    }
+   },
+   "html_form_analysis": {
+    "status": "clean",
+    "form_count": 0,
+    "forms": [],
+    "message": "No HTML forms were found."
+   },
+   "html_copy_deception": {
+    "status": "clean",
+    "finding_count": 0,
+    "message": "No HTML copy-deception pattern was detected.",
+    "findings": []
+   },
+   "body_clean": "See the HTML version.",
+   "forwarded_identity": {},
+   "body_source": "text/plain",
+   "html_strip_applied": true,
+   "body_plain_tracking_url_count": 0,
+   "body_selected_html_for_ai": false,
+   "body_plain_noise_removed_lines": 0,
+   "body_plain_noise_removed_chars": 0,
+   "attachments": [],
+   "body_ai": "See the HTML version.\n\n[HTML alternative]\nVisualizza ordine",
+   "body_for_identity": "See the HTML version.\n\n[HTML alternative]\nVisualizza ordine",
+   "body_context": "normal",
+   "body_ai_removed_quoted_lines": 0,
+   "body_ai_removed_header_lines": 0,
+   "body_ai_removed_tail_lines": 0,
+   "body_clean_full": "See the HTML version.",
+   "body_for_intent": "See the HTML version.\n\n[HTML alternative]\nVisualizza ordine",
+   "body_alternatives_divergent": true,
+   "ai_text_compaction": {
+    "body": {
+     "duplicate_blocks": 0,
+     "duplicate_characters": 0,
+     "before_characters": 59,
+     "after_characters": 59
+    },
+    "identity": {
+     "duplicate_blocks": 0,
+     "duplicate_characters": 0,
+     "before_characters": 59,
+     "after_characters": 59
+    },
+    "mime_body": {
+     "alternative_characters_omitted": 0,
+     "alternatives_differ": true
+    },
+    "mime_identity": {
+     "alternative_characters_omitted": 0,
+     "alternatives_differ": true
+    },
+    "method": "exact_repeated_blocks_and_mime_overlap"
+   },
+   "body_extracted": "See the HTML version.\n\n[HTML alternative]\nVisualizza ordine",
+   "body_for_ai": "See the HTML version.\n\n[HTML alternative]\nVisualizza ordine",
+   "body_analysis_limits": {
+    "decoded_source_characters": 88,
+    "inspected_source_characters": 88,
+    "source_character_limit": 2000000,
+    "source_part_character_limit": 1000000,
+    "source_truncated": false,
+    "useful_characters_before_limit": 59,
+    "ai_character_limit": 120000,
+    "ai_text_truncated": false
+   },
+   "ai_analysis_supported": true,
+   "ai_analysis_limit_message": "",
+   "links": [
+    {
+     "url": "https://www.shop.example/orders/1",
+     "display_text": "Visualizza ordine",
+     "action_labels": [
+      "Visualizza ordine"
+     ],
+     "display_url": "",
+     "display_host": "",
+     "display_mismatch": false,
+     "host": "www.shop.example",
+     "registered_domain": "www.shop.example",
+     "display_registered_domain": "",
+     "scheme": "https",
+     "source": "html_href",
+     "role": "body_action",
+     "actionable": true,
+     "html_call_to_action": false,
+     "resolved_display_destination": false,
+     "signature_tracking_redirect": false,
+     "is_ip": false,
+     "download_filename": "1",
+     "download_extension": "",
+     "download_source": "path",
+     "dangerous_download": false,
+     "has_userinfo": false,
+     "has_credentials": false,
+     "nonstandard_port": false,
+     "port": null,
+     "nested_redirect_count": 0,
+     "redirect_targets": [],
+     "redirect_hosts": [],
+     "redirect_downloads": [],
+     "unicode_path_or_query": false,
+     "unicode_host": false,
+     "raw_at_sign": false
+    }
+   ],
+   "calendar_invites": [],
+   "calendar_alerts": [],
+   "lookalike_alerts": [],
+   "sender_lookalike_alerts": [],
+   "display_mismatch_alerts": [],
+   "link_hosting_alerts": [],
+   "recipient_link_alerts": [],
+   "unsafe_scheme_links": [],
+   "reply_threading": {
+    "level": "NONE",
+    "message": "",
+    "reply_prefix": "",
+    "threading_headers": [],
+    "quoted_messages": 0,
+    "quoted_from_recipient": false
+   },
+   "payment_details": {
+    "body_ibans": [],
+    "quoted_ibans": [],
+    "attachment_ibans": [],
+    "change_phrase": "",
+    "sender_country": "",
+    "alerts": []
+   },
+   "link_context_alerts": [],
+   "reply_to_routing": {
+    "level": "NONE",
+    "message": "",
+    "exception": false
+   },
+   "flags": [
+    {
+     "level": "INFO",
+     "field": "SPF",
+     "message": "No SPF result is available in this EML export"
+    },
+    {
+     "level": "INFO",
+     "field": "DKIM",
+     "message": "No DKIM signature is available in this EML export"
+    },
+    {
+     "level": "INFO",
+     "field": "DMARC",
+     "message": "No DMARC result is available in this EML export"
+    },
+    {
+     "level": "INFO",
+     "field": "Body",
+     "message": "Different versions of the message content were checked for inconsistencies."
+    }
+   ],
+   "phi4_analysis": {
+    "status": "ok",
+    "analysis": {
+     "final_verdict": "legitimate",
+     "content_risk": "benign",
+     "identity_risk": "uncertain",
+     "technical_risk": "clean",
+     "requested_action": "informational",
+     "action_channel": "none",
+     "urgency_present": false,
+     "urgency_targets_risky_action": false,
+     "confidence": 0.5,
+     "ambiguity": "low",
+     "explanation": "No risky content request or strong technical threat was detected.",
+     "semantic_reason": "No semantic explanation returned.",
+     "ai_content_assessment": "benign",
+     "ai_content_rationale": "Ordinary message.",
+     "ai_content_evidence": "",
+     "ai_content_verification": {},
+     "content_summary": "Synthetic message.",
+     "content_summary_source": "legacy",
+     "content_summary_parts": [],
+     "intent_evidence": "",
+     "intent_signals": [],
+     "signal_evidence": "",
+     "credential_type": "none",
+     "payment_method": "none",
+     "payment_asset": "",
+     "amount": "",
+     "payment_destination_change": false,
+     "payment_change_evidence": "",
+     "coercion": false,
+     "threat_type": "none",
+     "scam_type": "none",
+     "claimed_brand": "",
+     "evidence": {
+      "content": [
+       "no risky requested action was identified"
+      ],
+      "identity": [
+       "Sender authentication could not be independently verified; usable authentication results are unavailable"
+      ],
+      "technical": [
+       "no strong technical threat was detected"
+      ]
+     },
+     "corroboration": {
+      "supports_decision": true,
+      "details": [
+       "no strong technical threat was detected"
+      ],
+      "caveats": [
+       "Sender authentication could not be independently verified; usable authentication results are unavailable"
+      ]
+     },
+     "semantic_extraction": {
+      "requested_action": "informational",
+      "action_channel": "none",
+      "asks_to_click_link": false,
+      "asks_to_open_attachment": false,
+      "asks_for_credentials": false,
+      "asks_for_sensitive_information": false,
+      "asks_for_payment": false,
+      "asks_to_verify_account": false,
+      "asks_to_claim_reward": false,
+      "financial_incentive_present": false,
+      "asks_to_change_account_settings": false,
+      "asks_to_bypass_procedure": false,
+      "urgency_present": false,
+      "urgency_targets_risky_action": false,
+      "impersonation_or_deception": false,
+      "financial_pretext_present": false,
+      "threat_or_consequence_present": false,
+      "semantic_signals": [],
+      "signal_evidence": "",
+      "credential_type": "none",
+      "payment_method": "none",
+      "payment_asset": "",
+      "amount": "",
+      "payment_destination_change": false,
+      "payment_change_evidence": "",
+      "security_alert": false,
+      "requested_external_action": false,
+      "identity_deception": false,
+      "security_lure_evidence": "",
+      "coercion": false,
+      "threat_type": "none",
+      "scam_type": "none",
+      "structured_extortion": false,
+      "claimed_brand": "",
+      "claimed_role": "unclear",
+      "model_content_risk": "benign",
+      "model_risk_evidence": "",
+      "model_risk_rationale": "Ordinary message.",
+      "risk_verification": {},
+      "confidence": 0.5,
+      "confidence_provided": false,
+      "ambiguity": "low",
+      "reason": "No semantic explanation returned.",
+      "evidence_phrase": "",
+      "intent_verifier_used": false,
+      "primary_requested_action": "",
+      "content_summary": "Synthetic message.",
+      "content_summary_source": "legacy"
+     },
+     "policy_version": "semantic-policy-v50-template-summary"
+    }
+   }
+  }
+ },
+ {
+  "name": "cross_domain_reply_to",
+  "python_verdict": "phishing",
+  "report": {
+   "delivered_to": null,
+   "to": "mario.rossi@azienda.it",
+   "from_": "News <news@shop.example>",
+   "from_registered_domain": "shop.example",
+   "subject": "Novità",
+   "threading_headers": {},
+   "date": "Mon, 26 Oct 2026 10:00:00 +0000",
+   "message_id": "<synthetic@fishstop.invalid>",
+   "importance": null,
+   "mime_version": "1.0",
+   "content_type": "multipart/alternative; boundary=\"===============6447009146247856453==\"",
+   "bulk_sender_signals": [],
+   "bulk_sender_signal_count": 0,
+   "is_bulk_sender": false,
+   "return_path": null,
+   "errors_to": null,
+   "reply_to": "care@shop-help.example",
+   "from_mailbox_candidates": [
+    "news@shop.example"
+   ],
+   "from_ambiguous": false,
+   "reply_to_mismatch_legitimate": false,
+   "reply_to_mismatch": true,
+   "return_path_domain_mismatch": false,
+   "return_path_domain": "",
+   "display_name_spoofing": null,
+   "x_google_smtp_source": null,
+   "x_received": null,
+   "arc_seal": null,
+   "arc_message_signature": null,
+   "arc_authentication_results": "",
+   "received_hops": [],
+   "closest_to_recipient": {},
+   "injection_server": {},
+   "closest_to_sender": {},
+   "injection_sender_ip": null,
+   "received_spf_raw": "",
+   "received_spf_results": {},
+   "authentication_results_raw": "",
+   "auth_results": {},
+   "arc_auth_results": {},
+   "effective_auth_results": {},
+   "authentication_checkpoints": [],
+   "injection_ip_spf_authorized": false,
+   "spf_sender_aligned": false,
+   "dkim_signature_present": false,
+   "dkim_signature_raw": "",
+   "body": "See the HTML version.",
+   "body_html_safe": "<div data-fishstop-email-preview=\"true\"><a title=\"Link removed for safety: use the Links found in the email section.\">Novità</a>\n</div>",
+   "body_html_clean": "Novità",
+   "body_plain_clean": "See the HTML version.",
+   "body_plain_original": "See the HTML version.\n",
+   "body_text_normalization": {
+    "plain": {
+     "formatting_controls_removed": 0,
+     "joiner_padding_runs_removed": 0,
+     "before_characters": 21,
+     "after_characters": 21
+    },
+    "html": {
+     "formatting_controls_removed": 0,
+     "joiner_padding_runs_removed": 0,
+     "before_characters": 6,
+     "after_characters": 6
+    }
+   },
+   "html_form_analysis": {
+    "status": "clean",
+    "form_count": 0,
+    "forms": [],
+    "message": "No HTML forms were found."
+   },
+   "html_copy_deception": {
+    "status": "clean",
+    "finding_count": 0,
+    "message": "No HTML copy-deception pattern was detected.",
+    "findings": []
+   },
+   "body_clean": "See the HTML version.",
+   "forwarded_identity": {},
+   "body_source": "text/plain",
+   "html_strip_applied": true,
+   "body_plain_tracking_url_count": 0,
+   "body_selected_html_for_ai": false,
+   "body_plain_noise_removed_lines": 0,
+   "body_plain_noise_removed_chars": 0,
+   "attachments": [],
+   "body_ai": "See the HTML version.\n\n[HTML alternative]\nNovità",
+   "body_for_identity": "See the HTML version.\n\n[HTML alternative]\nNovità",
+   "body_context": "normal",
+   "body_ai_removed_quoted_lines": 0,
+   "body_ai_removed_header_lines": 0,
+   "body_ai_removed_tail_lines": 0,
+   "body_clean_full": "See the HTML version.",
+   "body_for_intent": "See the HTML version.\n\n[HTML alternative]\nNovità",
+   "body_alternatives_divergent": true,
+   "ai_text_compaction": {
+    "body": {
+     "duplicate_blocks": 0,
+     "duplicate_characters": 0,
+     "before_characters": 48,
+     "after_characters": 48
+    },
+    "identity": {
+     "duplicate_blocks": 0,
+     "duplicate_characters": 0,
+     "before_characters": 48,
+     "after_characters": 48
+    },
+    "mime_body": {
+     "alternative_characters_omitted": 0,
+     "alternatives_differ": true
+    },
+    "mime_identity": {
+     "alternative_characters_omitted": 0,
+     "alternatives_differ": true
+    },
+    "method": "exact_repeated_blocks_and_mime_overlap"
+   },
+   "body_extracted": "See the HTML version.\n\n[HTML alternative]\nNovità",
+   "body_for_ai": "See the HTML version.\n\n[HTML alternative]\nNovità",
+   "body_analysis_limits": {
+    "decoded_source_characters": 72,
+    "inspected_source_characters": 72,
+    "source_character_limit": 2000000,
+    "source_part_character_limit": 1000000,
+    "source_truncated": false,
+    "useful_characters_before_limit": 48,
+    "ai_character_limit": 120000,
+    "ai_text_truncated": false
+   },
+   "ai_analysis_supported": true,
+   "ai_analysis_limit_message": "",
+   "links": [
+    {
+     "url": "https://www.shop.example/new",
+     "display_text": "Novità",
+     "action_labels": [
+      "Novità"
+     ],
+     "display_url": "",
+     "display_host": "",
+     "display_mismatch": false,
+     "host": "www.shop.example",
+     "registered_domain": "www.shop.example",
+     "display_registered_domain": "",
+     "scheme": "https",
+     "source": "html_href",
+     "role": "body_action",
+     "actionable": true,
+     "html_call_to_action": false,
+     "resolved_display_destination": false,
+     "signature_tracking_redirect": false,
+     "is_ip": false,
+     "download_filename": "new",
+     "download_extension": "",
+     "download_source": "path",
+     "dangerous_download": false,
+     "has_userinfo": false,
+     "has_credentials": false,
+     "nonstandard_port": false,
+     "port": null,
+     "nested_redirect_count": 0,
+     "redirect_targets": [],
+     "redirect_hosts": [],
+     "redirect_downloads": [],
+     "unicode_path_or_query": false,
+     "unicode_host": false,
+     "raw_at_sign": false
+    }
+   ],
+   "calendar_invites": [],
+   "calendar_alerts": [],
+   "lookalike_alerts": [],
+   "sender_lookalike_alerts": [],
+   "display_mismatch_alerts": [],
+   "link_hosting_alerts": [],
+   "recipient_link_alerts": [],
+   "unsafe_scheme_links": [],
+   "reply_threading": {
+    "level": "NONE",
+    "message": "",
+    "reply_prefix": "",
+    "threading_headers": [],
+    "quoted_messages": 0,
+    "quoted_from_recipient": false
+   },
+   "payment_details": {
+    "body_ibans": [],
+    "quoted_ibans": [],
+    "attachment_ibans": [],
+    "change_phrase": "",
+    "sender_country": "",
+    "alerts": []
+   },
+   "link_context_alerts": [],
+   "reply_to_routing": {
+    "level": "HIGH",
+    "message": "The reply address differs from the sender and no supported sharing or notification routing was established. Replies may reach a different recipient.",
+    "exception": false
+   },
+   "flags": [
+    {
+     "level": "INFO",
+     "field": "SPF",
+     "message": "No SPF result is available in this EML export"
+    },
+    {
+     "level": "INFO",
+     "field": "DKIM",
+     "message": "No DKIM signature is available in this EML export"
+    },
+    {
+     "level": "INFO",
+     "field": "DMARC",
+     "message": "No DMARC result is available in this EML export"
+    },
+    {
+     "level": "HIGH",
+     "field": "Reply-To",
+     "message": "The reply address differs from the sender and no supported sharing or notification routing was established. Replies may reach a different recipient."
+    },
+    {
+     "level": "INFO",
+     "field": "Body",
+     "message": "Different versions of the message content were checked for inconsistencies."
+    }
+   ],
+   "phi4_analysis": {
+    "status": "ok",
+    "analysis": {
+     "final_verdict": "phishing",
+     "content_risk": "benign",
+     "identity_risk": "uncertain",
+     "technical_risk": "malicious",
+     "requested_action": "informational",
+     "action_channel": "none",
+     "urgency_present": false,
+     "urgency_targets_risky_action": false,
+     "confidence": 0.5,
+     "ambiguity": "low",
+     "explanation": "Strong or corroborated phishing evidence was detected.",
+     "semantic_reason": "No semantic explanation returned.",
+     "ai_content_assessment": "benign",
+     "ai_content_rationale": "Ordinary message.",
+     "ai_content_evidence": "",
+     "ai_content_verification": {},
+     "content_summary": "Synthetic message.",
+     "content_summary_source": "legacy",
+     "content_summary_parts": [],
+     "intent_evidence": "",
+     "intent_signals": [],
+     "signal_evidence": "",
+     "credential_type": "none",
+     "payment_method": "none",
+     "payment_asset": "",
+     "amount": "",
+     "payment_destination_change": false,
+     "payment_change_evidence": "",
+     "coercion": false,
+     "threat_type": "none",
+     "scam_type": "none",
+     "claimed_brand": "",
+     "evidence": {
+      "content": [
+       "no risky requested action was identified"
+      ],
+      "identity": [
+       "the reply address differs from the sender; this may be service routing and does not establish impersonation"
+      ],
+      "technical": [
+       "The reply address differs from the sender and no supported sharing or notification routing was established. Replies may reach a different recipient."
+      ]
+     },
+     "corroboration": {
+      "supports_decision": true,
+      "details": [
+       "the reply address differs from the sender; this may be service routing and does not establish impersonation",
+       "The reply address differs from the sender and no supported sharing or notification routing was established. Replies may reach a different recipient."
+      ],
+      "caveats": []
+     },
+     "semantic_extraction": {
+      "requested_action": "informational",
+      "action_channel": "none",
+      "asks_to_click_link": false,
+      "asks_to_open_attachment": false,
+      "asks_for_credentials": false,
+      "asks_for_sensitive_information": false,
+      "asks_for_payment": false,
+      "asks_to_verify_account": false,
+      "asks_to_claim_reward": false,
+      "financial_incentive_present": false,
+      "asks_to_change_account_settings": false,
+      "asks_to_bypass_procedure": false,
+      "urgency_present": false,
+      "urgency_targets_risky_action": false,
+      "impersonation_or_deception": false,
+      "financial_pretext_present": false,
+      "threat_or_consequence_present": false,
+      "semantic_signals": [],
+      "signal_evidence": "",
+      "credential_type": "none",
+      "payment_method": "none",
+      "payment_asset": "",
+      "amount": "",
+      "payment_destination_change": false,
+      "payment_change_evidence": "",
+      "security_alert": false,
+      "requested_external_action": false,
+      "identity_deception": false,
+      "security_lure_evidence": "",
+      "coercion": false,
+      "threat_type": "none",
+      "scam_type": "none",
+      "structured_extortion": false,
+      "claimed_brand": "",
+      "claimed_role": "unclear",
+      "model_content_risk": "benign",
+      "model_risk_evidence": "",
+      "model_risk_rationale": "Ordinary message.",
+      "risk_verification": {},
+      "confidence": 0.5,
+      "confidence_provided": false,
+      "ambiguity": "low",
+      "reason": "No semantic explanation returned.",
+      "evidence_phrase": "",
+      "intent_verifier_used": false,
+      "primary_requested_action": "",
+      "content_summary": "Synthetic message.",
+      "content_summary_source": "legacy"
+     },
+     "policy_version": "semantic-policy-v50-template-summary"
+    }
+   }
+  }
+ },
+ {
+  "name": "masked_brand_link",
+  "python_verdict": "phishing",
+  "report": {
+   "delivered_to": null,
+   "to": "mario.rossi@azienda.it",
+   "from_": "Banca <avvisi@notifiche-banca.example>",
+   "from_registered_domain": "notifiche-banca.example",
+   "subject": "Accesso",
+   "threading_headers": {},
+   "date": "Mon, 26 Oct 2026 10:00:00 +0000",
+   "message_id": "<synthetic@fishstop.invalid>",
+   "importance": null,
+   "mime_version": "1.0",
+   "content_type": "multipart/alternative; boundary=\"===============8470490571440109879==\"",
+   "bulk_sender_signals": [],
+   "bulk_sender_signal_count": 0,
+   "is_bulk_sender": false,
+   "return_path": null,
+   "errors_to": null,
+   "reply_to": null,
+   "from_mailbox_candidates": [
+    "avvisi@notifiche-banca.example"
+   ],
+   "from_ambiguous": false,
+   "reply_to_mismatch_legitimate": false,
+   "reply_to_mismatch": false,
+   "return_path_domain_mismatch": false,
+   "return_path_domain": "",
+   "display_name_spoofing": null,
+   "x_google_smtp_source": null,
+   "x_received": null,
+   "arc_seal": null,
+   "arc_message_signature": null,
+   "arc_authentication_results": "",
+   "received_hops": [],
+   "closest_to_recipient": {},
+   "injection_server": {},
+   "closest_to_sender": {},
+   "injection_sender_ip": null,
+   "received_spf_raw": "",
+   "received_spf_results": {},
+   "authentication_results_raw": "",
+   "auth_results": {},
+   "arc_auth_results": {},
+   "effective_auth_results": {},
+   "authentication_checkpoints": [],
+   "injection_ip_spf_authorized": false,
+   "spf_sender_aligned": false,
+   "dkim_signature_present": false,
+   "dkim_signature_raw": "",
+   "body": "See the HTML version.",
+   "body_html_safe": "<div data-fishstop-email-preview=\"true\"><a title=\"Link removed for safety: use the Links found in the email section.\">https://www.intesasanpaolo.com/login</a>\n</div>",
+   "body_html_clean": "https://www.intesasanpaolo.com/login",
+   "body_plain_clean": "See the HTML version.",
+   "body_plain_original": "See the HTML version.\n",
+   "body_text_normalization": {
+    "plain": {
+     "formatting_controls_removed": 0,
+     "joiner_padding_runs_removed": 0,
+     "before_characters": 21,
+     "after_characters": 21
+    },
+    "html": {
+     "formatting_controls_removed": 0,
+     "joiner_padding_runs_removed": 0,
+     "before_characters": 36,
+     "after_characters": 36
+    }
+   },
+   "html_form_analysis": {
+    "status": "clean",
+    "form_count": 0,
+    "forms": [],
+    "message": "No HTML forms were found."
+   },
+   "html_copy_deception": {
+    "status": "clean",
+    "finding_count": 0,
+    "message": "No HTML copy-deception pattern was detected.",
+    "findings": []
+   },
+   "body_clean": "See the HTML version.",
+   "forwarded_identity": {},
+   "body_source": "text/plain",
+   "html_strip_applied": true,
+   "body_plain_tracking_url_count": 0,
+   "body_selected_html_for_ai": false,
+   "body_plain_noise_removed_lines": 0,
+   "body_plain_noise_removed_chars": 0,
+   "attachments": [],
+   "body_ai": "See the HTML version.\n\n[HTML alternative]\nhttps://www.intesasanpaolo.com/login",
+   "body_for_identity": "See the HTML version.\n\n[HTML alternative]\nhttps://www.intesasanpaolo.com/login",
+   "body_context": "normal",
+   "body_ai_removed_quoted_lines": 0,
+   "body_ai_removed_header_lines": 0,
+   "body_ai_removed_tail_lines": 0,
+   "body_clean_full": "See the HTML version.",
+   "body_for_intent": "See the HTML version.\n\n[HTML alternative]\nhttps://www.intesasanpaolo.com/login",
+   "body_alternatives_divergent": true,
+   "ai_text_compaction": {
+    "body": {
+     "duplicate_blocks": 0,
+     "duplicate_characters": 0,
+     "before_characters": 78,
+     "after_characters": 78
+    },
+    "identity": {
+     "duplicate_blocks": 0,
+     "duplicate_characters": 0,
+     "before_characters": 78,
+     "after_characters": 78
+    },
+    "mime_body": {
+     "alternative_characters_omitted": 0,
+     "alternatives_differ": true
+    },
+    "mime_identity": {
+     "alternative_characters_omitted": 0,
+     "alternatives_differ": true
+    },
+    "method": "exact_repeated_blocks_and_mime_overlap"
+   },
+   "body_extracted": "See the HTML version.\n\n[HTML alternative]\nhttps://www.intesasanpaolo.com/login",
+   "body_for_ai": "See the HTML version.\n\n[HTML alternative]\nhttps://www.intesasanpaolo.com/login",
+   "body_analysis_limits": {
+    "decoded_source_characters": 109,
+    "inspected_source_characters": 109,
+    "source_character_limit": 2000000,
+    "source_part_character_limit": 1000000,
+    "source_truncated": false,
+    "useful_characters_before_limit": 78,
+    "ai_character_limit": 120000,
+    "ai_text_truncated": false
+   },
+   "ai_analysis_supported": true,
+   "ai_analysis_limit_message": "",
+   "links": [
+    {
+     "url": "https://account-check.example/login",
+     "display_text": "https://www.intesasanpaolo.com/login",
+     "action_labels": [
+      "https://www.intesasanpaolo.com/login"
+     ],
+     "display_url": "https://www.intesasanpaolo.com/login",
+     "display_host": "www.intesasanpaolo.com",
+     "display_mismatch": true,
+     "host": "account-check.example",
+     "registered_domain": "account-check.example",
+     "display_registered_domain": "intesasanpaolo.com",
+     "scheme": "https",
+     "source": "html_href",
+     "role": "body_action",
+     "actionable": true,
+     "html_call_to_action": false,
+     "resolved_display_destination": false,
+     "signature_tracking_redirect": false,
+     "is_ip": false,
+     "download_filename": "login",
+     "download_extension": "",
+     "download_source": "path",
+     "dangerous_download": false,
+     "has_userinfo": false,
+     "has_credentials": false,
+     "nonstandard_port": false,
+     "port": null,
+     "nested_redirect_count": 0,
+     "redirect_targets": [],
+     "redirect_hosts": [],
+     "redirect_downloads": [],
+     "unicode_path_or_query": false,
+     "unicode_host": false,
+     "raw_at_sign": false
+    },
+    {
+     "url": "https://www.intesasanpaolo.com/login",
+     "display_text": "",
+     "action_labels": [],
+     "display_url": "",
+     "display_host": "",
+     "display_mismatch": false,
+     "host": "www.intesasanpaolo.com",
+     "registered_domain": "intesasanpaolo.com",
+     "display_registered_domain": "",
+     "scheme": "https",
+     "source": "html_text",
+     "role": "body_action",
+     "actionable": true,
+     "html_call_to_action": false,
+     "resolved_display_destination": false,
+     "signature_tracking_redirect": false,
+     "is_ip": false,
+     "download_filename": "login",
+     "download_extension": "",
+     "download_source": "path",
+     "dangerous_download": false,
+     "has_userinfo": false,
+     "has_credentials": false,
+     "nonstandard_port": false,
+     "port": null,
+     "nested_redirect_count": 0,
+     "redirect_targets": [],
+     "redirect_hosts": [],
+     "redirect_downloads": [],
+     "unicode_path_or_query": false,
+     "unicode_host": false,
+     "raw_at_sign": false
+    }
+   ],
+   "calendar_invites": [],
+   "calendar_alerts": [],
+   "lookalike_alerts": [],
+   "sender_lookalike_alerts": [],
+   "display_mismatch_alerts": [
+    {
+     "url": "https://account-check.example/login",
+     "host": "account-check.example",
+     "display_host": "www.intesasanpaolo.com",
+     "level": "HIGH",
+     "message": "The link text shows `www.intesasanpaolo.com` but opens `account-check.example`. The visible domain belongs to a protected brand or to the recipient organisation."
+    }
+   ],
+   "link_hosting_alerts": [],
+   "recipient_link_alerts": [],
+   "unsafe_scheme_links": [],
+   "reply_threading": {
+    "level": "NONE",
+    "message": "",
+    "reply_prefix": "",
+    "threading_headers": [],
+    "quoted_messages": 0,
+    "quoted_from_recipient": false
+   },
+   "payment_details": {
+    "body_ibans": [],
+    "quoted_ibans": [],
+    "attachment_ibans": [],
+    "change_phrase": "",
+    "sender_country": "",
+    "alerts": []
+   },
+   "link_context_alerts": [],
+   "reply_to_routing": {
+    "level": "NONE",
+    "message": "",
+    "exception": false
+   },
+   "flags": [
+    {
+     "level": "INFO",
+     "field": "SPF",
+     "message": "No SPF result is available in this EML export"
+    },
+    {
+     "level": "INFO",
+     "field": "DKIM",
+     "message": "No DKIM signature is available in this EML export"
+    },
+    {
+     "level": "INFO",
+     "field": "DMARC",
+     "message": "No DMARC result is available in this EML export"
+    },
+    {
+     "level": "INFO",
+     "field": "Body",
+     "message": "Different versions of the message content were checked for inconsistencies."
+    },
+    {
+     "level": "HIGH",
+     "field": "Masked link",
+     "message": "The link text shows `www.intesasanpaolo.com` but opens `account-check.example`. The visible domain belongs to a protected brand or to the recipient organisation."
+    }
+   ],
+   "phi4_analysis": {
+    "status": "ok",
+    "analysis": {
+     "final_verdict": "phishing",
+     "content_risk": "benign",
+     "identity_risk": "uncertain",
+     "technical_risk": "malicious",
+     "requested_action": "visit_link",
+     "action_channel": "supplied_link",
+     "urgency_present": false,
+     "urgency_targets_risky_action": false,
+     "confidence": 0.5,
+     "ambiguity": "low",
+     "explanation": "Strong or corroborated phishing evidence was detected.",
+     "semantic_reason": "Accesso",
+     "ai_content_assessment": "benign",
+     "ai_content_rationale": "Ordinary message.",
+     "ai_content_evidence": "",
+     "ai_content_verification": {},
+     "content_summary": "Synthetic message.",
+     "content_summary_source": "legacy",
+     "content_summary_parts": [],
+     "intent_evidence": "Accesso",
+     "intent_signals": [],
+     "signal_evidence": "",
+     "credential_type": "none",
+     "payment_method": "none",
+     "payment_asset": "",
+     "amount": "",
+     "payment_destination_change": false,
+     "payment_change_evidence": "",
+     "coercion": false,
+     "threat_type": "none",
+     "scam_type": "none",
+     "claimed_brand": "",
+     "evidence": {
+      "content": [
+       "no risky requested action was identified"
+      ],
+      "identity": [
+       "Sender authentication could not be independently verified; usable authentication results are unavailable"
+      ],
+      "technical": [
+       "a link displays a protected brand or organisation domain but opens an unrelated host"
+      ]
+     },
+     "corroboration": {
+      "supports_decision": true,
+      "details": [
+       "Sender authentication could not be independently verified; usable authentication results are unavailable",
+       "a link displays a protected brand or organisation domain but opens an unrelated host"
+      ],
+      "caveats": []
+     },
+     "semantic_extraction": {
+      "requested_action": "visit_link",
+      "action_channel": "supplied_link",
+      "asks_to_click_link": true,
+      "asks_to_open_attachment": false,
+      "asks_for_credentials": false,
+      "asks_for_sensitive_information": false,
+      "asks_for_payment": false,
+      "asks_to_verify_account": false,
+      "asks_to_claim_reward": false,
+      "financial_incentive_present": false,
+      "asks_to_change_account_settings": false,
+      "asks_to_bypass_procedure": false,
+      "urgency_present": false,
+      "urgency_targets_risky_action": false,
+      "impersonation_or_deception": false,
+      "financial_pretext_present": false,
+      "threat_or_consequence_present": false,
+      "semantic_signals": [],
+      "signal_evidence": "",
+      "credential_type": "none",
+      "payment_method": "none",
+      "payment_asset": "",
+      "amount": "",
+      "payment_destination_change": false,
+      "payment_change_evidence": "",
+      "security_alert": false,
+      "requested_external_action": false,
+      "identity_deception": false,
+      "security_lure_evidence": "",
+      "coercion": false,
+      "threat_type": "none",
+      "scam_type": "none",
+      "structured_extortion": false,
+      "claimed_brand": "",
+      "claimed_role": "unclear",
+      "model_content_risk": "benign",
+      "model_risk_evidence": "",
+      "model_risk_rationale": "Ordinary message.",
+      "risk_verification": {},
+      "confidence": 0.5,
+      "confidence_provided": false,
+      "ambiguity": "low",
+      "reason": "Accesso",
+      "evidence_phrase": "Accesso",
+      "intent_verifier_used": false,
+      "primary_requested_action": "",
+      "content_summary": "Synthetic message.",
+      "content_summary_source": "legacy"
+     },
+     "policy_version": "semantic-policy-v50-template-summary"
+    }
+   }
+  }
+ },
+ {
+  "name": "fake_reply",
+  "python_verdict": "review",
+  "report": {
+   "delivered_to": null,
+   "to": "mario.rossi@azienda.it",
+   "from_": "Luca <luca@fornitore.example>",
+   "from_registered_domain": "fornitore.example",
+   "subject": "RE: documento",
+   "threading_headers": {},
+   "date": "Mon, 26 Oct 2026 10:00:00 +0000",
+   "message_id": "<synthetic@fishstop.invalid>",
+   "importance": null,
+   "mime_version": "1.0",
+   "content_type": "text/plain; charset=\"utf-8\"",
+   "bulk_sender_signals": [],
+   "bulk_sender_signal_count": 0,
+   "is_bulk_sender": false,
+   "return_path": null,
+   "errors_to": null,
+   "reply_to": null,
+   "from_mailbox_candidates": [
+    "luca@fornitore.example"
+   ],
+   "from_ambiguous": false,
+   "reply_to_mismatch_legitimate": false,
+   "reply_to_mismatch": false,
+   "return_path_domain_mismatch": false,
+   "return_path_domain": "",
+   "display_name_spoofing": null,
+   "x_google_smtp_source": null,
+   "x_received": null,
+   "arc_seal": null,
+   "arc_message_signature": null,
+   "arc_authentication_results": "",
+   "received_hops": [],
+   "closest_to_recipient": {},
+   "injection_server": {},
+   "closest_to_sender": {},
+   "injection_sender_ip": null,
+   "received_spf_raw": "",
+   "received_spf_results": {},
+   "authentication_results_raw": "",
+   "auth_results": {},
+   "arc_auth_results": {},
+   "effective_auth_results": {},
+   "authentication_checkpoints": [],
+   "injection_ip_spf_authorized": false,
+   "spf_sender_aligned": false,
+   "dkim_signature_present": false,
+   "dkim_signature_raw": "",
+   "body": "Ti allego il documento.",
+   "body_html_safe": null,
+   "body_html_clean": "",
+   "body_plain_clean": "Ti allego il documento.",
+   "body_plain_original": "Ti allego il documento.\n",
+   "body_text_normalization": {
+    "plain": {
+     "formatting_controls_removed": 0,
+     "joiner_padding_runs_removed": 0,
+     "before_characters": 23,
+     "after_characters": 23
+    },
+    "html": {
+     "formatting_controls_removed": 0,
+     "joiner_padding_runs_removed": 0,
+     "before_characters": 0,
+     "after_characters": 0
+    }
+   },
+   "html_form_analysis": {
+    "status": "not_applicable",
+    "form_count": 0,
+    "forms": [],
+    "message": "No HTML body is available."
+   },
+   "html_copy_deception": {
+    "status": "not_applicable",
+    "finding_count": 0,
+    "message": "No HTML body is available for copy-deception analysis.",
+    "findings": []
+   },
+   "body_clean": "Ti allego il documento.",
+   "forwarded_identity": {},
+   "body_source": "text/plain",
+   "html_strip_applied": false,
+   "body_plain_tracking_url_count": 0,
+   "body_selected_html_for_ai": false,
+   "body_plain_noise_removed_lines": 0,
+   "body_plain_noise_removed_chars": 0,
+   "attachments": [],
+   "body_ai": "Ti allego il documento.",
+   "body_for_identity": "Ti allego il documento.",
+   "body_context": "normal",
+   "body_ai_removed_quoted_lines": 0,
+   "body_ai_removed_header_lines": 0,
+   "body_ai_removed_tail_lines": 0,
+   "body_clean_full": "Ti allego il documento.",
+   "body_for_intent": "Ti allego il documento.",
+   "body_alternatives_divergent": false,
+   "ai_text_compaction": {
+    "body": {
+     "duplicate_blocks": 0,
+     "duplicate_characters": 0,
+     "before_characters": 23,
+     "after_characters": 23
+    },
+    "identity": {
+     "duplicate_blocks": 0,
+     "duplicate_characters": 0,
+     "before_characters": 23,
+     "after_characters": 23
+    },
+    "mime_body": {},
+    "mime_identity": {},
+    "method": "exact_repeated_blocks_and_mime_overlap"
+   },
+   "body_extracted": "Ti allego il documento.",
+   "body_for_ai": "Ti allego il documento.",
+   "body_analysis_limits": {
+    "decoded_source_characters": 24,
+    "inspected_source_characters": 24,
+    "source_character_limit": 2000000,
+    "source_part_character_limit": 1000000,
+    "source_truncated": false,
+    "useful_characters_before_limit": 23,
+    "ai_character_limit": 120000,
+    "ai_text_truncated": false
+   },
+   "ai_analysis_supported": true,
+   "ai_analysis_limit_message": "",
+   "links": [],
+   "calendar_invites": [],
+   "calendar_alerts": [],
+   "lookalike_alerts": [],
+   "sender_lookalike_alerts": [],
+   "display_mismatch_alerts": [],
+   "link_hosting_alerts": [],
+   "recipient_link_alerts": [],
+   "unsafe_scheme_links": [],
+   "reply_threading": {
+    "level": "MEDIUM",
+    "message": "The subject presents the message as a reply, but it has no In-Reply-To, References or Thread-Index header linking it to a previous message. The previous exchange may not exist.",
+    "reply_prefix": "RE",
+    "threading_headers": [],
+    "quoted_messages": 0,
+    "quoted_from_recipient": false
+   },
+   "payment_details": {
+    "body_ibans": [],
+    "quoted_ibans": [],
+    "attachment_ibans": [],
+    "change_phrase": "",
+    "sender_country": "",
+    "alerts": []
+   },
+   "link_context_alerts": [],
+   "reply_to_routing": {
+    "level": "NONE",
+    "message": "",
+    "exception": false
+   },
+   "flags": [
+    {
+     "level": "INFO",
+     "field": "SPF",
+     "message": "No SPF result is available in this EML export"
+    },
+    {
+     "level": "INFO",
+     "field": "DKIM",
+     "message": "No DKIM signature is available in this EML export"
+    },
+    {
+     "level": "INFO",
+     "field": "DMARC",
+     "message": "No DMARC result is available in this EML export"
+    },
+    {
+     "level": "MEDIUM",
+     "field": "Reply thread",
+     "message": "The subject presents the message as a reply, but it has no In-Reply-To, References or Thread-Index header linking it to a previous message. The previous exchange may not exist."
+    }
+   ],
+   "phi4_analysis": {
+    "status": "ok",
+    "analysis": {
+     "final_verdict": "review",
+     "content_risk": "benign",
+     "identity_risk": "uncertain",
+     "technical_risk": "uncertain",
+     "requested_action": "informational",
+     "action_channel": "none",
+     "urgency_present": false,
+     "urgency_targets_risky_action": false,
+     "confidence": 0.5,
+     "ambiguity": "low",
+     "explanation": "The message has a meaningful anomaly, but the available evidence is not sufficient for a phishing verdict.",
+     "semantic_reason": "No semantic explanation returned.",
+     "ai_content_assessment": "benign",
+     "ai_content_rationale": "Ordinary message.",
+     "ai_content_evidence": "",
+     "ai_content_verification": {},
+     "content_summary": "Synthetic message.",
+     "content_summary_source": "legacy",
+     "content_summary_parts": [],
+     "intent_evidence": "",
+     "intent_signals": [],
+     "signal_evidence": "",
+     "credential_type": "none",
+     "payment_method": "none",
+     "payment_asset": "",
+     "amount": "",
+     "payment_destination_change": false,
+     "payment_change_evidence": "",
+     "coercion": false,
+     "threat_type": "none",
+     "scam_type": "none",
+     "claimed_brand": "",
+     "evidence": {
+      "content": [
+       "no risky requested action was identified"
+      ],
+      "identity": [
+       "Sender authentication could not be independently verified; usable authentication results are unavailable"
+      ],
+      "technical": [
+       "the message is presented as a reply but is not linked to a previous message"
+      ]
+     },
+     "corroboration": {
+      "supports_decision": true,
+      "details": [
+       "Sender authentication could not be independently verified; usable authentication results are unavailable",
+       "the message is presented as a reply but is not linked to a previous message"
+      ],
+      "caveats": []
+     },
+     "semantic_extraction": {
+      "requested_action": "informational",
+      "action_channel": "none",
+      "asks_to_click_link": false,
+      "asks_to_open_attachment": false,
+      "asks_for_credentials": false,
+      "asks_for_sensitive_information": false,
+      "asks_for_payment": false,
+      "asks_to_verify_account": false,
+      "asks_to_claim_reward": false,
+      "financial_incentive_present": false,
+      "asks_to_change_account_settings": false,
+      "asks_to_bypass_procedure": false,
+      "urgency_present": false,
+      "urgency_targets_risky_action": false,
+      "impersonation_or_deception": false,
+      "financial_pretext_present": false,
+      "threat_or_consequence_present": false,
+      "semantic_signals": [],
+      "signal_evidence": "",
+      "credential_type": "none",
+      "payment_method": "none",
+      "payment_asset": "",
+      "amount": "",
+      "payment_destination_change": false,
+      "payment_change_evidence": "",
+      "security_alert": false,
+      "requested_external_action": false,
+      "identity_deception": false,
+      "security_lure_evidence": "",
+      "coercion": false,
+      "threat_type": "none",
+      "scam_type": "none",
+      "structured_extortion": false,
+      "claimed_brand": "",
+      "claimed_role": "unclear",
+      "model_content_risk": "benign",
+      "model_risk_evidence": "",
+      "model_risk_rationale": "Ordinary message.",
+      "risk_verification": {},
+      "confidence": 0.5,
+      "confidence_provided": false,
+      "ambiguity": "low",
+      "reason": "No semantic explanation returned.",
+      "evidence_phrase": "",
+      "intent_verifier_used": false,
+      "primary_requested_action": "",
+      "content_summary": "Synthetic message.",
+      "content_summary_source": "legacy"
+     },
+     "policy_version": "semantic-policy-v50-template-summary"
+    }
+   }
+  }
+ },
+ {
+  "name": "fabricated_thread",
+  "python_verdict": "phishing",
+  "report": {
+   "delivered_to": null,
+   "to": "mario.rossi@azienda.it",
+   "from_": "Luca <luca@fornitore-amministrazione.example>",
+   "from_registered_domain": "fornitore-amministrazione.example",
+   "subject": "RE: Fattura 2026/118",
+   "threading_headers": {},
+   "date": "Mon, 26 Oct 2026 10:00:00 +0000",
+   "message_id": "<synthetic@fishstop.invalid>",
+   "importance": null,
+   "mime_version": "1.0",
+   "content_type": "text/plain; charset=\"utf-8\"",
+   "bulk_sender_signals": [],
+   "bulk_sender_signal_count": 0,
+   "is_bulk_sender": false,
+   "return_path": null,
+   "errors_to": null,
+   "reply_to": null,
+   "from_mailbox_candidates": [
+    "luca@fornitore-amministrazione.example"
+   ],
+   "from_ambiguous": false,
+   "reply_to_mismatch_legitimate": false,
+   "reply_to_mismatch": false,
+   "return_path_domain_mismatch": false,
+   "return_path_domain": "",
+   "display_name_spoofing": null,
+   "x_google_smtp_source": null,
+   "x_received": null,
+   "arc_seal": null,
+   "arc_message_signature": null,
+   "arc_authentication_results": "",
+   "received_hops": [],
+   "closest_to_recipient": {},
+   "injection_server": {},
+   "closest_to_sender": {},
+   "injection_sender_ip": null,
+   "received_spf_raw": "",
+   "received_spf_results": {},
+   "authentication_results_raw": "",
+   "auth_results": {},
+   "arc_auth_results": {},
+   "effective_auth_results": {},
+   "authentication_checkpoints": [],
+   "injection_ip_spf_authorized": false,
+   "spf_sender_aligned": false,
+   "dkim_signature_present": false,
+   "dkim_signature_raw": "",
+   "body": "Ciao Mario, come d'accordo procedi con il bonifico sul nuovo IBAN entro oggi.\n\nDa: Mario Rossi <mario.rossi@azienda.it>\nInviato: lunedì 26 ottobre 2026 09:12\nA: Luca Bianchi <luca@fornitore.example>\nOggetto: Fattura 2026/118\n\nBuongiorno, attendo le nuove coordinate per il pagamento.",
+   "body_html_safe": null,
+   "body_html_clean": "",
+   "body_plain_clean": "Ciao Mario, come d'accordo procedi con il bonifico sul nuovo IBAN entro oggi.\n\nDa: Mario Rossi <mario.rossi@azienda.it>\nInviato: lunedì 26 ottobre 2026 09:12\nA: Luca Bianchi <luca@fornitore.example>\nOggetto: Fattura 2026/118\n\nBuongiorno, attendo le nuove coordinate per il pagamento.",
+   "body_plain_original": "Ciao Mario, come d'accordo procedi con il bonifico sul nuovo IBAN entro oggi.\n\nDa: Mario Rossi <mario.rossi@azienda.it>\nInviato: lunedì 26 ottobre 2026 09:12\nA: Luca Bianchi <luca@fornitore.example>\nOggetto: Fattura 2026/118\n\nBuongiorno, attendo le nuove coordinate per il pagamento.\n",
+   "body_text_normalization": {
+    "plain": {
+     "formatting_controls_removed": 0,
+     "joiner_padding_runs_removed": 0,
+     "before_characters": 283,
+     "after_characters": 283
+    },
+    "html": {
+     "formatting_controls_removed": 0,
+     "joiner_padding_runs_removed": 0,
+     "before_characters": 0,
+     "after_characters": 0
+    }
+   },
+   "html_form_analysis": {
+    "status": "not_applicable",
+    "form_count": 0,
+    "forms": [],
+    "message": "No HTML body is available."
+   },
+   "html_copy_deception": {
+    "status": "not_applicable",
+    "finding_count": 0,
+    "message": "No HTML body is available for copy-deception analysis.",
+    "findings": []
+   },
+   "body_clean": "Ciao Mario, come d'accordo procedi con il bonifico sul nuovo IBAN entro oggi.\n\nDa: Mario Rossi <mario.rossi@azienda.it>\nInviato: lunedì 26 ottobre 2026 09:12\nA: Luca Bianchi <luca@fornitore.example>\nOggetto: Fattura 2026/118\n\nBuongiorno, attendo le nuove coordinate per il pagamento.",
+   "forwarded_identity": {},
+   "body_source": "text/plain",
+   "html_strip_applied": false,
+   "body_plain_tracking_url_count": 0,
+   "body_selected_html_for_ai": false,
+   "body_plain_noise_removed_lines": 0,
+   "body_plain_noise_removed_chars": 0,
+   "attachments": [],
+   "body_ai": "Ciao Mario, come d'accordo procedi con il bonifico sul nuovo IBAN entro oggi.",
+   "body_for_identity": "Ciao Mario, come d'accordo procedi con il bonifico sul nuovo IBAN entro oggi.",
+   "body_context": "reply",
+   "body_ai_removed_quoted_lines": 0,
+   "body_ai_removed_header_lines": 6,
+   "body_ai_removed_tail_lines": 0,
+   "body_clean_full": "Ciao Mario, come d'accordo procedi con il bonifico sul nuovo IBAN entro oggi.\n\nDa: Mario Rossi <mario.rossi@azienda.it>\nInviato: lunedì 26 ottobre 2026 09:12\nA: Luca Bianchi <luca@fornitore.example>\nOggetto: Fattura 2026/118\n\nBuongiorno, attendo le nuove coordinate per il pagamento.",
+   "body_for_intent": "Ciao Mario, come d'accordo procedi con il bonifico sul nuovo IBAN entro oggi.",
+   "body_alternatives_divergent": false,
+   "ai_text_compaction": {
+    "body": {
+     "duplicate_blocks": 0,
+     "duplicate_characters": 0,
+     "before_characters": 77,
+     "after_characters": 77
+    },
+    "identity": {
+     "duplicate_blocks": 0,
+     "duplicate_characters": 0,
+     "before_characters": 77,
+     "after_characters": 77
+    },
+    "mime_body": {},
+    "mime_identity": {},
+    "method": "exact_repeated_blocks_and_mime_overlap"
+   },
+   "body_extracted": "Ciao Mario, come d'accordo procedi con il bonifico sul nuovo IBAN entro oggi.",
+   "body_for_ai": "Ciao Mario, come d'accordo procedi con il bonifico sul nuovo IBAN entro oggi.",
+   "body_analysis_limits": {
+    "decoded_source_characters": 284,
+    "inspected_source_characters": 284,
+    "source_character_limit": 2000000,
+    "source_part_character_limit": 1000000,
+    "source_truncated": false,
+    "useful_characters_before_limit": 77,
+    "ai_character_limit": 120000,
+    "ai_text_truncated": false
+   },
+   "ai_analysis_supported": true,
+   "ai_analysis_limit_message": "",
+   "links": [],
+   "calendar_invites": [],
+   "calendar_alerts": [],
+   "lookalike_alerts": [],
+   "sender_lookalike_alerts": [],
+   "display_mismatch_alerts": [],
+   "link_hosting_alerts": [],
+   "recipient_link_alerts": [],
+   "unsafe_scheme_links": [],
+   "reply_threading": {
+    "level": "HIGH",
+    "message": "The message presents itself as a reply and quotes a previous message attributed to the recipient or to the recipient organisation, but no threading header links it to an earlier message. The quoted history may be fabricated to imitate an existing conversation.",
+    "reply_prefix": "RE",
+    "threading_headers": [],
+    "quoted_messages": 1,
+    "quoted_from_recipient": true
+   },
+   "payment_details": {
+    "body_ibans": [],
+    "quoted_ibans": [],
+    "attachment_ibans": [],
+    "change_phrase": "nuovo IBAN",
+    "sender_country": "",
+    "alerts": []
+   },
+   "link_context_alerts": [],
+   "reply_to_routing": {
+    "level": "NONE",
+    "message": "",
+    "exception": false
+   },
+   "flags": [
+    {
+     "level": "INFO",
+     "field": "SPF",
+     "message": "No SPF result is available in this EML export"
+    },
+    {
+     "level": "INFO",
+     "field": "DKIM",
+     "message": "No DKIM signature is available in this EML export"
+    },
+    {
+     "level": "INFO",
+     "field": "DMARC",
+     "message": "No DMARC result is available in this EML export"
+    },
+    {
+     "level": "HIGH",
+     "field": "Reply thread",
+     "message": "The message presents itself as a reply and quotes a previous message attributed to the recipient or to the recipient organisation, but no threading header links it to an earlier message. The quoted history may be fabricated to imitate an existing conversation."
+    }
+   ],
+   "phi4_analysis": {
+    "status": "ok",
+    "analysis": {
+     "final_verdict": "phishing",
+     "content_risk": "benign",
+     "identity_risk": "uncertain",
+     "technical_risk": "malicious",
+     "requested_action": "informational",
+     "action_channel": "none",
+     "urgency_present": false,
+     "urgency_targets_risky_action": false,
+     "confidence": 0.5,
+     "ambiguity": "low",
+     "explanation": "Strong or corroborated phishing evidence was detected.",
+     "semantic_reason": "No semantic explanation returned.",
+     "ai_content_assessment": "benign",
+     "ai_content_rationale": "Ordinary message.",
+     "ai_content_evidence": "",
+     "ai_content_verification": {},
+     "content_summary": "Synthetic message.",
+     "content_summary_source": "legacy",
+     "content_summary_parts": [],
+     "intent_evidence": "",
+     "intent_signals": [],
+     "signal_evidence": "",
+     "credential_type": "none",
+     "payment_method": "none",
+     "payment_asset": "",
+     "amount": "",
+     "payment_destination_change": false,
+     "payment_change_evidence": "",
+     "coercion": false,
+     "threat_type": "none",
+     "scam_type": "none",
+     "claimed_brand": "",
+     "evidence": {
+      "content": [
+       "no risky requested action was identified"
+      ],
+      "identity": [
+       "Sender authentication could not be independently verified; usable authentication results are unavailable"
+      ],
+      "technical": [
+       "the message imitates an existing conversation without belonging to one"
+      ]
+     },
+     "corroboration": {
+      "supports_decision": true,
+      "details": [
+       "Sender authentication could not be independently verified; usable authentication results are unavailable",
+       "the message imitates an existing conversation without belonging to one"
+      ],
+      "caveats": []
+     },
+     "semantic_extraction": {
+      "requested_action": "informational",
+      "action_channel": "none",
+      "asks_to_click_link": false,
+      "asks_to_open_attachment": false,
+      "asks_for_credentials": false,
+      "asks_for_sensitive_information": false,
+      "asks_for_payment": false,
+      "asks_to_verify_account": false,
+      "asks_to_claim_reward": false,
+      "financial_incentive_present": false,
+      "asks_to_change_account_settings": false,
+      "asks_to_bypass_procedure": false,
+      "urgency_present": false,
+      "urgency_targets_risky_action": false,
+      "impersonation_or_deception": false,
+      "financial_pretext_present": false,
+      "threat_or_consequence_present": false,
+      "semantic_signals": [],
+      "signal_evidence": "",
+      "credential_type": "none",
+      "payment_method": "none",
+      "payment_asset": "",
+      "amount": "",
+      "payment_destination_change": false,
+      "payment_change_evidence": "",
+      "security_alert": false,
+      "requested_external_action": false,
+      "identity_deception": false,
+      "security_lure_evidence": "",
+      "coercion": false,
+      "threat_type": "none",
+      "scam_type": "none",
+      "structured_extortion": false,
+      "claimed_brand": "",
+      "claimed_role": "unclear",
+      "model_content_risk": "benign",
+      "model_risk_evidence": "",
+      "model_risk_rationale": "Ordinary message.",
+      "risk_verification": {},
+      "confidence": 0.5,
+      "confidence_provided": false,
+      "ambiguity": "low",
+      "reason": "No semantic explanation returned.",
+      "evidence_phrase": "",
+      "intent_verifier_used": false,
+      "primary_requested_action": "",
+      "content_summary": "Synthetic message.",
+      "content_summary_source": "legacy"
+     },
+     "policy_version": "semantic-policy-v50-template-summary"
+    }
+   }
+  }
+ },
+ {
+  "name": "svg_script",
+  "python_verdict": "phishing",
+  "report": {
+   "delivered_to": null,
+   "to": "mario.rossi@azienda.it",
+   "from_": "Voice <vm@voice.example>",
+   "from_registered_domain": "voice.example",
+   "subject": "Messaggio vocale",
+   "threading_headers": {},
+   "date": "Mon, 26 Oct 2026 10:00:00 +0000",
+   "message_id": "<synthetic@fishstop.invalid>",
+   "importance": null,
+   "mime_version": "1.0",
+   "content_type": "multipart/mixed; boundary=\"===============3909210405036691571==\"",
+   "bulk_sender_signals": [],
+   "bulk_sender_signal_count": 0,
+   "is_bulk_sender": false,
+   "return_path": null,
+   "errors_to": null,
+   "reply_to": null,
+   "from_mailbox_candidates": [
+    "vm@voice.example"
+   ],
+   "from_ambiguous": false,
+   "reply_to_mismatch_legitimate": false,
+   "reply_to_mismatch": false,
+   "return_path_domain_mismatch": false,
+   "return_path_domain": "",
+   "display_name_spoofing": null,
+   "x_google_smtp_source": null,
+   "x_received": null,
+   "arc_seal": null,
+   "arc_message_signature": null,
+   "arc_authentication_results": "",
+   "received_hops": [],
+   "closest_to_recipient": {},
+   "injection_server": {},
+   "closest_to_sender": {},
+   "injection_sender_ip": null,
+   "received_spf_raw": "",
+   "received_spf_results": {},
+   "authentication_results_raw": "",
+   "auth_results": {},
+   "arc_auth_results": {},
+   "effective_auth_results": {},
+   "authentication_checkpoints": [],
+   "injection_ip_spf_authorized": false,
+   "spf_sender_aligned": false,
+   "dkim_signature_present": false,
+   "dkim_signature_raw": "",
+   "body": "Ascolta l'allegato.",
+   "body_html_safe": null,
+   "body_html_clean": "",
+   "body_plain_clean": "Ascolta l'allegato.",
+   "body_plain_original": "Ascolta l'allegato.\n",
+   "body_text_normalization": {
+    "plain": {
+     "formatting_controls_removed": 0,
+     "joiner_padding_runs_removed": 0,
+     "before_characters": 19,
+     "after_characters": 19
+    },
+    "html": {
+     "formatting_controls_removed": 0,
+     "joiner_padding_runs_removed": 0,
+     "before_characters": 0,
+     "after_characters": 0
+    }
+   },
+   "html_form_analysis": {
+    "status": "not_applicable",
+    "form_count": 0,
+    "forms": [],
+    "message": "No HTML body is available."
+   },
+   "html_copy_deception": {
+    "status": "not_applicable",
+    "finding_count": 0,
+    "message": "No HTML body is available for copy-deception analysis.",
+    "findings": []
+   },
+   "body_clean": "Ascolta l'allegato.",
+   "forwarded_identity": {},
+   "body_source": "text/plain",
+   "html_strip_applied": false,
+   "body_plain_tracking_url_count": 0,
+   "body_selected_html_for_ai": false,
+   "body_plain_noise_removed_lines": 0,
+   "body_plain_noise_removed_chars": 0,
+   "attachments": [
+    {
+     "filename": "VM.svg",
+     "content_type": "image/svg+xml",
+     "encoding": "base64",
+     "magic_bytes_hex": "3C73766720786D6C6E733D2268747470",
+     "magic_detected_format": null,
+     "extension_from_filename": "svg",
+     "extension_match": true,
+     "anomaly": "A script navigates the viewer to another page when the document is opened.; The SVG image contains scripts or embedded HTML; images received by email should not contain active content.; Static SVG inspection: 0 forms, 1 scripts; No HTML forms were found.; High-risk attachment: A script navigates the viewer to another page when the document is opened.; The SVG image contains scripts or embedded HTML; images received by email should not contain active content.; Static SVG inspection: 0 forms, 1 scripts; No HTML forms were found.",
+     "hash_md5": "70edc6603cedcc6d3b94293cc6188e0a",
+     "hash_sha1": "06ec4f9972150330782549e5e095d58286dcb596",
+     "hash_sha256": "4d810f173f4f850b2d5000af3eb271c1ec6d3eff2a9b5b1c1dbd954c88547805",
+     "size_bytes": 95,
+     "attachment_security": {
+      "risk_level": "high",
+      "findings": [
+       {
+        "key": "html_script_redirect",
+        "severity": "high",
+        "label": "A script navigates the viewer to another page when the document is opened.",
+        "evidence": "location="
+       },
+       {
+        "key": "svg_active_content",
+        "severity": "high",
+        "label": "The SVG image contains scripts or embedded HTML; images received by email should not contain active content.",
+        "evidence": ""
+       }
+      ],
+      "summary": "A script navigates the viewer to another page when the document is opened.; The SVG image contains scripts or embedded HTML; images received by email should not contain active content.; Static SVG inspection: 0 forms, 1 scripts; No HTML forms were found."
+     },
+     "pdf_security": null,
+     "archive_security": null,
+     "office_security": null,
+     "embedded_urls": [],
+     "html_security": {
+      "status": "complete",
+      "analysis_complete": true,
+      "risk_level": "high",
+      "forms": {
+       "status": "clean",
+       "form_count": 0,
+       "forms": [],
+       "message": "No HTML forms were found."
+      },
+      "script_count": 1,
+      "credential_field_count": 0,
+      "credential_fields": [],
+      "unassociated_sensitive_field_count": 0,
+      "findings": [
+       {
+        "key": "html_script_redirect",
+        "severity": "high",
+        "label": "A script navigates the viewer to another page when the document is opened.",
+        "evidence": "location="
+       },
+       {
+        "key": "svg_active_content",
+        "severity": "high",
+        "label": "The SVG image contains scripts or embedded HTML; images received by email should not contain active content.",
+        "evidence": ""
+       }
+      ],
+      "urls": [],
+      "text": "",
+      "summary": "A script navigates the viewer to another page when the document is opened.; The SVG image contains scripts or embedded HTML; images received by email should not contain active content.; Static SVG inspection: 0 forms, 1 scripts; No HTML forms were found."
+     },
+     "inspection": {
+      "status": "complete",
+      "analysis_complete": true,
+      "type_checks_complete": true,
+      "content_inspected": true,
+      "summary": "Supported local checks completed."
+     },
+     "content_disposition": "attachment",
+     "content_id": "",
+     "mime_role": "attachment",
+     "actionable": true
+    }
+   ],
+   "body_ai": "Ascolta l'allegato.",
+   "body_for_identity": "Ascolta l'allegato.",
+   "body_context": "normal",
+   "body_ai_removed_quoted_lines": 0,
+   "body_ai_removed_header_lines": 0,
+   "body_ai_removed_tail_lines": 0,
+   "body_clean_full": "Ascolta l'allegato.",
+   "body_for_intent": "Ascolta l'allegato.",
+   "body_alternatives_divergent": false,
+   "ai_text_compaction": {
+    "body": {
+     "duplicate_blocks": 0,
+     "duplicate_characters": 0,
+     "before_characters": 19,
+     "after_characters": 19
+    },
+    "identity": {
+     "duplicate_blocks": 0,
+     "duplicate_characters": 0,
+     "before_characters": 19,
+     "after_characters": 19
+    },
+    "mime_body": {},
+    "mime_identity": {},
+    "method": "exact_repeated_blocks_and_mime_overlap"
+   },
+   "body_extracted": "Ascolta l'allegato.",
+   "body_for_ai": "Ascolta l'allegato.",
+   "body_analysis_limits": {
+    "decoded_source_characters": 20,
+    "inspected_source_characters": 20,
+    "source_character_limit": 2000000,
+    "source_part_character_limit": 1000000,
+    "source_truncated": false,
+    "useful_characters_before_limit": 19,
+    "ai_character_limit": 120000,
+    "ai_text_truncated": false
+   },
+   "ai_analysis_supported": true,
+   "ai_analysis_limit_message": "",
+   "links": [],
+   "calendar_invites": [],
+   "calendar_alerts": [],
+   "lookalike_alerts": [],
+   "sender_lookalike_alerts": [],
+   "display_mismatch_alerts": [],
+   "link_hosting_alerts": [],
+   "recipient_link_alerts": [],
+   "unsafe_scheme_links": [],
+   "reply_threading": {
+    "level": "NONE",
+    "message": "",
+    "reply_prefix": "",
+    "threading_headers": [],
+    "quoted_messages": 0,
+    "quoted_from_recipient": false
+   },
+   "payment_details": {
+    "body_ibans": [],
+    "quoted_ibans": [],
+    "attachment_ibans": [],
+    "change_phrase": "",
+    "sender_country": "",
+    "alerts": []
+   },
+   "link_context_alerts": [],
+   "reply_to_routing": {
+    "level": "NONE",
+    "message": "",
+    "exception": false
+   },
+   "flags": [
+    {
+     "level": "INFO",
+     "field": "SPF",
+     "message": "No SPF result is available in this EML export"
+    },
+    {
+     "level": "INFO",
+     "field": "DKIM",
+     "message": "No DKIM signature is available in this EML export"
+    },
+    {
+     "level": "INFO",
+     "field": "DMARC",
+     "message": "No DMARC result is available in this EML export"
+    },
+    {
+     "level": "HIGH",
+     "field": "Attachment",
+     "message": "'VM.svg': A script navigates the viewer to another page when the document is opened.; The SVG image contains scripts or embedded HTML; images received by email should not contain active content.; Static SVG inspection: 0 forms, 1 scripts; No HTML forms were found.; High-risk attachment: A script navigates the viewer to another page when the document is opened.; The SVG image contains scripts or embedded HTML; images received by email should not contain active content.; Static SVG inspection: 0 forms, 1 scripts; No HTML forms were found."
+    },
+    {
+     "level": "INFO",
+     "field": "Attachment",
+     "message": "'VM.svg': detected file type: unknown"
+    }
+   ],
+   "phi4_analysis": {
+    "status": "ok",
+    "analysis": {
+     "final_verdict": "phishing",
+     "content_risk": "benign",
+     "identity_risk": "uncertain",
+     "technical_risk": "malicious",
+     "requested_action": "open_attachment",
+     "action_channel": "supplied_attachment",
+     "urgency_present": false,
+     "urgency_targets_risky_action": false,
+     "confidence": 0.5,
+     "ambiguity": "low",
+     "explanation": "Strong or corroborated phishing evidence was detected.",
+     "semantic_reason": "Ascolta",
+     "ai_content_assessment": "benign",
+     "ai_content_rationale": "Ordinary message.",
+     "ai_content_evidence": "",
+     "ai_content_verification": {},
+     "content_summary": "Synthetic message.",
+     "content_summary_source": "legacy",
+     "content_summary_parts": [],
+     "intent_evidence": "Ascolta",
+     "intent_signals": [],
+     "signal_evidence": "",
+     "credential_type": "none",
+     "payment_method": "none",
+     "payment_asset": "",
+     "amount": "",
+     "payment_destination_change": false,
+     "payment_change_evidence": "",
+     "coercion": false,
+     "threat_type": "none",
+     "scam_type": "none",
+     "claimed_brand": "",
+     "evidence": {
+      "content": [
+       "no risky requested action was identified"
+      ],
+      "identity": [
+       "Sender authentication could not be independently verified; usable authentication results are unavailable"
+      ],
+      "technical": [
+       "an HTML or SVG attachment contains a credential form or an automatic redirect, obfuscated or file-smuggling script"
+      ]
+     },
+     "corroboration": {
+      "supports_decision": true,
+      "details": [
+       "Sender authentication could not be independently verified; usable authentication results are unavailable",
+       "an HTML or SVG attachment contains a credential form or an automatic redirect, obfuscated or file-smuggling script"
+      ],
+      "caveats": []
+     },
+     "semantic_extraction": {
+      "requested_action": "open_attachment",
+      "action_channel": "supplied_attachment",
+      "asks_to_click_link": false,
+      "asks_to_open_attachment": true,
+      "asks_for_credentials": false,
+      "asks_for_sensitive_information": false,
+      "asks_for_payment": false,
+      "asks_to_verify_account": false,
+      "asks_to_claim_reward": false,
+      "financial_incentive_present": false,
+      "asks_to_change_account_settings": false,
+      "asks_to_bypass_procedure": false,
+      "urgency_present": false,
+      "urgency_targets_risky_action": false,
+      "impersonation_or_deception": false,
+      "financial_pretext_present": false,
+      "threat_or_consequence_present": false,
+      "semantic_signals": [],
+      "signal_evidence": "",
+      "credential_type": "none",
+      "payment_method": "none",
+      "payment_asset": "",
+      "amount": "",
+      "payment_destination_change": false,
+      "payment_change_evidence": "",
+      "security_alert": false,
+      "requested_external_action": false,
+      "identity_deception": false,
+      "security_lure_evidence": "",
+      "coercion": false,
+      "threat_type": "none",
+      "scam_type": "none",
+      "structured_extortion": false,
+      "claimed_brand": "",
+      "claimed_role": "unclear",
+      "model_content_risk": "benign",
+      "model_risk_evidence": "",
+      "model_risk_rationale": "Ordinary message.",
+      "risk_verification": {},
+      "confidence": 0.5,
+      "confidence_provided": false,
+      "ambiguity": "low",
+      "reason": "Ascolta",
+      "evidence_phrase": "Ascolta",
+      "intent_verifier_used": false,
+      "primary_requested_action": "",
+      "content_summary": "Synthetic message.",
+      "content_summary_source": "legacy"
+     },
+     "policy_version": "semantic-policy-v50-template-summary"
+    }
+   }
+  }
+ },
+ {
+  "name": "executable_attachment",
+  "python_verdict": "phishing",
+  "report": {
+   "delivered_to": null,
+   "to": "mario.rossi@azienda.it",
+   "from_": "Fornitore <info@fornitore.example>",
+   "from_registered_domain": "fornitore.example",
+   "subject": "Ordine",
+   "threading_headers": {},
+   "date": "Mon, 26 Oct 2026 10:00:00 +0000",
+   "message_id": "<synthetic@fishstop.invalid>",
+   "importance": null,
+   "mime_version": "1.0",
+   "content_type": "multipart/mixed; boundary=\"===============4048892121946633741==\"",
+   "bulk_sender_signals": [],
+   "bulk_sender_signal_count": 0,
+   "is_bulk_sender": false,
+   "return_path": null,
+   "errors_to": null,
+   "reply_to": null,
+   "from_mailbox_candidates": [
+    "info@fornitore.example"
+   ],
+   "from_ambiguous": false,
+   "reply_to_mismatch_legitimate": false,
+   "reply_to_mismatch": false,
+   "return_path_domain_mismatch": false,
+   "return_path_domain": "",
+   "display_name_spoofing": null,
+   "x_google_smtp_source": null,
+   "x_received": null,
+   "arc_seal": null,
+   "arc_message_signature": null,
+   "arc_authentication_results": "",
+   "received_hops": [],
+   "closest_to_recipient": {},
+   "injection_server": {},
+   "closest_to_sender": {},
+   "injection_sender_ip": null,
+   "received_spf_raw": "",
+   "received_spf_results": {},
+   "authentication_results_raw": "",
+   "auth_results": {},
+   "arc_auth_results": {},
+   "effective_auth_results": {},
+   "authentication_checkpoints": [],
+   "injection_ip_spf_authorized": false,
+   "spf_sender_aligned": false,
+   "dkim_signature_present": false,
+   "dkim_signature_raw": "",
+   "body": "In allegato.",
+   "body_html_safe": null,
+   "body_html_clean": "",
+   "body_plain_clean": "In allegato.",
+   "body_plain_original": "In allegato.\n",
+   "body_text_normalization": {
+    "plain": {
+     "formatting_controls_removed": 0,
+     "joiner_padding_runs_removed": 0,
+     "before_characters": 12,
+     "after_characters": 12
+    },
+    "html": {
+     "formatting_controls_removed": 0,
+     "joiner_padding_runs_removed": 0,
+     "before_characters": 0,
+     "after_characters": 0
+    }
+   },
+   "html_form_analysis": {
+    "status": "not_applicable",
+    "form_count": 0,
+    "forms": [],
+    "message": "No HTML body is available."
+   },
+   "html_copy_deception": {
+    "status": "not_applicable",
+    "finding_count": 0,
+    "message": "No HTML body is available for copy-deception analysis.",
+    "findings": []
+   },
+   "body_clean": "In allegato.",
+   "forwarded_identity": {},
+   "body_source": "text/plain",
+   "html_strip_applied": false,
+   "body_plain_tracking_url_count": 0,
+   "body_selected_html_for_ai": false,
+   "body_plain_noise_removed_lines": 0,
+   "body_plain_noise_removed_chars": 0,
+   "attachments": [
+    {
+     "filename": "Ordine.exe",
+     "content_type": "application/octet-stream",
+     "encoding": "base64",
+     "magic_bytes_hex": "4D5A0000000000000000000000000000",
+     "magic_detected_format": "exe",
+     "extension_from_filename": "exe",
+     "extension_match": true,
+     "anomaly": "High-risk attachment: potentially executable or active attachment extension '.exe'; magic bytes identify potentially executable content 'exe'",
+     "hash_md5": "16b9c6dc93f9997f262905b0efbff21a",
+     "hash_sha1": "58b8e50e1ee468db5ace6ff1f0f439155303c9a3",
+     "hash_sha256": "dcb8daf9f7b51b4b6b1e63bb86347ec9bb8b08198e03c4c890b6e3ac7144f8ea",
+     "size_bytes": 202,
+     "attachment_security": {
+      "risk_level": "high",
+      "findings": [
+       {
+        "key": "dangerous_extension",
+        "severity": "high",
+        "label": "potentially executable or active attachment extension '.exe'",
+        "evidence": "exe"
+       },
+       {
+        "key": "dangerous_magic_bytes",
+        "severity": "high",
+        "label": "magic bytes identify potentially executable content 'exe'",
+        "evidence": "exe"
+       }
+      ],
+      "summary": "potentially executable or active attachment extension '.exe'; magic bytes identify potentially executable content 'exe'"
+     },
+     "pdf_security": null,
+     "archive_security": null,
+     "office_security": null,
+     "embedded_urls": [],
+     "inspection": {
+      "status": "type_only",
+      "analysis_complete": false,
+      "type_checks_complete": true,
+      "content_inspected": false,
+      "summary": "File type checks only; no content scanner is available for this format."
+     },
+     "content_disposition": "attachment",
+     "content_id": "",
+     "mime_role": "attachment",
+     "actionable": true
+    }
+   ],
+   "body_ai": "In allegato.",
+   "body_for_identity": "In allegato.",
+   "body_context": "normal",
+   "body_ai_removed_quoted_lines": 0,
+   "body_ai_removed_header_lines": 0,
+   "body_ai_removed_tail_lines": 0,
+   "body_clean_full": "In allegato.",
+   "body_for_intent": "In allegato.",
+   "body_alternatives_divergent": false,
+   "ai_text_compaction": {
+    "body": {
+     "duplicate_blocks": 0,
+     "duplicate_characters": 0,
+     "before_characters": 12,
+     "after_characters": 12
+    },
+    "identity": {
+     "duplicate_blocks": 0,
+     "duplicate_characters": 0,
+     "before_characters": 12,
+     "after_characters": 12
+    },
+    "mime_body": {},
+    "mime_identity": {},
+    "method": "exact_repeated_blocks_and_mime_overlap"
+   },
+   "body_extracted": "In allegato.",
+   "body_for_ai": "In allegato.",
+   "body_analysis_limits": {
+    "decoded_source_characters": 13,
+    "inspected_source_characters": 13,
+    "source_character_limit": 2000000,
+    "source_part_character_limit": 1000000,
+    "source_truncated": false,
+    "useful_characters_before_limit": 12,
+    "ai_character_limit": 120000,
+    "ai_text_truncated": false
+   },
+   "ai_analysis_supported": true,
+   "ai_analysis_limit_message": "",
+   "links": [],
+   "calendar_invites": [],
+   "calendar_alerts": [],
+   "lookalike_alerts": [],
+   "sender_lookalike_alerts": [],
+   "display_mismatch_alerts": [],
+   "link_hosting_alerts": [],
+   "recipient_link_alerts": [],
+   "unsafe_scheme_links": [],
+   "reply_threading": {
+    "level": "NONE",
+    "message": "",
+    "reply_prefix": "",
+    "threading_headers": [],
+    "quoted_messages": 0,
+    "quoted_from_recipient": false
+   },
+   "payment_details": {
+    "body_ibans": [],
+    "quoted_ibans": [],
+    "attachment_ibans": [],
+    "change_phrase": "",
+    "sender_country": "",
+    "alerts": []
+   },
+   "link_context_alerts": [],
+   "reply_to_routing": {
+    "level": "NONE",
+    "message": "",
+    "exception": false
+   },
+   "flags": [
+    {
+     "level": "INFO",
+     "field": "SPF",
+     "message": "No SPF result is available in this EML export"
+    },
+    {
+     "level": "INFO",
+     "field": "DKIM",
+     "message": "No DKIM signature is available in this EML export"
+    },
+    {
+     "level": "INFO",
+     "field": "DMARC",
+     "message": "No DMARC result is available in this EML export"
+    },
+    {
+     "level": "HIGH",
+     "field": "Attachment",
+     "message": "'Ordine.exe': High-risk attachment: potentially executable or active attachment extension '.exe'; magic bytes identify potentially executable content 'exe'"
+    },
+    {
+     "level": "INFO",
+     "field": "Attachment",
+     "message": "'Ordine.exe': detected file type: exe"
+    }
+   ],
+   "phi4_analysis": {
+    "status": "ok",
+    "analysis": {
+     "final_verdict": "phishing",
+     "content_risk": "benign",
+     "identity_risk": "uncertain",
+     "technical_risk": "malicious",
+     "requested_action": "informational",
+     "action_channel": "none",
+     "urgency_present": false,
+     "urgency_targets_risky_action": false,
+     "confidence": 0.5,
+     "ambiguity": "low",
+     "explanation": "Strong or corroborated phishing evidence was detected.",
+     "semantic_reason": "No semantic explanation returned.",
+     "ai_content_assessment": "benign",
+     "ai_content_rationale": "Ordinary message.",
+     "ai_content_evidence": "",
+     "ai_content_verification": {},
+     "content_summary": "Synthetic message.",
+     "content_summary_source": "legacy",
+     "content_summary_parts": [],
+     "intent_evidence": "",
+     "intent_signals": [],
+     "signal_evidence": "",
+     "credential_type": "none",
+     "payment_method": "none",
+     "payment_asset": "",
+     "amount": "",
+     "payment_destination_change": false,
+     "payment_change_evidence": "",
+     "coercion": false,
+     "threat_type": "none",
+     "scam_type": "none",
+     "claimed_brand": "",
+     "evidence": {
+      "content": [
+       "no risky requested action was identified"
+      ],
+      "identity": [
+       "Sender authentication could not be independently verified; usable authentication results are unavailable"
+      ],
+      "technical": [
+       "a high-severity static check requires blocking the message: Attachment"
+      ]
+     },
+     "corroboration": {
+      "supports_decision": true,
+      "details": [
+       "Sender authentication could not be independently verified; usable authentication results are unavailable",
+       "a high-severity static check requires blocking the message: Attachment"
+      ],
+      "caveats": []
+     },
+     "semantic_extraction": {
+      "requested_action": "informational",
+      "action_channel": "none",
+      "asks_to_click_link": false,
+      "asks_to_open_attachment": false,
+      "asks_for_credentials": false,
+      "asks_for_sensitive_information": false,
+      "asks_for_payment": false,
+      "asks_to_verify_account": false,
+      "asks_to_claim_reward": false,
+      "financial_incentive_present": false,
+      "asks_to_change_account_settings": false,
+      "asks_to_bypass_procedure": false,
+      "urgency_present": false,
+      "urgency_targets_risky_action": false,
+      "impersonation_or_deception": false,
+      "financial_pretext_present": false,
+      "threat_or_consequence_present": false,
+      "semantic_signals": [],
+      "signal_evidence": "",
+      "credential_type": "none",
+      "payment_method": "none",
+      "payment_asset": "",
+      "amount": "",
+      "payment_destination_change": false,
+      "payment_change_evidence": "",
+      "security_alert": false,
+      "requested_external_action": false,
+      "identity_deception": false,
+      "security_lure_evidence": "",
+      "coercion": false,
+      "threat_type": "none",
+      "scam_type": "none",
+      "structured_extortion": false,
+      "claimed_brand": "",
+      "claimed_role": "unclear",
+      "model_content_risk": "benign",
+      "model_risk_evidence": "",
+      "model_risk_rationale": "Ordinary message.",
+      "risk_verification": {},
+      "confidence": 0.5,
+      "confidence_provided": false,
+      "ambiguity": "low",
+      "reason": "No semantic explanation returned.",
+      "evidence_phrase": "",
+      "intent_verifier_used": false,
+      "primary_requested_action": "",
+      "content_summary": "Synthetic message.",
+      "content_summary_source": "legacy"
+     },
+     "policy_version": "semantic-policy-v50-template-summary"
+    }
+   }
+  }
+ },
+ {
+  "name": "sender_lookalike",
+  "python_verdict": "phishing",
+  "report": {
+   "delivered_to": null,
+   "to": "mario.rossi@azienda.it",
+   "from_": "Fatture <amministrazione@paypa1.com>",
+   "from_registered_domain": "paypa1.com",
+   "subject": "IBAN",
+   "threading_headers": {},
+   "date": "Mon, 26 Oct 2026 10:00:00 +0000",
+   "message_id": "<synthetic@fishstop.invalid>",
+   "importance": null,
+   "mime_version": "1.0",
+   "content_type": "text/plain; charset=\"utf-8\"",
+   "bulk_sender_signals": [],
+   "bulk_sender_signal_count": 0,
+   "is_bulk_sender": false,
+   "return_path": null,
+   "errors_to": null,
+   "reply_to": null,
+   "from_mailbox_candidates": [
+    "amministrazione@paypa1.com"
+   ],
+   "from_ambiguous": false,
+   "reply_to_mismatch_legitimate": false,
+   "reply_to_mismatch": false,
+   "return_path_domain_mismatch": false,
+   "return_path_domain": "",
+   "display_name_spoofing": null,
+   "x_google_smtp_source": null,
+   "x_received": null,
+   "arc_seal": null,
+   "arc_message_signature": null,
+   "arc_authentication_results": "",
+   "received_hops": [],
+   "closest_to_recipient": {},
+   "injection_server": {},
+   "closest_to_sender": {},
+   "injection_sender_ip": null,
+   "received_spf_raw": "",
+   "received_spf_results": {},
+   "authentication_results_raw": "",
+   "auth_results": {},
+   "arc_auth_results": {},
+   "effective_auth_results": {},
+   "authentication_checkpoints": [],
+   "injection_ip_spf_authorized": false,
+   "spf_sender_aligned": false,
+   "dkim_signature_present": false,
+   "dkim_signature_raw": "",
+   "body": "Nuove coordinate.",
+   "body_html_safe": null,
+   "body_html_clean": "",
+   "body_plain_clean": "Nuove coordinate.",
+   "body_plain_original": "Nuove coordinate.\n",
+   "body_text_normalization": {
+    "plain": {
+     "formatting_controls_removed": 0,
+     "joiner_padding_runs_removed": 0,
+     "before_characters": 17,
+     "after_characters": 17
+    },
+    "html": {
+     "formatting_controls_removed": 0,
+     "joiner_padding_runs_removed": 0,
+     "before_characters": 0,
+     "after_characters": 0
+    }
+   },
+   "html_form_analysis": {
+    "status": "not_applicable",
+    "form_count": 0,
+    "forms": [],
+    "message": "No HTML body is available."
+   },
+   "html_copy_deception": {
+    "status": "not_applicable",
+    "finding_count": 0,
+    "message": "No HTML body is available for copy-deception analysis.",
+    "findings": []
+   },
+   "body_clean": "Nuove coordinate.",
+   "forwarded_identity": {},
+   "body_source": "text/plain",
+   "html_strip_applied": false,
+   "body_plain_tracking_url_count": 0,
+   "body_selected_html_for_ai": false,
+   "body_plain_noise_removed_lines": 0,
+   "body_plain_noise_removed_chars": 0,
+   "attachments": [],
+   "body_ai": "Nuove coordinate.",
+   "body_for_identity": "Nuove coordinate.",
+   "body_context": "normal",
+   "body_ai_removed_quoted_lines": 0,
+   "body_ai_removed_header_lines": 0,
+   "body_ai_removed_tail_lines": 0,
+   "body_clean_full": "Nuove coordinate.",
+   "body_for_intent": "Nuove coordinate.",
+   "body_alternatives_divergent": false,
+   "ai_text_compaction": {
+    "body": {
+     "duplicate_blocks": 0,
+     "duplicate_characters": 0,
+     "before_characters": 17,
+     "after_characters": 17
+    },
+    "identity": {
+     "duplicate_blocks": 0,
+     "duplicate_characters": 0,
+     "before_characters": 17,
+     "after_characters": 17
+    },
+    "mime_body": {},
+    "mime_identity": {},
+    "method": "exact_repeated_blocks_and_mime_overlap"
+   },
+   "body_extracted": "Nuove coordinate.",
+   "body_for_ai": "Nuove coordinate.",
+   "body_analysis_limits": {
+    "decoded_source_characters": 18,
+    "inspected_source_characters": 18,
+    "source_character_limit": 2000000,
+    "source_part_character_limit": 1000000,
+    "source_truncated": false,
+    "useful_characters_before_limit": 17,
+    "ai_character_limit": 120000,
+    "ai_text_truncated": false
+   },
+   "ai_analysis_supported": true,
+   "ai_analysis_limit_message": "",
+   "links": [],
+   "calendar_invites": [],
+   "calendar_alerts": [],
+   "lookalike_alerts": [],
+   "sender_lookalike_alerts": [
+    {
+     "url": "mailto:amministrazione@paypa1.com",
+     "host": "paypa1.com",
+     "registered_domain": "paypa1.com",
+     "matched_brand": "paypal.com",
+     "technique": "typosquatting",
+     "detail": "Character substitution in `paypa1` reproduces `paypal` (brand: paypal.com)",
+     "edit_distance": 1,
+     "level": "HIGH",
+     "field": "From",
+     "address": "amministrazione@paypa1.com",
+     "organization_domain": false
+    }
+   ],
+   "display_mismatch_alerts": [],
+   "link_hosting_alerts": [],
+   "recipient_link_alerts": [],
+   "unsafe_scheme_links": [],
+   "reply_threading": {
+    "level": "NONE",
+    "message": "",
+    "reply_prefix": "",
+    "threading_headers": [],
+    "quoted_messages": 0,
+    "quoted_from_recipient": false
+   },
+   "payment_details": {
+    "body_ibans": [],
+    "quoted_ibans": [],
+    "attachment_ibans": [],
+    "change_phrase": "Nuove coordinate",
+    "sender_country": "",
+    "alerts": []
+   },
+   "link_context_alerts": [],
+   "reply_to_routing": {
+    "level": "NONE",
+    "message": "",
+    "exception": false
+   },
+   "flags": [
+    {
+     "level": "INFO",
+     "field": "SPF",
+     "message": "No SPF result is available in this EML export"
+    },
+    {
+     "level": "INFO",
+     "field": "DKIM",
+     "message": "No DKIM signature is available in this EML export"
+    },
+    {
+     "level": "INFO",
+     "field": "DMARC",
+     "message": "No DMARC result is available in this EML export"
+    },
+    {
+     "level": "HIGH",
+     "field": "Sender lookalike",
+     "message": "The From domain `paypa1.com` imitates `paypal.com`. Character substitution in `paypa1` reproduces `paypal` (brand: paypal.com)"
+    }
+   ],
+   "phi4_analysis": {
+    "status": "ok",
+    "analysis": {
+     "final_verdict": "phishing",
+     "content_risk": "benign",
+     "identity_risk": "uncertain",
+     "technical_risk": "malicious",
+     "requested_action": "informational",
+     "action_channel": "none",
+     "urgency_present": false,
+     "urgency_targets_risky_action": false,
+     "confidence": 0.5,
+     "ambiguity": "low",
+     "explanation": "Strong or corroborated phishing evidence was detected.",
+     "semantic_reason": "No semantic explanation returned.",
+     "ai_content_assessment": "benign",
+     "ai_content_rationale": "Ordinary message.",
+     "ai_content_evidence": "",
+     "ai_content_verification": {},
+     "content_summary": "Synthetic message.",
+     "content_summary_source": "legacy",
+     "content_summary_parts": [],
+     "intent_evidence": "",
+     "intent_signals": [],
+     "signal_evidence": "",
+     "credential_type": "none",
+     "payment_method": "none",
+     "payment_asset": "",
+     "amount": "",
+     "payment_destination_change": false,
+     "payment_change_evidence": "",
+     "coercion": false,
+     "threat_type": "none",
+     "scam_type": "none",
+     "claimed_brand": "",
+     "evidence": {
+      "content": [
+       "no risky requested action was identified"
+      ],
+      "identity": [
+       "Sender authentication could not be independently verified; usable authentication results are unavailable"
+      ],
+      "technical": [
+       "the sender domain imitates a protected brand or the recipient organisation"
+      ]
+     },
+     "corroboration": {
+      "supports_decision": true,
+      "details": [
+       "Sender authentication could not be independently verified; usable authentication results are unavailable",
+       "the sender domain imitates a protected brand or the recipient organisation"
+      ],
+      "caveats": []
+     },
+     "semantic_extraction": {
+      "requested_action": "informational",
+      "action_channel": "none",
+      "asks_to_click_link": false,
+      "asks_to_open_attachment": false,
+      "asks_for_credentials": false,
+      "asks_for_sensitive_information": false,
+      "asks_for_payment": false,
+      "asks_to_verify_account": false,
+      "asks_to_claim_reward": false,
+      "financial_incentive_present": false,
+      "asks_to_change_account_settings": false,
+      "asks_to_bypass_procedure": false,
+      "urgency_present": false,
+      "urgency_targets_risky_action": false,
+      "impersonation_or_deception": false,
+      "financial_pretext_present": false,
+      "threat_or_consequence_present": false,
+      "semantic_signals": [],
+      "signal_evidence": "",
+      "credential_type": "none",
+      "payment_method": "none",
+      "payment_asset": "",
+      "amount": "",
+      "payment_destination_change": false,
+      "payment_change_evidence": "",
+      "security_alert": false,
+      "requested_external_action": false,
+      "identity_deception": false,
+      "security_lure_evidence": "",
+      "coercion": false,
+      "threat_type": "none",
+      "scam_type": "none",
+      "structured_extortion": false,
+      "claimed_brand": "",
+      "claimed_role": "unclear",
+      "model_content_risk": "benign",
+      "model_risk_evidence": "",
+      "model_risk_rationale": "Ordinary message.",
+      "risk_verification": {},
+      "confidence": 0.5,
+      "confidence_provided": false,
+      "ambiguity": "low",
+      "reason": "No semantic explanation returned.",
+      "evidence_phrase": "",
+      "intent_verifier_used": false,
+      "primary_requested_action": "",
+      "content_summary": "Synthetic message.",
+      "content_summary_source": "legacy"
+     },
+     "policy_version": "semantic-policy-v50-template-summary"
+    }
+   }
+  }
+ },
+ {
+  "name": "ipfs_link",
+  "python_verdict": "review",
+  "report": {
+   "delivered_to": null,
+   "to": "mario.rossi@azienda.it",
+   "from_": "Docs <share@docs-share.example>",
+   "from_registered_domain": "docs-share.example",
+   "subject": "Documento condiviso",
+   "threading_headers": {},
+   "date": "Mon, 26 Oct 2026 10:00:00 +0000",
+   "message_id": "<synthetic@fishstop.invalid>",
+   "importance": null,
+   "mime_version": "1.0",
+   "content_type": "multipart/alternative; boundary=\"===============6315336658450813890==\"",
+   "bulk_sender_signals": [],
+   "bulk_sender_signal_count": 0,
+   "is_bulk_sender": false,
+   "return_path": null,
+   "errors_to": null,
+   "reply_to": null,
+   "from_mailbox_candidates": [
+    "share@docs-share.example"
+   ],
+   "from_ambiguous": false,
+   "reply_to_mismatch_legitimate": false,
+   "reply_to_mismatch": false,
+   "return_path_domain_mismatch": false,
+   "return_path_domain": "",
+   "display_name_spoofing": null,
+   "x_google_smtp_source": null,
+   "x_received": null,
+   "arc_seal": null,
+   "arc_message_signature": null,
+   "arc_authentication_results": "",
+   "received_hops": [],
+   "closest_to_recipient": {},
+   "injection_server": {},
+   "closest_to_sender": {},
+   "injection_sender_ip": null,
+   "received_spf_raw": "",
+   "received_spf_results": {},
+   "authentication_results_raw": "",
+   "auth_results": {},
+   "arc_auth_results": {},
+   "effective_auth_results": {},
+   "authentication_checkpoints": [],
+   "injection_ip_spf_authorized": false,
+   "spf_sender_aligned": false,
+   "dkim_signature_present": false,
+   "dkim_signature_raw": "",
+   "body": "See the HTML version.",
+   "body_html_safe": "<div data-fishstop-email-preview=\"true\"><a title=\"Link removed for safety: use the Links found in the email section.\">Apri</a>\n</div>",
+   "body_html_clean": "Apri",
+   "body_plain_clean": "See the HTML version.",
+   "body_plain_original": "See the HTML version.\n",
+   "body_text_normalization": {
+    "plain": {
+     "formatting_controls_removed": 0,
+     "joiner_padding_runs_removed": 0,
+     "before_characters": 21,
+     "after_characters": 21
+    },
+    "html": {
+     "formatting_controls_removed": 0,
+     "joiner_padding_runs_removed": 0,
+     "before_characters": 4,
+     "after_characters": 4
+    }
+   },
+   "html_form_analysis": {
+    "status": "clean",
+    "form_count": 0,
+    "forms": [],
+    "message": "No HTML forms were found."
+   },
+   "html_copy_deception": {
+    "status": "clean",
+    "finding_count": 0,
+    "message": "No HTML copy-deception pattern was detected.",
+    "findings": []
+   },
+   "body_clean": "See the HTML version.",
+   "forwarded_identity": {},
+   "body_source": "text/plain",
+   "html_strip_applied": true,
+   "body_plain_tracking_url_count": 0,
+   "body_selected_html_for_ai": false,
+   "body_plain_noise_removed_lines": 0,
+   "body_plain_noise_removed_chars": 0,
+   "attachments": [],
+   "body_ai": "See the HTML version.\n\n[HTML alternative]\nApri",
+   "body_for_identity": "See the HTML version.\n\n[HTML alternative]\nApri",
+   "body_context": "normal",
+   "body_ai_removed_quoted_lines": 0,
+   "body_ai_removed_header_lines": 0,
+   "body_ai_removed_tail_lines": 0,
+   "body_clean_full": "See the HTML version.",
+   "body_for_intent": "See the HTML version.\n\n[HTML alternative]\nApri",
+   "body_alternatives_divergent": true,
+   "ai_text_compaction": {
+    "body": {
+     "duplicate_blocks": 0,
+     "duplicate_characters": 0,
+     "before_characters": 46,
+     "after_characters": 46
+    },
+    "identity": {
+     "duplicate_blocks": 0,
+     "duplicate_characters": 0,
+     "before_characters": 46,
+     "after_characters": 46
+    },
+    "mime_body": {
+     "alternative_characters_omitted": 0,
+     "alternatives_differ": true
+    },
+    "mime_identity": {
+     "alternative_characters_omitted": 0,
+     "alternatives_differ": true
+    },
+    "method": "exact_repeated_blocks_and_mime_overlap"
+   },
+   "body_extracted": "See the HTML version.\n\n[HTML alternative]\nApri",
+   "body_for_ai": "See the HTML version.\n\n[HTML alternative]\nApri",
+   "body_analysis_limits": {
+    "decoded_source_characters": 129,
+    "inspected_source_characters": 129,
+    "source_character_limit": 2000000,
+    "source_part_character_limit": 1000000,
+    "source_truncated": false,
+    "useful_characters_before_limit": 46,
+    "ai_character_limit": 120000,
+    "ai_text_truncated": false
+   },
+   "ai_analysis_supported": true,
+   "ai_analysis_limit_message": "",
+   "links": [
+    {
+     "url": "https://ipfs.io/ipfs/bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi/x.html",
+     "display_text": "Apri",
+     "action_labels": [
+      "Apri"
+     ],
+     "display_url": "",
+     "display_host": "",
+     "display_mismatch": false,
+     "host": "ipfs.io",
+     "registered_domain": "ipfs.io",
+     "display_registered_domain": "",
+     "scheme": "https",
+     "source": "html_href",
+     "role": "body_action",
+     "actionable": true,
+     "html_call_to_action": false,
+     "resolved_display_destination": false,
+     "signature_tracking_redirect": false,
+     "is_ip": false,
+     "download_filename": "x.html",
+     "download_extension": "html",
+     "download_source": "path",
+     "dangerous_download": false,
+     "has_userinfo": false,
+     "has_credentials": false,
+     "nonstandard_port": false,
+     "port": null,
+     "nested_redirect_count": 0,
+     "redirect_targets": [],
+     "redirect_hosts": [],
+     "redirect_downloads": [],
+     "unicode_path_or_query": false,
+     "unicode_host": false,
+     "raw_at_sign": false
+    }
+   ],
+   "calendar_invites": [],
+   "calendar_alerts": [],
+   "lookalike_alerts": [],
+   "sender_lookalike_alerts": [],
+   "display_mismatch_alerts": [],
+   "link_hosting_alerts": [
+    {
+     "url": "https://ipfs.io/ipfs/bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi/x.html",
+     "host": "ipfs.io",
+     "kind": "ipfs",
+     "level": "MEDIUM",
+     "message": "The link `ipfs.io` uses an IPFS gateway, a hosting method frequently used for phishing pages."
+    }
+   ],
+   "recipient_link_alerts": [],
+   "unsafe_scheme_links": [],
+   "reply_threading": {
+    "level": "NONE",
+    "message": "",
+    "reply_prefix": "",
+    "threading_headers": [],
+    "quoted_messages": 0,
+    "quoted_from_recipient": false
+   },
+   "payment_details": {
+    "body_ibans": [],
+    "quoted_ibans": [],
+    "attachment_ibans": [],
+    "change_phrase": "",
+    "sender_country": "",
+    "alerts": []
+   },
+   "link_context_alerts": [],
+   "reply_to_routing": {
+    "level": "NONE",
+    "message": "",
+    "exception": false
+   },
+   "flags": [
+    {
+     "level": "INFO",
+     "field": "SPF",
+     "message": "No SPF result is available in this EML export"
+    },
+    {
+     "level": "INFO",
+     "field": "DKIM",
+     "message": "No DKIM signature is available in this EML export"
+    },
+    {
+     "level": "INFO",
+     "field": "DMARC",
+     "message": "No DMARC result is available in this EML export"
+    },
+    {
+     "level": "INFO",
+     "field": "Body",
+     "message": "Different versions of the message content were checked for inconsistencies."
+    },
+    {
+     "level": "MEDIUM",
+     "field": "Link hosting",
+     "message": "The link `ipfs.io` uses an IPFS gateway, a hosting method frequently used for phishing pages."
+    }
+   ],
+   "phi4_analysis": {
+    "status": "ok",
+    "analysis": {
+     "final_verdict": "review",
+     "content_risk": "benign",
+     "identity_risk": "uncertain",
+     "technical_risk": "uncertain",
+     "requested_action": "visit_link",
+     "action_channel": "supplied_link",
+     "urgency_present": false,
+     "urgency_targets_risky_action": false,
+     "confidence": 0.5,
+     "ambiguity": "low",
+     "explanation": "The message has a meaningful anomaly, but the available evidence is not sufficient for a phishing verdict.",
+     "semantic_reason": "Apri",
+     "ai_content_assessment": "benign",
+     "ai_content_rationale": "Ordinary message.",
+     "ai_content_evidence": "",
+     "ai_content_verification": {},
+     "content_summary": "Synthetic message.",
+     "content_summary_source": "legacy",
+     "content_summary_parts": [],
+     "intent_evidence": "Apri",
+     "intent_signals": [],
+     "signal_evidence": "",
+     "credential_type": "none",
+     "payment_method": "none",
+     "payment_asset": "",
+     "amount": "",
+     "payment_destination_change": false,
+     "payment_change_evidence": "",
+     "coercion": false,
+     "threat_type": "none",
+     "scam_type": "none",
+     "claimed_brand": "",
+     "evidence": {
+      "content": [
+       "no risky requested action was identified"
+      ],
+      "identity": [
+       "Sender authentication could not be independently verified; usable authentication results are unavailable"
+      ],
+      "technical": [
+       "a static check requires review: Link hosting"
+      ]
+     },
+     "corroboration": {
+      "supports_decision": true,
+      "details": [
+       "Sender authentication could not be independently verified; usable authentication results are unavailable",
+       "a static check requires review: Link hosting"
+      ],
+      "caveats": []
+     },
+     "semantic_extraction": {
+      "requested_action": "visit_link",
+      "action_channel": "supplied_link",
+      "asks_to_click_link": true,
+      "asks_to_open_attachment": false,
+      "asks_for_credentials": false,
+      "asks_for_sensitive_information": false,
+      "asks_for_payment": false,
+      "asks_to_verify_account": false,
+      "asks_to_claim_reward": false,
+      "financial_incentive_present": false,
+      "asks_to_change_account_settings": false,
+      "asks_to_bypass_procedure": false,
+      "urgency_present": false,
+      "urgency_targets_risky_action": false,
+      "impersonation_or_deception": false,
+      "financial_pretext_present": false,
+      "threat_or_consequence_present": false,
+      "semantic_signals": [],
+      "signal_evidence": "",
+      "credential_type": "none",
+      "payment_method": "none",
+      "payment_asset": "",
+      "amount": "",
+      "payment_destination_change": false,
+      "payment_change_evidence": "",
+      "security_alert": false,
+      "requested_external_action": false,
+      "identity_deception": false,
+      "security_lure_evidence": "",
+      "coercion": false,
+      "threat_type": "none",
+      "scam_type": "none",
+      "structured_extortion": false,
+      "claimed_brand": "",
+      "claimed_role": "unclear",
+      "model_content_risk": "benign",
+      "model_risk_evidence": "",
+      "model_risk_rationale": "Ordinary message.",
+      "risk_verification": {},
+      "confidence": 0.5,
+      "confidence_provided": false,
+      "ambiguity": "low",
+      "reason": "Apri",
+      "evidence_phrase": "Apri",
+      "intent_verifier_used": false,
+      "primary_requested_action": "",
+      "content_summary": "Synthetic message.",
+      "content_summary_source": "legacy"
+     },
+     "policy_version": "semantic-policy-v50-template-summary"
+    }
+   }
+  }
+ },
+ {
+  "name": "calendar_invite",
+  "python_verdict": "review",
+  "report": {
+   "delivered_to": null,
+   "to": "mario.rossi@azienda.it",
+   "from_": "IT <it@company.example>",
+   "from_registered_domain": "company.example",
+   "subject": "Invito",
+   "threading_headers": {},
+   "date": "Mon, 26 Oct 2026 10:00:00 +0000",
+   "message_id": "<synthetic@fishstop.invalid>",
+   "importance": null,
+   "mime_version": "1.0",
+   "content_type": "multipart/mixed; boundary=\"===============7836522731719809812==\"",
+   "bulk_sender_signals": [],
+   "bulk_sender_signal_count": 0,
+   "is_bulk_sender": false,
+   "return_path": null,
+   "errors_to": null,
+   "reply_to": null,
+   "from_mailbox_candidates": [
+    "it@company.example"
+   ],
+   "from_ambiguous": false,
+   "reply_to_mismatch_legitimate": false,
+   "reply_to_mismatch": false,
+   "return_path_domain_mismatch": false,
+   "return_path_domain": "",
+   "display_name_spoofing": null,
+   "x_google_smtp_source": null,
+   "x_received": null,
+   "arc_seal": null,
+   "arc_message_signature": null,
+   "arc_authentication_results": "",
+   "received_hops": [],
+   "closest_to_recipient": {},
+   "injection_server": {},
+   "closest_to_sender": {},
+   "injection_sender_ip": null,
+   "received_spf_raw": "",
+   "received_spf_results": {},
+   "authentication_results_raw": "",
+   "auth_results": {},
+   "arc_auth_results": {},
+   "effective_auth_results": {},
+   "authentication_checkpoints": [],
+   "injection_ip_spf_authorized": false,
+   "spf_sender_aligned": false,
+   "dkim_signature_present": false,
+   "dkim_signature_raw": "",
+   "body": "Invito allegato.",
+   "body_html_safe": null,
+   "body_html_clean": "",
+   "body_plain_clean": "Invito allegato.",
+   "body_plain_original": "Invito allegato.\n",
+   "body_text_normalization": {
+    "plain": {
+     "formatting_controls_removed": 0,
+     "joiner_padding_runs_removed": 0,
+     "before_characters": 16,
+     "after_characters": 16
+    },
+    "html": {
+     "formatting_controls_removed": 0,
+     "joiner_padding_runs_removed": 0,
+     "before_characters": 0,
+     "after_characters": 0
+    }
+   },
+   "html_form_analysis": {
+    "status": "not_applicable",
+    "form_count": 0,
+    "forms": [],
+    "message": "No HTML body is available."
+   },
+   "html_copy_deception": {
+    "status": "not_applicable",
+    "finding_count": 0,
+    "message": "No HTML body is available for copy-deception analysis.",
+    "findings": []
+   },
+   "body_clean": "Invito allegato.",
+   "forwarded_identity": {},
+   "body_source": "text/plain",
+   "html_strip_applied": false,
+   "body_plain_tracking_url_count": 0,
+   "body_selected_html_for_ai": false,
+   "body_plain_noise_removed_lines": 0,
+   "body_plain_noise_removed_chars": 0,
+   "attachments": [
+    {
+     "filename": "invite.ics",
+     "content_type": "text/calendar",
+     "encoding": "base64",
+     "magic_bytes_hex": "424547494E3A5643414C454E4441520D",
+     "magic_detected_format": null,
+     "extension_from_filename": "ics",
+     "extension_match": true,
+     "anomaly": null,
+     "hash_md5": "a87ba6754c09807fa385ce6be88b5654",
+     "hash_sha1": "c417599746ff1e136d678d4bb851d3af731d1335",
+     "hash_sha256": "7808781395232a970dec70b0abb4d4acda496f15602da8968f21d16ac31b422e",
+     "size_bytes": 202,
+     "attachment_security": {
+      "risk_level": "clean",
+      "findings": [],
+      "summary": "No inherently dangerous attachment file type detected."
+     },
+     "pdf_security": null,
+     "archive_security": null,
+     "office_security": null,
+     "embedded_urls": [
+      "https://portal.other-org.example/login"
+     ],
+     "calendar_security": {
+      "status": "complete",
+      "analysis_complete": true,
+      "method": "REQUEST",
+      "events": [
+       {
+        "summary": "Verifica account",
+        "description": "\nAccedi qui https://portal.other-org.example/login",
+        "location": "",
+        "organizer": "it@other-org.example",
+        "attendees": 0,
+        "urls": [
+         "https://portal.other-org.example/login"
+        ]
+       }
+      ],
+      "urls": [
+       "https://portal.other-org.example/login"
+      ],
+      "findings": [],
+      "risk_level": "clean",
+      "summary": "Calendar invitation (REQUEST): 1 event(s), 1 link(s)."
+     },
+     "inspection": {
+      "status": "complete",
+      "analysis_complete": true,
+      "type_checks_complete": true,
+      "content_inspected": true,
+      "summary": "Supported local checks completed."
+     },
+     "content_disposition": "attachment",
+     "content_id": "",
+     "mime_role": "attachment",
+     "actionable": true
+    }
+   ],
+   "body_ai": "Invito allegato.",
+   "body_for_identity": "Invito allegato.",
+   "body_context": "normal",
+   "body_ai_removed_quoted_lines": 0,
+   "body_ai_removed_header_lines": 0,
+   "body_ai_removed_tail_lines": 0,
+   "body_clean_full": "Invito allegato.",
+   "body_for_intent": "Invito allegato.",
+   "body_alternatives_divergent": false,
+   "ai_text_compaction": {
+    "body": {
+     "duplicate_blocks": 0,
+     "duplicate_characters": 0,
+     "before_characters": 16,
+     "after_characters": 16
+    },
+    "identity": {
+     "duplicate_blocks": 0,
+     "duplicate_characters": 0,
+     "before_characters": 16,
+     "after_characters": 16
+    },
+    "mime_body": {},
+    "mime_identity": {},
+    "method": "exact_repeated_blocks_and_mime_overlap"
+   },
+   "body_extracted": "Invito allegato.",
+   "body_for_ai": "Invito allegato.",
+   "body_analysis_limits": {
+    "decoded_source_characters": 17,
+    "inspected_source_characters": 17,
+    "source_character_limit": 2000000,
+    "source_part_character_limit": 1000000,
+    "source_truncated": false,
+    "useful_characters_before_limit": 16,
+    "ai_character_limit": 120000,
+    "ai_text_truncated": false
+   },
+   "ai_analysis_supported": true,
+   "ai_analysis_limit_message": "",
+   "links": [
+    {
+     "url": "https://portal.other-org.example/login",
+     "display_text": "",
+     "action_labels": [],
+     "display_url": "",
+     "display_host": "",
+     "display_mismatch": false,
+     "host": "portal.other-org.example",
+     "registered_domain": "portal.other-org.example",
+     "display_registered_domain": "",
+     "scheme": "https",
+     "source": "attachment",
+     "role": "body_action",
+     "actionable": true,
+     "html_call_to_action": false,
+     "resolved_display_destination": false,
+     "signature_tracking_redirect": false,
+     "is_ip": false,
+     "download_filename": "login",
+     "download_extension": "",
+     "download_source": "path",
+     "dangerous_download": false,
+     "has_userinfo": false,
+     "has_credentials": false,
+     "nonstandard_port": false,
+     "port": null,
+     "nested_redirect_count": 0,
+     "redirect_targets": [],
+     "redirect_hosts": [],
+     "redirect_downloads": [],
+     "unicode_path_or_query": false,
+     "unicode_host": false,
+     "raw_at_sign": false
+    }
+   ],
+   "calendar_invites": [
+    {
+     "status": "complete",
+     "analysis_complete": true,
+     "method": "REQUEST",
+     "events": [
+      {
+       "summary": "Verifica account",
+       "description": "\nAccedi qui https://portal.other-org.example/login",
+       "location": "",
+       "organizer": "it@other-org.example",
+       "attendees": 0,
+       "urls": [
+        "https://portal.other-org.example/login"
+       ]
+      }
+     ],
+     "urls": [
+      "https://portal.other-org.example/login"
+     ],
+     "findings": [],
+     "risk_level": "clean",
+     "summary": "Calendar invitation (REQUEST): 1 event(s), 1 link(s)."
+    }
+   ],
+   "calendar_alerts": [
+    {
+     "level": "MEDIUM",
+     "message": "The calendar invitation 'Verifica account' contains 1 link(s) and its organiser (it@other-org.example) does not match the sender."
+    }
+   ],
+   "lookalike_alerts": [],
+   "sender_lookalike_alerts": [],
+   "display_mismatch_alerts": [],
+   "link_hosting_alerts": [],
+   "recipient_link_alerts": [],
+   "unsafe_scheme_links": [],
+   "reply_threading": {
+    "level": "NONE",
+    "message": "",
+    "reply_prefix": "",
+    "threading_headers": [],
+    "quoted_messages": 0,
+    "quoted_from_recipient": false
+   },
+   "payment_details": {
+    "body_ibans": [],
+    "quoted_ibans": [],
+    "attachment_ibans": [],
+    "change_phrase": "",
+    "sender_country": "",
+    "alerts": []
+   },
+   "link_context_alerts": [],
+   "reply_to_routing": {
+    "level": "NONE",
+    "message": "",
+    "exception": false
+   },
+   "flags": [
+    {
+     "level": "INFO",
+     "field": "SPF",
+     "message": "No SPF result is available in this EML export"
+    },
+    {
+     "level": "INFO",
+     "field": "DKIM",
+     "message": "No DKIM signature is available in this EML export"
+    },
+    {
+     "level": "INFO",
+     "field": "DMARC",
+     "message": "No DMARC result is available in this EML export"
+    },
+    {
+     "level": "INFO",
+     "field": "Attachment",
+     "message": "'invite.ics': detected file type: unknown"
+    },
+    {
+     "level": "MEDIUM",
+     "field": "Calendar invite",
+     "message": "The calendar invitation 'Verifica account' contains 1 link(s) and its organiser (it@other-org.example) does not match the sender."
+    }
+   ],
+   "phi4_analysis": {
+    "status": "ok",
+    "analysis": {
+     "final_verdict": "review",
+     "content_risk": "benign",
+     "identity_risk": "uncertain",
+     "technical_risk": "uncertain",
+     "requested_action": "informational",
+     "action_channel": "none",
+     "urgency_present": false,
+     "urgency_targets_risky_action": false,
+     "confidence": 0.5,
+     "ambiguity": "low",
+     "explanation": "The message has a meaningful anomaly, but the available evidence is not sufficient for a phishing verdict.",
+     "semantic_reason": "No semantic explanation returned.",
+     "ai_content_assessment": "benign",
+     "ai_content_rationale": "Ordinary message.",
+     "ai_content_evidence": "",
+     "ai_content_verification": {},
+     "content_summary": "Synthetic message.",
+     "content_summary_source": "legacy",
+     "content_summary_parts": [],
+     "intent_evidence": "",
+     "intent_signals": [],
+     "signal_evidence": "",
+     "credential_type": "none",
+     "payment_method": "none",
+     "payment_asset": "",
+     "amount": "",
+     "payment_destination_change": false,
+     "payment_change_evidence": "",
+     "coercion": false,
+     "threat_type": "none",
+     "scam_type": "none",
+     "claimed_brand": "",
+     "evidence": {
+      "content": [
+       "no risky requested action was identified"
+      ],
+      "identity": [
+       "Sender authentication could not be independently verified; usable authentication results are unavailable"
+      ],
+      "technical": [
+       "a calendar invitation with links comes from an organiser who does not match the sender"
+      ]
+     },
+     "corroboration": {
+      "supports_decision": true,
+      "details": [
+       "Sender authentication could not be independently verified; usable authentication results are unavailable",
+       "a calendar invitation with links comes from an organiser who does not match the sender"
+      ],
+      "caveats": []
+     },
+     "semantic_extraction": {
+      "requested_action": "informational",
+      "action_channel": "none",
+      "asks_to_click_link": false,
+      "asks_to_open_attachment": false,
+      "asks_for_credentials": false,
+      "asks_for_sensitive_information": false,
+      "asks_for_payment": false,
+      "asks_to_verify_account": false,
+      "asks_to_claim_reward": false,
+      "financial_incentive_present": false,
+      "asks_to_change_account_settings": false,
+      "asks_to_bypass_procedure": false,
+      "urgency_present": false,
+      "urgency_targets_risky_action": false,
+      "impersonation_or_deception": false,
+      "financial_pretext_present": false,
+      "threat_or_consequence_present": false,
+      "semantic_signals": [],
+      "signal_evidence": "",
+      "credential_type": "none",
+      "payment_method": "none",
+      "payment_asset": "",
+      "amount": "",
+      "payment_destination_change": false,
+      "payment_change_evidence": "",
+      "security_alert": false,
+      "requested_external_action": false,
+      "identity_deception": false,
+      "security_lure_evidence": "",
+      "coercion": false,
+      "threat_type": "none",
+      "scam_type": "none",
+      "structured_extortion": false,
+      "claimed_brand": "",
+      "claimed_role": "unclear",
+      "model_content_risk": "benign",
+      "model_risk_evidence": "",
+      "model_risk_rationale": "Ordinary message.",
+      "risk_verification": {},
+      "confidence": 0.5,
+      "confidence_provided": false,
+      "ambiguity": "low",
+      "reason": "No semantic explanation returned.",
+      "evidence_phrase": "",
+      "intent_verifier_used": false,
+      "primary_requested_action": "",
+      "content_summary": "Synthetic message.",
+      "content_summary_source": "legacy"
+     },
+     "policy_version": "semantic-policy-v50-template-summary"
+    }
+   }
+  }
+ },
+ {
+  "name": "ai_grounded_phishing",
+  "python_verdict": "phishing",
+  "report": {
+   "delivered_to": null,
+   "to": "mario.rossi@azienda.it",
+   "from_": "Team <team@service.example>",
+   "from_registered_domain": "service.example",
+   "subject": "Premio",
+   "threading_headers": {},
+   "date": "Mon, 26 Oct 2026 10:00:00 +0000",
+   "message_id": "<synthetic@fishstop.invalid>",
+   "importance": null,
+   "mime_version": "1.0",
+   "content_type": "text/plain; charset=\"utf-8\"",
+   "bulk_sender_signals": [],
+   "bulk_sender_signal_count": 0,
+   "is_bulk_sender": false,
+   "return_path": null,
+   "errors_to": null,
+   "reply_to": null,
+   "from_mailbox_candidates": [
+    "team@service.example"
+   ],
+   "from_ambiguous": false,
+   "reply_to_mismatch_legitimate": false,
+   "reply_to_mismatch": false,
+   "return_path_domain_mismatch": false,
+   "return_path_domain": "",
+   "display_name_spoofing": null,
+   "x_google_smtp_source": null,
+   "x_received": null,
+   "arc_seal": null,
+   "arc_message_signature": null,
+   "arc_authentication_results": "",
+   "received_hops": [],
+   "closest_to_recipient": {},
+   "injection_server": {},
+   "closest_to_sender": {},
+   "injection_sender_ip": null,
+   "received_spf_raw": "",
+   "received_spf_results": {},
+   "authentication_results_raw": "",
+   "auth_results": {},
+   "arc_auth_results": {},
+   "effective_auth_results": {},
+   "authentication_checkpoints": [],
+   "injection_ip_spf_authorized": false,
+   "spf_sender_aligned": false,
+   "dkim_signature_present": false,
+   "dkim_signature_raw": "",
+   "body": "Hai vinto un premio inatteso, inserisci la password per riceverlo.",
+   "body_html_safe": null,
+   "body_html_clean": "",
+   "body_plain_clean": "Hai vinto un premio inatteso, inserisci la password per riceverlo.",
+   "body_plain_original": "Hai vinto un premio inatteso, inserisci la password per riceverlo.\n",
+   "body_text_normalization": {
+    "plain": {
+     "formatting_controls_removed": 0,
+     "joiner_padding_runs_removed": 0,
+     "before_characters": 66,
+     "after_characters": 66
+    },
+    "html": {
+     "formatting_controls_removed": 0,
+     "joiner_padding_runs_removed": 0,
+     "before_characters": 0,
+     "after_characters": 0
+    }
+   },
+   "html_form_analysis": {
+    "status": "not_applicable",
+    "form_count": 0,
+    "forms": [],
+    "message": "No HTML body is available."
+   },
+   "html_copy_deception": {
+    "status": "not_applicable",
+    "finding_count": 0,
+    "message": "No HTML body is available for copy-deception analysis.",
+    "findings": []
+   },
+   "body_clean": "Hai vinto un premio inatteso, inserisci la password per riceverlo.",
+   "forwarded_identity": {},
+   "body_source": "text/plain",
+   "html_strip_applied": false,
+   "body_plain_tracking_url_count": 0,
+   "body_selected_html_for_ai": false,
+   "body_plain_noise_removed_lines": 0,
+   "body_plain_noise_removed_chars": 0,
+   "attachments": [],
+   "body_ai": "Hai vinto un premio inatteso, inserisci la password per riceverlo.",
+   "body_for_identity": "Hai vinto un premio inatteso, inserisci la password per riceverlo.",
+   "body_context": "normal",
+   "body_ai_removed_quoted_lines": 0,
+   "body_ai_removed_header_lines": 0,
+   "body_ai_removed_tail_lines": 0,
+   "body_clean_full": "Hai vinto un premio inatteso, inserisci la password per riceverlo.",
+   "body_for_intent": "Hai vinto un premio inatteso, inserisci la password per riceverlo.",
+   "body_alternatives_divergent": false,
+   "ai_text_compaction": {
+    "body": {
+     "duplicate_blocks": 0,
+     "duplicate_characters": 0,
+     "before_characters": 66,
+     "after_characters": 66
+    },
+    "identity": {
+     "duplicate_blocks": 0,
+     "duplicate_characters": 0,
+     "before_characters": 66,
+     "after_characters": 66
+    },
+    "mime_body": {},
+    "mime_identity": {},
+    "method": "exact_repeated_blocks_and_mime_overlap"
+   },
+   "body_extracted": "Hai vinto un premio inatteso, inserisci la password per riceverlo.",
+   "body_for_ai": "Hai vinto un premio inatteso, inserisci la password per riceverlo.",
+   "body_analysis_limits": {
+    "decoded_source_characters": 67,
+    "inspected_source_characters": 67,
+    "source_character_limit": 2000000,
+    "source_part_character_limit": 1000000,
+    "source_truncated": false,
+    "useful_characters_before_limit": 66,
+    "ai_character_limit": 120000,
+    "ai_text_truncated": false
+   },
+   "ai_analysis_supported": true,
+   "ai_analysis_limit_message": "",
+   "links": [],
+   "calendar_invites": [],
+   "calendar_alerts": [],
+   "lookalike_alerts": [],
+   "sender_lookalike_alerts": [],
+   "display_mismatch_alerts": [],
+   "link_hosting_alerts": [],
+   "recipient_link_alerts": [],
+   "unsafe_scheme_links": [],
+   "reply_threading": {
+    "level": "NONE",
+    "message": "",
+    "reply_prefix": "",
+    "threading_headers": [],
+    "quoted_messages": 0,
+    "quoted_from_recipient": false
+   },
+   "payment_details": {
+    "body_ibans": [],
+    "quoted_ibans": [],
+    "attachment_ibans": [],
+    "change_phrase": "",
+    "sender_country": "",
+    "alerts": []
+   },
+   "link_context_alerts": [],
+   "reply_to_routing": {
+    "level": "NONE",
+    "message": "",
+    "exception": false
+   },
+   "flags": [
+    {
+     "level": "INFO",
+     "field": "SPF",
+     "message": "No SPF result is available in this EML export"
+    },
+    {
+     "level": "INFO",
+     "field": "DKIM",
+     "message": "No DKIM signature is available in this EML export"
+    },
+    {
+     "level": "INFO",
+     "field": "DMARC",
+     "message": "No DMARC result is available in this EML export"
+    }
+   ],
+   "phi4_analysis": {
+    "status": "ok",
+    "analysis": {
+     "final_verdict": "phishing",
+     "content_risk": "malicious",
+     "identity_risk": "uncertain",
+     "technical_risk": "clean",
+     "requested_action": "provide_credentials",
+     "action_channel": "email_reply",
+     "urgency_present": false,
+     "urgency_targets_risky_action": false,
+     "confidence": 0.5,
+     "ambiguity": "low",
+     "explanation": "Strong or corroborated phishing evidence was detected.",
+     "semantic_reason": "inserisci la password per riceverlo",
+     "ai_content_assessment": "phishing",
+     "ai_content_rationale": "Credential request disguised as a prize.",
+     "ai_content_evidence": "inserisci la password per riceverlo",
+     "ai_content_verification": {},
+     "content_summary": "Synthetic message.",
+     "content_summary_source": "legacy",
+     "content_summary_parts": [],
+     "intent_evidence": "inserisci la password per riceverlo",
+     "intent_signals": [],
+     "signal_evidence": "",
+     "credential_type": "other",
+     "payment_method": "none",
+     "payment_asset": "",
+     "amount": "",
+     "payment_destination_change": false,
+     "payment_change_evidence": "",
+     "coercion": false,
+     "threat_type": "none",
+     "scam_type": "none",
+     "claimed_brand": "",
+     "evidence": {
+      "content": [
+       "the message asks the recipient to provide credentials"
+      ],
+      "identity": [
+       "Sender authentication could not be independently verified; usable authentication results are unavailable"
+      ],
+      "technical": [
+       "no strong technical threat was detected"
+      ]
+     },
+     "corroboration": {
+      "supports_decision": true,
+      "details": [
+       "Sender authentication could not be independently verified; usable authentication results are unavailable"
+      ],
+      "caveats": [
+       "no strong technical threat was detected"
+      ]
+     },
+     "semantic_extraction": {
+      "requested_action": "provide_credentials",
+      "action_channel": "email_reply",
+      "asks_to_click_link": false,
+      "asks_to_open_attachment": false,
+      "asks_for_credentials": true,
+      "asks_for_sensitive_information": false,
+      "asks_for_payment": false,
+      "asks_to_verify_account": false,
+      "asks_to_claim_reward": false,
+      "financial_incentive_present": false,
+      "asks_to_change_account_settings": false,
+      "asks_to_bypass_procedure": false,
+      "urgency_present": false,
+      "urgency_targets_risky_action": false,
+      "impersonation_or_deception": false,
+      "financial_pretext_present": false,
+      "threat_or_consequence_present": false,
+      "semantic_signals": [],
+      "signal_evidence": "",
+      "credential_type": "other",
+      "payment_method": "none",
+      "payment_asset": "",
+      "amount": "",
+      "payment_destination_change": false,
+      "payment_change_evidence": "",
+      "security_alert": false,
+      "requested_external_action": false,
+      "identity_deception": false,
+      "security_lure_evidence": "",
+      "coercion": false,
+      "threat_type": "none",
+      "scam_type": "none",
+      "structured_extortion": false,
+      "claimed_brand": "",
+      "claimed_role": "unclear",
+      "model_content_risk": "phishing",
+      "model_risk_evidence": "inserisci la password per riceverlo",
+      "model_risk_rationale": "Credential request disguised as a prize.",
+      "risk_verification": {},
+      "confidence": 0.5,
+      "confidence_provided": false,
+      "ambiguity": "low",
+      "reason": "inserisci la password per riceverlo",
+      "evidence_phrase": "inserisci la password per riceverlo",
+      "intent_verifier_used": false,
+      "primary_requested_action": "",
+      "content_summary": "Synthetic message.",
+      "content_summary_source": "legacy"
+     },
+     "policy_version": "semantic-policy-v50-template-summary"
+    }
+   }
+  }
+ },
+ {
+  "name": "iban_change_foreign",
+  "python_verdict": "phishing",
+  "report": {
+   "delivered_to": null,
+   "to": "mario.rossi@azienda.it",
+   "from_": "Fornitore <amministrazione@fornitore.it>",
+   "from_registered_domain": "fornitore.it",
+   "subject": "Coordinate",
+   "threading_headers": {},
+   "date": "Mon, 26 Oct 2026 10:00:00 +0000",
+   "message_id": "<synthetic@fishstop.invalid>",
+   "importance": null,
+   "mime_version": "1.0",
+   "content_type": "text/plain; charset=\"utf-8\"",
+   "bulk_sender_signals": [],
+   "bulk_sender_signal_count": 0,
+   "is_bulk_sender": false,
+   "return_path": null,
+   "errors_to": null,
+   "reply_to": null,
+   "from_mailbox_candidates": [
+    "amministrazione@fornitore.it"
+   ],
+   "from_ambiguous": false,
+   "reply_to_mismatch_legitimate": false,
+   "reply_to_mismatch": false,
+   "return_path_domain_mismatch": false,
+   "return_path_domain": "",
+   "display_name_spoofing": null,
+   "x_google_smtp_source": null,
+   "x_received": null,
+   "arc_seal": null,
+   "arc_message_signature": null,
+   "arc_authentication_results": "",
+   "received_hops": [],
+   "closest_to_recipient": {},
+   "injection_server": {},
+   "closest_to_sender": {},
+   "injection_sender_ip": null,
+   "received_spf_raw": "",
+   "received_spf_results": {},
+   "authentication_results_raw": "",
+   "auth_results": {},
+   "arc_auth_results": {},
+   "effective_auth_results": {},
+   "authentication_checkpoints": [],
+   "injection_ip_spf_authorized": false,
+   "spf_sender_aligned": false,
+   "dkim_signature_present": false,
+   "dkim_signature_raw": "",
+   "body": "Vi comunichiamo le nuove coordinate bancarie: LT12 1000 0111 0100 1000.",
+   "body_html_safe": null,
+   "body_html_clean": "",
+   "body_plain_clean": "Vi comunichiamo le nuove coordinate bancarie: LT12 1000 0111 0100 1000.",
+   "body_plain_original": "Vi comunichiamo le nuove coordinate bancarie: LT12 1000 0111 0100 1000.\n",
+   "body_text_normalization": {
+    "plain": {
+     "formatting_controls_removed": 0,
+     "joiner_padding_runs_removed": 0,
+     "before_characters": 71,
+     "after_characters": 71
+    },
+    "html": {
+     "formatting_controls_removed": 0,
+     "joiner_padding_runs_removed": 0,
+     "before_characters": 0,
+     "after_characters": 0
+    }
+   },
+   "html_form_analysis": {
+    "status": "not_applicable",
+    "form_count": 0,
+    "forms": [],
+    "message": "No HTML body is available."
+   },
+   "html_copy_deception": {
+    "status": "not_applicable",
+    "finding_count": 0,
+    "message": "No HTML body is available for copy-deception analysis.",
+    "findings": []
+   },
+   "body_clean": "Vi comunichiamo le nuove coordinate bancarie: LT12 1000 0111 0100 1000.",
+   "forwarded_identity": {},
+   "body_source": "text/plain",
+   "html_strip_applied": false,
+   "body_plain_tracking_url_count": 0,
+   "body_selected_html_for_ai": false,
+   "body_plain_noise_removed_lines": 0,
+   "body_plain_noise_removed_chars": 0,
+   "attachments": [],
+   "body_ai": "Vi comunichiamo le nuove coordinate bancarie: LT12 1000 0111 0100 1000.",
+   "body_for_identity": "Vi comunichiamo le nuove coordinate bancarie: LT12 1000 0111 0100 1000.",
+   "body_context": "normal",
+   "body_ai_removed_quoted_lines": 0,
+   "body_ai_removed_header_lines": 0,
+   "body_ai_removed_tail_lines": 0,
+   "body_clean_full": "Vi comunichiamo le nuove coordinate bancarie: LT12 1000 0111 0100 1000.",
+   "body_for_intent": "Vi comunichiamo le nuove coordinate bancarie: LT12 1000 0111 0100 1000.",
+   "body_alternatives_divergent": false,
+   "ai_text_compaction": {
+    "body": {
+     "duplicate_blocks": 0,
+     "duplicate_characters": 0,
+     "before_characters": 71,
+     "after_characters": 71
+    },
+    "identity": {
+     "duplicate_blocks": 0,
+     "duplicate_characters": 0,
+     "before_characters": 71,
+     "after_characters": 71
+    },
+    "mime_body": {},
+    "mime_identity": {},
+    "method": "exact_repeated_blocks_and_mime_overlap"
+   },
+   "body_extracted": "Vi comunichiamo le nuove coordinate bancarie: LT12 1000 0111 0100 1000.",
+   "body_for_ai": "Vi comunichiamo le nuove coordinate bancarie: LT12 1000 0111 0100 1000.",
+   "body_analysis_limits": {
+    "decoded_source_characters": 72,
+    "inspected_source_characters": 72,
+    "source_character_limit": 2000000,
+    "source_part_character_limit": 1000000,
+    "source_truncated": false,
+    "useful_characters_before_limit": 71,
+    "ai_character_limit": 120000,
+    "ai_text_truncated": false
+   },
+   "ai_analysis_supported": true,
+   "ai_analysis_limit_message": "",
+   "links": [],
+   "calendar_invites": [],
+   "calendar_alerts": [],
+   "lookalike_alerts": [],
+   "sender_lookalike_alerts": [],
+   "display_mismatch_alerts": [],
+   "link_hosting_alerts": [],
+   "recipient_link_alerts": [],
+   "unsafe_scheme_links": [],
+   "reply_threading": {
+    "level": "NONE",
+    "message": "",
+    "reply_prefix": "",
+    "threading_headers": [],
+    "quoted_messages": 0,
+    "quoted_from_recipient": false
+   },
+   "payment_details": {
+    "body_ibans": [
+     "LT12 **** 1000"
+    ],
+    "quoted_ibans": [],
+    "attachment_ibans": [],
+    "change_phrase": "nuove coordinate",
+    "sender_country": "IT",
+    "alerts": [
+     {
+      "level": "HIGH",
+      "key": "iban_change_request",
+      "message": "The message announces changed bank details ('nuove coordinate') and provides LT12 **** 1000. The account is registered in LT while the sender domain is in IT. Confirm through a contact you already know before paying."
+     }
+    ]
+   },
+   "link_context_alerts": [],
+   "reply_to_routing": {
+    "level": "NONE",
+    "message": "",
+    "exception": false
+   },
+   "flags": [
+    {
+     "level": "INFO",
+     "field": "SPF",
+     "message": "No SPF result is available in this EML export"
+    },
+    {
+     "level": "INFO",
+     "field": "DKIM",
+     "message": "No DKIM signature is available in this EML export"
+    },
+    {
+     "level": "INFO",
+     "field": "DMARC",
+     "message": "No DMARC result is available in this EML export"
+    },
+    {
+     "level": "HIGH",
+     "field": "Payment details",
+     "message": "The message announces changed bank details ('nuove coordinate') and provides LT12 **** 1000. The account is registered in LT while the sender domain is in IT. Confirm through a contact you already know before paying."
+    }
+   ],
+   "phi4_analysis": {
+    "status": "ok",
+    "analysis": {
+     "final_verdict": "phishing",
+     "content_risk": "benign",
+     "identity_risk": "uncertain",
+     "technical_risk": "malicious",
+     "requested_action": "informational",
+     "action_channel": "none",
+     "urgency_present": false,
+     "urgency_targets_risky_action": false,
+     "confidence": 0.5,
+     "ambiguity": "low",
+     "explanation": "Strong or corroborated phishing evidence was detected.",
+     "semantic_reason": "No semantic explanation returned.",
+     "ai_content_assessment": "benign",
+     "ai_content_rationale": "Ordinary message.",
+     "ai_content_evidence": "",
+     "ai_content_verification": {},
+     "content_summary": "Synthetic message.",
+     "content_summary_source": "legacy",
+     "content_summary_parts": [],
+     "intent_evidence": "",
+     "intent_signals": [],
+     "signal_evidence": "",
+     "credential_type": "none",
+     "payment_method": "none",
+     "payment_asset": "",
+     "amount": "",
+     "payment_destination_change": false,
+     "payment_change_evidence": "",
+     "coercion": false,
+     "threat_type": "none",
+     "scam_type": "none",
+     "claimed_brand": "",
+     "evidence": {
+      "content": [
+       "no risky requested action was identified"
+      ],
+      "identity": [
+       "Sender authentication could not be independently verified; usable authentication results are unavailable"
+      ],
+      "technical": [
+       "a high-severity static check requires blocking the message: Payment details"
+      ]
+     },
+     "corroboration": {
+      "supports_decision": true,
+      "details": [
+       "Sender authentication could not be independently verified; usable authentication results are unavailable",
+       "a high-severity static check requires blocking the message: Payment details"
+      ],
+      "caveats": []
+     },
+     "semantic_extraction": {
+      "requested_action": "informational",
+      "action_channel": "none",
+      "asks_to_click_link": false,
+      "asks_to_open_attachment": false,
+      "asks_for_credentials": false,
+      "asks_for_sensitive_information": false,
+      "asks_for_payment": false,
+      "asks_to_verify_account": false,
+      "asks_to_claim_reward": false,
+      "financial_incentive_present": false,
+      "asks_to_change_account_settings": false,
+      "asks_to_bypass_procedure": false,
+      "urgency_present": false,
+      "urgency_targets_risky_action": false,
+      "impersonation_or_deception": false,
+      "financial_pretext_present": false,
+      "threat_or_consequence_present": false,
+      "semantic_signals": [],
+      "signal_evidence": "",
+      "credential_type": "none",
+      "payment_method": "none",
+      "payment_asset": "",
+      "amount": "",
+      "payment_destination_change": false,
+      "payment_change_evidence": "",
+      "security_alert": false,
+      "requested_external_action": false,
+      "identity_deception": false,
+      "security_lure_evidence": "",
+      "coercion": false,
+      "threat_type": "none",
+      "scam_type": "none",
+      "structured_extortion": false,
+      "claimed_brand": "",
+      "claimed_role": "unclear",
+      "model_content_risk": "benign",
+      "model_risk_evidence": "",
+      "model_risk_rationale": "Ordinary message.",
+      "risk_verification": {},
+      "confidence": 0.5,
+      "confidence_provided": false,
+      "ambiguity": "low",
+      "reason": "No semantic explanation returned.",
+      "evidence_phrase": "",
+      "intent_verifier_used": false,
+      "primary_requested_action": "",
+      "content_summary": "Synthetic message.",
+      "content_summary_source": "legacy"
+     },
+     "policy_version": "semantic-policy-v50-template-summary"
+    }
+   }
+  }
+ },
+ {
+  "name": "regular_invoice_iban",
+  "python_verdict": "legitimate",
+  "report": {
+   "delivered_to": null,
+   "to": "mario.rossi@azienda.it",
+   "from_": "Fornitore <amministrazione@fornitore.it>",
+   "from_registered_domain": "fornitore.it",
+   "subject": "Fattura 118",
+   "threading_headers": {},
+   "date": "Mon, 26 Oct 2026 10:00:00 +0000",
+   "message_id": "<synthetic@fishstop.invalid>",
+   "importance": null,
+   "mime_version": "1.0",
+   "content_type": "text/plain; charset=\"utf-8\"",
+   "bulk_sender_signals": [],
+   "bulk_sender_signal_count": 0,
+   "is_bulk_sender": false,
+   "return_path": null,
+   "errors_to": null,
+   "reply_to": null,
+   "from_mailbox_candidates": [
+    "amministrazione@fornitore.it"
+   ],
+   "from_ambiguous": false,
+   "reply_to_mismatch_legitimate": false,
+   "reply_to_mismatch": false,
+   "return_path_domain_mismatch": false,
+   "return_path_domain": "",
+   "display_name_spoofing": null,
+   "x_google_smtp_source": null,
+   "x_received": null,
+   "arc_seal": null,
+   "arc_message_signature": null,
+   "arc_authentication_results": "",
+   "received_hops": [],
+   "closest_to_recipient": {},
+   "injection_server": {},
+   "closest_to_sender": {},
+   "injection_sender_ip": null,
+   "received_spf_raw": "",
+   "received_spf_results": {},
+   "authentication_results_raw": "",
+   "auth_results": {},
+   "arc_auth_results": {},
+   "effective_auth_results": {},
+   "authentication_checkpoints": [],
+   "injection_ip_spf_authorized": false,
+   "spf_sender_aligned": false,
+   "dkim_signature_present": false,
+   "dkim_signature_raw": "",
+   "body": "In allegato la fattura. Pagamento su IBAN IT60 X054 2811 1010 0000 0123 456 come sempre.",
+   "body_html_safe": null,
+   "body_html_clean": "",
+   "body_plain_clean": "In allegato la fattura. Pagamento su IBAN IT60 X054 2811 1010 0000 0123 456 come sempre.",
+   "body_plain_original": "In allegato la fattura. Pagamento su IBAN IT60 X054 2811 1010 0000 0123 456 come sempre.\n",
+   "body_text_normalization": {
+    "plain": {
+     "formatting_controls_removed": 0,
+     "joiner_padding_runs_removed": 0,
+     "before_characters": 88,
+     "after_characters": 88
+    },
+    "html": {
+     "formatting_controls_removed": 0,
+     "joiner_padding_runs_removed": 0,
+     "before_characters": 0,
+     "after_characters": 0
+    }
+   },
+   "html_form_analysis": {
+    "status": "not_applicable",
+    "form_count": 0,
+    "forms": [],
+    "message": "No HTML body is available."
+   },
+   "html_copy_deception": {
+    "status": "not_applicable",
+    "finding_count": 0,
+    "message": "No HTML body is available for copy-deception analysis.",
+    "findings": []
+   },
+   "body_clean": "In allegato la fattura. Pagamento su IBAN IT60 X054 2811 1010 0000 0123 456 come sempre.",
+   "forwarded_identity": {},
+   "body_source": "text/plain",
+   "html_strip_applied": false,
+   "body_plain_tracking_url_count": 0,
+   "body_selected_html_for_ai": false,
+   "body_plain_noise_removed_lines": 0,
+   "body_plain_noise_removed_chars": 0,
+   "attachments": [],
+   "body_ai": "In allegato la fattura. Pagamento su IBAN IT60 X054 2811 1010 0000 0123 456 come sempre.",
+   "body_for_identity": "In allegato la fattura. Pagamento su IBAN IT60 X054 2811 1010 0000 0123 456 come sempre.",
+   "body_context": "normal",
+   "body_ai_removed_quoted_lines": 0,
+   "body_ai_removed_header_lines": 0,
+   "body_ai_removed_tail_lines": 0,
+   "body_clean_full": "In allegato la fattura. Pagamento su IBAN IT60 X054 2811 1010 0000 0123 456 come sempre.",
+   "body_for_intent": "In allegato la fattura. Pagamento su IBAN IT60 X054 2811 1010 0000 0123 456 come sempre.",
+   "body_alternatives_divergent": false,
+   "ai_text_compaction": {
+    "body": {
+     "duplicate_blocks": 0,
+     "duplicate_characters": 0,
+     "before_characters": 88,
+     "after_characters": 88
+    },
+    "identity": {
+     "duplicate_blocks": 0,
+     "duplicate_characters": 0,
+     "before_characters": 88,
+     "after_characters": 88
+    },
+    "mime_body": {},
+    "mime_identity": {},
+    "method": "exact_repeated_blocks_and_mime_overlap"
+   },
+   "body_extracted": "In allegato la fattura. Pagamento su IBAN IT60 X054 2811 1010 0000 0123 456 come sempre.",
+   "body_for_ai": "In allegato la fattura. Pagamento su IBAN IT60 X054 2811 1010 0000 0123 456 come sempre.",
+   "body_analysis_limits": {
+    "decoded_source_characters": 89,
+    "inspected_source_characters": 89,
+    "source_character_limit": 2000000,
+    "source_part_character_limit": 1000000,
+    "source_truncated": false,
+    "useful_characters_before_limit": 88,
+    "ai_character_limit": 120000,
+    "ai_text_truncated": false
+   },
+   "ai_analysis_supported": true,
+   "ai_analysis_limit_message": "",
+   "links": [],
+   "calendar_invites": [],
+   "calendar_alerts": [],
+   "lookalike_alerts": [],
+   "sender_lookalike_alerts": [],
+   "display_mismatch_alerts": [],
+   "link_hosting_alerts": [],
+   "recipient_link_alerts": [],
+   "unsafe_scheme_links": [],
+   "reply_threading": {
+    "level": "NONE",
+    "message": "",
+    "reply_prefix": "",
+    "threading_headers": [],
+    "quoted_messages": 0,
+    "quoted_from_recipient": false
+   },
+   "payment_details": {
+    "body_ibans": [
+     "IT60 **** 3456"
+    ],
+    "quoted_ibans": [],
+    "attachment_ibans": [],
+    "change_phrase": "",
+    "sender_country": "IT",
+    "alerts": []
+   },
+   "link_context_alerts": [],
+   "reply_to_routing": {
+    "level": "NONE",
+    "message": "",
+    "exception": false
+   },
+   "flags": [
+    {
+     "level": "INFO",
+     "field": "SPF",
+     "message": "No SPF result is available in this EML export"
+    },
+    {
+     "level": "INFO",
+     "field": "DKIM",
+     "message": "No DKIM signature is available in this EML export"
+    },
+    {
+     "level": "INFO",
+     "field": "DMARC",
+     "message": "No DMARC result is available in this EML export"
+    }
+   ],
+   "phi4_analysis": {
+    "status": "ok",
+    "analysis": {
+     "final_verdict": "legitimate",
+     "content_risk": "benign",
+     "identity_risk": "uncertain",
+     "technical_risk": "clean",
+     "requested_action": "informational",
+     "action_channel": "none",
+     "urgency_present": false,
+     "urgency_targets_risky_action": false,
+     "confidence": 0.5,
+     "ambiguity": "low",
+     "explanation": "No risky content request or strong technical threat was detected.",
+     "semantic_reason": "No semantic explanation returned.",
+     "ai_content_assessment": "benign",
+     "ai_content_rationale": "Ordinary message.",
+     "ai_content_evidence": "",
+     "ai_content_verification": {},
+     "content_summary": "Synthetic message.",
+     "content_summary_source": "legacy",
+     "content_summary_parts": [],
+     "intent_evidence": "",
+     "intent_signals": [],
+     "signal_evidence": "",
+     "credential_type": "none",
+     "payment_method": "none",
+     "payment_asset": "",
+     "amount": "",
+     "payment_destination_change": false,
+     "payment_change_evidence": "",
+     "coercion": false,
+     "threat_type": "none",
+     "scam_type": "none",
+     "claimed_brand": "",
+     "evidence": {
+      "content": [
+       "no risky requested action was identified"
+      ],
+      "identity": [
+       "Sender authentication could not be independently verified; usable authentication results are unavailable"
+      ],
+      "technical": [
+       "no strong technical threat was detected"
+      ]
+     },
+     "corroboration": {
+      "supports_decision": true,
+      "details": [
+       "no strong technical threat was detected"
+      ],
+      "caveats": [
+       "Sender authentication could not be independently verified; usable authentication results are unavailable"
+      ]
+     },
+     "semantic_extraction": {
+      "requested_action": "informational",
+      "action_channel": "none",
+      "asks_to_click_link": false,
+      "asks_to_open_attachment": false,
+      "asks_for_credentials": false,
+      "asks_for_sensitive_information": false,
+      "asks_for_payment": false,
+      "asks_to_verify_account": false,
+      "asks_to_claim_reward": false,
+      "financial_incentive_present": false,
+      "asks_to_change_account_settings": false,
+      "asks_to_bypass_procedure": false,
+      "urgency_present": false,
+      "urgency_targets_risky_action": false,
+      "impersonation_or_deception": false,
+      "financial_pretext_present": false,
+      "threat_or_consequence_present": false,
+      "semantic_signals": [],
+      "signal_evidence": "",
+      "credential_type": "none",
+      "payment_method": "none",
+      "payment_asset": "",
+      "amount": "",
+      "payment_destination_change": false,
+      "payment_change_evidence": "",
+      "security_alert": false,
+      "requested_external_action": false,
+      "identity_deception": false,
+      "security_lure_evidence": "",
+      "coercion": false,
+      "threat_type": "none",
+      "scam_type": "none",
+      "structured_extortion": false,
+      "claimed_brand": "",
+      "claimed_role": "unclear",
+      "model_content_risk": "benign",
+      "model_risk_evidence": "",
+      "model_risk_rationale": "Ordinary message.",
+      "risk_verification": {},
+      "confidence": 0.5,
+      "confidence_provided": false,
+      "ambiguity": "low",
+      "reason": "No semantic explanation returned.",
+      "evidence_phrase": "",
+      "intent_verifier_used": false,
+      "primary_requested_action": "",
+      "content_summary": "Synthetic message.",
+      "content_summary_source": "legacy"
+     },
+     "policy_version": "semantic-policy-v50-template-summary"
+    }
+   }
+  }
+ },
+ {
+  "name": "personalised_login_link",
+  "python_verdict": "phishing",
+  "report": {
+   "delivered_to": null,
+   "to": "mario.rossi@azienda.it",
+   "from_": "IT <it@it-portal.example>",
+   "from_registered_domain": "it-portal.example",
+   "subject": "Accesso",
+   "threading_headers": {},
+   "date": "Mon, 26 Oct 2026 10:00:00 +0000",
+   "message_id": "<synthetic@fishstop.invalid>",
+   "importance": null,
+   "mime_version": "1.0",
+   "content_type": "multipart/alternative; boundary=\"===============7448116634214172326==\"",
+   "bulk_sender_signals": [],
+   "bulk_sender_signal_count": 0,
+   "is_bulk_sender": false,
+   "return_path": null,
+   "errors_to": null,
+   "reply_to": null,
+   "from_mailbox_candidates": [
+    "it@it-portal.example"
+   ],
+   "from_ambiguous": false,
+   "reply_to_mismatch_legitimate": false,
+   "reply_to_mismatch": false,
+   "return_path_domain_mismatch": false,
+   "return_path_domain": "",
+   "display_name_spoofing": null,
+   "x_google_smtp_source": null,
+   "x_received": null,
+   "arc_seal": null,
+   "arc_message_signature": null,
+   "arc_authentication_results": "",
+   "received_hops": [],
+   "closest_to_recipient": {},
+   "injection_server": {},
+   "closest_to_sender": {},
+   "injection_sender_ip": null,
+   "received_spf_raw": "",
+   "received_spf_results": {},
+   "authentication_results_raw": "",
+   "auth_results": {},
+   "arc_auth_results": {},
+   "effective_auth_results": {},
+   "authentication_checkpoints": [],
+   "injection_ip_spf_authorized": false,
+   "spf_sender_aligned": false,
+   "dkim_signature_present": false,
+   "dkim_signature_raw": "",
+   "body": "See the HTML version.",
+   "body_html_safe": "<div data-fishstop-email-preview=\"true\"><a title=\"Link removed for safety: use the Links found in the email section.\">Accedi</a>\n</div>",
+   "body_html_clean": "Accedi",
+   "body_plain_clean": "See the HTML version.",
+   "body_plain_original": "See the HTML version.\n",
+   "body_text_normalization": {
+    "plain": {
+     "formatting_controls_removed": 0,
+     "joiner_padding_runs_removed": 0,
+     "before_characters": 21,
+     "after_characters": 21
+    },
+    "html": {
+     "formatting_controls_removed": 0,
+     "joiner_padding_runs_removed": 0,
+     "before_characters": 6,
+     "after_characters": 6
+    }
+   },
+   "html_form_analysis": {
+    "status": "clean",
+    "form_count": 0,
+    "forms": [],
+    "message": "No HTML forms were found."
+   },
+   "html_copy_deception": {
+    "status": "clean",
+    "finding_count": 0,
+    "message": "No HTML copy-deception pattern was detected.",
+    "findings": []
+   },
+   "body_clean": "See the HTML version.",
+   "forwarded_identity": {},
+   "body_source": "text/plain",
+   "html_strip_applied": true,
+   "body_plain_tracking_url_count": 0,
+   "body_selected_html_for_ai": false,
+   "body_plain_noise_removed_lines": 0,
+   "body_plain_noise_removed_chars": 0,
+   "attachments": [],
+   "body_ai": "See the HTML version.\n\n[HTML alternative]\nAccedi",
+   "body_for_identity": "See the HTML version.\n\n[HTML alternative]\nAccedi",
+   "body_context": "normal",
+   "body_ai_removed_quoted_lines": 0,
+   "body_ai_removed_header_lines": 0,
+   "body_ai_removed_tail_lines": 0,
+   "body_clean_full": "See the HTML version.",
+   "body_for_intent": "See the HTML version.\n\n[HTML alternative]\nAccedi",
+   "body_alternatives_divergent": true,
+   "ai_text_compaction": {
+    "body": {
+     "duplicate_blocks": 0,
+     "duplicate_characters": 0,
+     "before_characters": 48,
+     "after_characters": 48
+    },
+    "identity": {
+     "duplicate_blocks": 0,
+     "duplicate_characters": 0,
+     "before_characters": 48,
+     "after_characters": 48
+    },
+    "mime_body": {
+     "alternative_characters_omitted": 0,
+     "alternatives_differ": true
+    },
+    "mime_identity": {
+     "alternative_characters_omitted": 0,
+     "alternatives_differ": true
+    },
+    "method": "exact_repeated_blocks_and_mime_overlap"
+   },
+   "body_extracted": "See the HTML version.\n\n[HTML alternative]\nAccedi",
+   "body_for_ai": "See the HTML version.\n\n[HTML alternative]\nAccedi",
+   "body_analysis_limits": {
+    "decoded_source_characters": 93,
+    "inspected_source_characters": 93,
+    "source_character_limit": 2000000,
+    "source_part_character_limit": 1000000,
+    "source_truncated": false,
+    "useful_characters_before_limit": 48,
+    "ai_character_limit": 120000,
+    "ai_text_truncated": false
+   },
+   "ai_analysis_supported": true,
+   "ai_analysis_limit_message": "",
+   "links": [
+    {
+     "url": "https://login.example.com/#mario.rossi@azienda.it",
+     "display_text": "Accedi",
+     "action_labels": [
+      "Accedi"
+     ],
+     "display_url": "",
+     "display_host": "",
+     "display_mismatch": false,
+     "host": "login.example.com",
+     "registered_domain": "example.com",
+     "display_registered_domain": "",
+     "scheme": "https",
+     "source": "html_href",
+     "role": "body_action",
+     "actionable": true,
+     "html_call_to_action": false,
+     "resolved_display_destination": false,
+     "signature_tracking_redirect": false,
+     "is_ip": false,
+     "download_filename": "",
+     "download_extension": "",
+     "download_source": "path",
+     "dangerous_download": false,
+     "has_userinfo": false,
+     "has_credentials": false,
+     "nonstandard_port": false,
+     "port": null,
+     "nested_redirect_count": 0,
+     "redirect_targets": [],
+     "redirect_hosts": [],
+     "redirect_downloads": [],
+     "unicode_path_or_query": false,
+     "unicode_host": false,
+     "raw_at_sign": true
+    }
+   ],
+   "calendar_invites": [],
+   "calendar_alerts": [],
+   "lookalike_alerts": [],
+   "sender_lookalike_alerts": [],
+   "display_mismatch_alerts": [],
+   "link_hosting_alerts": [],
+   "recipient_link_alerts": [
+    {
+     "url": "https://login.example.com/#mario.rossi@azienda.it",
+     "host": "login.example.com",
+     "level": "HIGH",
+     "message": "The link to `login.example.com` carries the recipient address in its fragment, a technique used by phishing kits to pre-fill a fake login page."
+    }
+   ],
+   "unsafe_scheme_links": [],
+   "reply_threading": {
+    "level": "NONE",
+    "message": "",
+    "reply_prefix": "",
+    "threading_headers": [],
+    "quoted_messages": 0,
+    "quoted_from_recipient": false
+   },
+   "payment_details": {
+    "body_ibans": [],
+    "quoted_ibans": [],
+    "attachment_ibans": [],
+    "change_phrase": "",
+    "sender_country": "",
+    "alerts": []
+   },
+   "link_context_alerts": [],
+   "reply_to_routing": {
+    "level": "NONE",
+    "message": "",
+    "exception": false
+   },
+   "flags": [
+    {
+     "level": "INFO",
+     "field": "SPF",
+     "message": "No SPF result is available in this EML export"
+    },
+    {
+     "level": "INFO",
+     "field": "DKIM",
+     "message": "No DKIM signature is available in this EML export"
+    },
+    {
+     "level": "INFO",
+     "field": "DMARC",
+     "message": "No DMARC result is available in this EML export"
+    },
+    {
+     "level": "INFO",
+     "field": "Body",
+     "message": "Different versions of the message content were checked for inconsistencies."
+    },
+    {
+     "level": "HIGH",
+     "field": "Personalised link",
+     "message": "The link to `login.example.com` carries the recipient address in its fragment, a technique used by phishing kits to pre-fill a fake login page."
+    }
+   ],
+   "phi4_analysis": {
+    "status": "ok",
+    "analysis": {
+     "final_verdict": "phishing",
+     "content_risk": "benign",
+     "identity_risk": "uncertain",
+     "technical_risk": "malicious",
+     "requested_action": "visit_link",
+     "action_channel": "supplied_link",
+     "urgency_present": false,
+     "urgency_targets_risky_action": false,
+     "confidence": 0.5,
+     "ambiguity": "low",
+     "explanation": "Strong or corroborated phishing evidence was detected.",
+     "semantic_reason": "Accedi",
+     "ai_content_assessment": "benign",
+     "ai_content_rationale": "Ordinary message.",
+     "ai_content_evidence": "",
+     "ai_content_verification": {},
+     "content_summary": "Synthetic message.",
+     "content_summary_source": "legacy",
+     "content_summary_parts": [],
+     "intent_evidence": "Accedi",
+     "intent_signals": [],
+     "signal_evidence": "",
+     "credential_type": "none",
+     "payment_method": "none",
+     "payment_asset": "",
+     "amount": "",
+     "payment_destination_change": false,
+     "payment_change_evidence": "",
+     "coercion": false,
+     "threat_type": "none",
+     "scam_type": "none",
+     "claimed_brand": "",
+     "evidence": {
+      "content": [
+       "no risky requested action was identified"
+      ],
+      "identity": [
+       "Sender authentication could not be independently verified; usable authentication results are unavailable"
+      ],
+      "technical": [
+       "a high-severity static check requires blocking the message: Personalised link"
+      ]
+     },
+     "corroboration": {
+      "supports_decision": true,
+      "details": [
+       "Sender authentication could not be independently verified; usable authentication results are unavailable",
+       "a high-severity static check requires blocking the message: Personalised link"
+      ],
+      "caveats": []
+     },
+     "semantic_extraction": {
+      "requested_action": "visit_link",
+      "action_channel": "supplied_link",
+      "asks_to_click_link": true,
+      "asks_to_open_attachment": false,
+      "asks_for_credentials": false,
+      "asks_for_sensitive_information": false,
+      "asks_for_payment": false,
+      "asks_to_verify_account": false,
+      "asks_to_claim_reward": false,
+      "financial_incentive_present": false,
+      "asks_to_change_account_settings": false,
+      "asks_to_bypass_procedure": false,
+      "urgency_present": false,
+      "urgency_targets_risky_action": false,
+      "impersonation_or_deception": false,
+      "financial_pretext_present": false,
+      "threat_or_consequence_present": false,
+      "semantic_signals": [],
+      "signal_evidence": "",
+      "credential_type": "none",
+      "payment_method": "none",
+      "payment_asset": "",
+      "amount": "",
+      "payment_destination_change": false,
+      "payment_change_evidence": "",
+      "security_alert": false,
+      "requested_external_action": false,
+      "identity_deception": false,
+      "security_lure_evidence": "",
+      "coercion": false,
+      "threat_type": "none",
+      "scam_type": "none",
+      "structured_extortion": false,
+      "claimed_brand": "",
+      "claimed_role": "unclear",
+      "model_content_risk": "benign",
+      "model_risk_evidence": "",
+      "model_risk_rationale": "Ordinary message.",
+      "risk_verification": {},
+      "confidence": 0.5,
+      "confidence_provided": false,
+      "ambiguity": "low",
+      "reason": "Accedi",
+      "evidence_phrase": "Accedi",
+      "intent_verifier_used": false,
+      "primary_requested_action": "",
+      "content_summary": "Synthetic message.",
+      "content_summary_source": "legacy"
+     },
+     "policy_version": "semantic-policy-v50-template-summary"
+    }
+   }
+  }
+ },
+ {
+  "name": "missing_dkim_only",
+  "python_verdict": "legitimate",
+  "report": {
+   "delivered_to": null,
+   "to": "mario.rossi@azienda.it",
+   "from_": "Shop <news@shop.example>",
+   "from_registered_domain": "shop.example",
+   "subject": "Informazioni",
+   "threading_headers": {},
+   "date": "Mon, 26 Oct 2026 10:00:00 +0000",
+   "message_id": "<synthetic@fishstop.invalid>",
+   "importance": null,
+   "mime_version": "1.0",
+   "content_type": "text/plain; charset=\"utf-8\"",
+   "bulk_sender_signals": [],
+   "bulk_sender_signal_count": 0,
+   "is_bulk_sender": false,
+   "return_path": null,
+   "errors_to": null,
+   "reply_to": null,
+   "from_mailbox_candidates": [
+    "news@shop.example"
+   ],
+   "from_ambiguous": false,
+   "reply_to_mismatch_legitimate": false,
+   "reply_to_mismatch": false,
+   "return_path_domain_mismatch": false,
+   "return_path_domain": "",
+   "display_name_spoofing": null,
+   "x_google_smtp_source": null,
+   "x_received": null,
+   "arc_seal": null,
+   "arc_message_signature": null,
+   "arc_authentication_results": "",
+   "received_hops": [],
+   "closest_to_recipient": {},
+   "injection_server": {},
+   "closest_to_sender": {},
+   "injection_sender_ip": null,
+   "received_spf_raw": "",
+   "received_spf_results": {},
+   "authentication_results_raw": "",
+   "auth_results": {},
+   "arc_auth_results": {},
+   "effective_auth_results": {},
+   "authentication_checkpoints": [],
+   "injection_ip_spf_authorized": false,
+   "spf_sender_aligned": false,
+   "dkim_signature_present": false,
+   "dkim_signature_raw": "",
+   "body": "Orari di apertura.",
+   "body_html_safe": null,
+   "body_html_clean": "",
+   "body_plain_clean": "Orari di apertura.",
+   "body_plain_original": "Orari di apertura.\n",
+   "body_text_normalization": {
+    "plain": {
+     "formatting_controls_removed": 0,
+     "joiner_padding_runs_removed": 0,
+     "before_characters": 18,
+     "after_characters": 18
+    },
+    "html": {
+     "formatting_controls_removed": 0,
+     "joiner_padding_runs_removed": 0,
+     "before_characters": 0,
+     "after_characters": 0
+    }
+   },
+   "html_form_analysis": {
+    "status": "not_applicable",
+    "form_count": 0,
+    "forms": [],
+    "message": "No HTML body is available."
+   },
+   "html_copy_deception": {
+    "status": "not_applicable",
+    "finding_count": 0,
+    "message": "No HTML body is available for copy-deception analysis.",
+    "findings": []
+   },
+   "body_clean": "Orari di apertura.",
+   "forwarded_identity": {},
+   "body_source": "text/plain",
+   "html_strip_applied": false,
+   "body_plain_tracking_url_count": 0,
+   "body_selected_html_for_ai": false,
+   "body_plain_noise_removed_lines": 0,
+   "body_plain_noise_removed_chars": 0,
+   "attachments": [],
+   "body_ai": "Orari di apertura.",
+   "body_for_identity": "Orari di apertura.",
+   "body_context": "normal",
+   "body_ai_removed_quoted_lines": 0,
+   "body_ai_removed_header_lines": 0,
+   "body_ai_removed_tail_lines": 0,
+   "body_clean_full": "Orari di apertura.",
+   "body_for_intent": "Orari di apertura.",
+   "body_alternatives_divergent": false,
+   "ai_text_compaction": {
+    "body": {
+     "duplicate_blocks": 0,
+     "duplicate_characters": 0,
+     "before_characters": 18,
+     "after_characters": 18
+    },
+    "identity": {
+     "duplicate_blocks": 0,
+     "duplicate_characters": 0,
+     "before_characters": 18,
+     "after_characters": 18
+    },
+    "mime_body": {},
+    "mime_identity": {},
+    "method": "exact_repeated_blocks_and_mime_overlap"
+   },
+   "body_extracted": "Orari di apertura.",
+   "body_for_ai": "Orari di apertura.",
+   "body_analysis_limits": {
+    "decoded_source_characters": 19,
+    "inspected_source_characters": 19,
+    "source_character_limit": 2000000,
+    "source_part_character_limit": 1000000,
+    "source_truncated": false,
+    "useful_characters_before_limit": 18,
+    "ai_character_limit": 120000,
+    "ai_text_truncated": false
+   },
+   "ai_analysis_supported": true,
+   "ai_analysis_limit_message": "",
+   "links": [],
+   "calendar_invites": [],
+   "calendar_alerts": [],
+   "lookalike_alerts": [],
+   "sender_lookalike_alerts": [],
+   "display_mismatch_alerts": [],
+   "link_hosting_alerts": [],
+   "recipient_link_alerts": [],
+   "unsafe_scheme_links": [],
+   "reply_threading": {
+    "level": "NONE",
+    "message": "",
+    "reply_prefix": "",
+    "threading_headers": [],
+    "quoted_messages": 0,
+    "quoted_from_recipient": false
+   },
+   "payment_details": {
+    "body_ibans": [],
+    "quoted_ibans": [],
+    "attachment_ibans": [],
+    "change_phrase": "",
+    "sender_country": "",
+    "alerts": []
+   },
+   "link_context_alerts": [],
+   "reply_to_routing": {
+    "level": "NONE",
+    "message": "",
+    "exception": false
+   },
+   "flags": [
+    {
+     "level": "INFO",
+     "field": "SPF",
+     "message": "No SPF result is available in this EML export"
+    },
+    {
+     "level": "INFO",
+     "field": "DKIM",
+     "message": "No DKIM signature is available in this EML export"
+    },
+    {
+     "level": "INFO",
+     "field": "DMARC",
+     "message": "No DMARC result is available in this EML export"
+    }
+   ],
+   "phi4_analysis": {
+    "status": "ok",
+    "analysis": {
+     "final_verdict": "legitimate",
+     "content_risk": "benign",
+     "identity_risk": "uncertain",
+     "technical_risk": "clean",
+     "requested_action": "informational",
+     "action_channel": "none",
+     "urgency_present": false,
+     "urgency_targets_risky_action": false,
+     "confidence": 0.5,
+     "ambiguity": "low",
+     "explanation": "No risky content request or strong technical threat was detected.",
+     "semantic_reason": "No semantic explanation returned.",
+     "ai_content_assessment": "benign",
+     "ai_content_rationale": "Ordinary message.",
+     "ai_content_evidence": "",
+     "ai_content_verification": {},
+     "content_summary": "Synthetic message.",
+     "content_summary_source": "legacy",
+     "content_summary_parts": [],
+     "intent_evidence": "",
+     "intent_signals": [],
+     "signal_evidence": "",
+     "credential_type": "none",
+     "payment_method": "none",
+     "payment_asset": "",
+     "amount": "",
+     "payment_destination_change": false,
+     "payment_change_evidence": "",
+     "coercion": false,
+     "threat_type": "none",
+     "scam_type": "none",
+     "claimed_brand": "",
+     "evidence": {
+      "content": [
+       "no risky requested action was identified"
+      ],
+      "identity": [
+       "Sender authentication could not be independently verified; usable authentication results are unavailable"
+      ],
+      "technical": [
+       "no strong technical threat was detected"
+      ]
+     },
+     "corroboration": {
+      "supports_decision": true,
+      "details": [
+       "no strong technical threat was detected"
+      ],
+      "caveats": [
+       "Sender authentication could not be independently verified; usable authentication results are unavailable"
+      ]
+     },
+     "semantic_extraction": {
+      "requested_action": "informational",
+      "action_channel": "none",
+      "asks_to_click_link": false,
+      "asks_to_open_attachment": false,
+      "asks_for_credentials": false,
+      "asks_for_sensitive_information": false,
+      "asks_for_payment": false,
+      "asks_to_verify_account": false,
+      "asks_to_claim_reward": false,
+      "financial_incentive_present": false,
+      "asks_to_change_account_settings": false,
+      "asks_to_bypass_procedure": false,
+      "urgency_present": false,
+      "urgency_targets_risky_action": false,
+      "impersonation_or_deception": false,
+      "financial_pretext_present": false,
+      "threat_or_consequence_present": false,
+      "semantic_signals": [],
+      "signal_evidence": "",
+      "credential_type": "none",
+      "payment_method": "none",
+      "payment_asset": "",
+      "amount": "",
+      "payment_destination_change": false,
+      "payment_change_evidence": "",
+      "security_alert": false,
+      "requested_external_action": false,
+      "identity_deception": false,
+      "security_lure_evidence": "",
+      "coercion": false,
+      "threat_type": "none",
+      "scam_type": "none",
+      "structured_extortion": false,
+      "claimed_brand": "",
+      "claimed_role": "unclear",
+      "model_content_risk": "benign",
+      "model_risk_evidence": "",
+      "model_risk_rationale": "Ordinary message.",
+      "risk_verification": {},
+      "confidence": 0.5,
+      "confidence_provided": false,
+      "ambiguity": "low",
+      "reason": "No semantic explanation returned.",
+      "evidence_phrase": "",
+      "intent_verifier_used": false,
+      "primary_requested_action": "",
+      "content_summary": "Synthetic message.",
+      "content_summary_source": "legacy"
+     },
+     "policy_version": "semantic-policy-v50-template-summary"
+    }
+   }
+  }
+ }
+]

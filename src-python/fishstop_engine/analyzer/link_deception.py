@@ -4,7 +4,14 @@ Nothing here performs network access: decisions use only the parsed message.
 """
 from __future__ import annotations
 
-from fishstop_engine.domain_utils import normalize_hostname, registered_domain
+import base64
+import json
+import re
+from functools import lru_cache
+from pathlib import Path
+from urllib.parse import unquote, urlsplit
+
+from fishstop_engine.domain_utils import mailbox_candidates, normalize_hostname, registered_domain
 
 from .lookalike import (
     check_lookalike_domains,
@@ -26,6 +33,110 @@ CLICK_TRACKING_DOMAINS = frozenset({
     "cudasvc.com", "mimecast.com", "mimecastprotect.com", "emlnk.com", "ct.sendgrid.net",
     "acemlna.com", "acemlnb.com", "acemlnc.com", "acemlnd.com", "mailerlite.com", "mlsend.com",
 })
+
+
+LINK_HOSTING_PATH = Path(__file__).resolve().parents[1] / "data" / "link-hosting.json"
+
+
+@lru_cache(maxsize=1)
+def _link_hosting() -> dict:
+    try:
+        data = json.loads(LINK_HOSTING_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        data = {}
+    return {key: frozenset(str(item).lower() for item in data.get(key) or [])
+            for key in ("ipfs_gateways", "shorteners", "abused_hosting")}
+
+
+def _host_in(host: str, domains: frozenset[str]) -> bool:
+    return host in domains or any(host.endswith("." + domain) for domain in domains)
+
+
+def _hosting_kind(host: str, url: str) -> str:
+    data = _link_hosting()
+    path = urlsplit(url).path.lower() if url else ""
+    if _host_in(host, data["ipfs_gateways"]) or "/ipfs/" in path or "/ipns/" in path or ".ipfs." in host:
+        return "ipfs"
+    if _host_in(host, data["shorteners"]):
+        return "shortener"
+    if _host_in(host, data["abused_hosting"]):
+        return "abused_hosting"
+    return ""
+
+
+def assess_link_hosting(report: dict) -> list[dict]:
+    """Report IPFS gateways, URL shorteners and abused free hosting.
+
+    IPFS links are MEDIUM: legitimate business mail practically never uses
+    them. Shorteners and free hosting are MEDIUM when used as a clickable
+    call to action, informational otherwise.
+    """
+    labels = {
+        "ipfs": "an IPFS gateway, a hosting method frequently used for phishing pages",
+        "shortener": "a URL shortener that hides the final destination",
+        "abused_hosting": "a free hosting or form service frequently abused for phishing pages",
+    }
+    alerts: list[dict] = []
+    for link in _web_actionable_links(report):
+        host = normalize_hostname(link.get("host") or "")
+        kind = _hosting_kind(host, str(link.get("url") or ""))
+        if not kind:
+            continue
+        level = "MEDIUM" if kind == "ipfs" or link.get("html_call_to_action") else "INFO"
+        alerts.append({"url": link.get("url"), "host": host, "kind": kind, "level": level,
+                       "message": f"The link `{host}` uses {labels[kind]}."})
+    return alerts[:10]
+
+
+def _encodings_of(address: str) -> set[str]:
+    raw = address.encode()
+    variants = {address.casefold()}
+    for encoder in (base64.b64encode, base64.urlsafe_b64encode):
+        encoded = encoder(raw).decode()
+        variants.update({encoded, encoded.rstrip("=")})
+    return {variant for variant in variants if len(variant) >= 8}
+
+
+def assess_recipient_in_links(report: dict) -> list[dict]:
+    """Detect links personalised with the recipient address.
+
+    Phishing kits pass the victim address to pre-fill a fake login page,
+    usually in the URL fragment (never sent to server logs) or base64
+    encoded. Plain addresses in the query are common in legitimate
+    unsubscribe and preference links and are not reported.
+    """
+    addresses = {
+        address.casefold()
+        for key in ("to", "delivered_to")
+        for _, address in mailbox_candidates(report.get(key) or "")[:10]
+        if "@" in address
+    }
+    if not addresses:
+        return []
+    alerts: list[dict] = []
+    for link in _web_actionable_links(report):
+        url = str(link.get("url") or "")
+        try:
+            parts = urlsplit(url)
+        except ValueError:
+            continue
+        fragment = unquote(unquote(parts.fragment))
+        rest = unquote(unquote(parts.path + "?" + parts.query))
+        for address in addresses:
+            encoded = _encodings_of(address) - {address}
+            in_fragment = address in fragment.casefold() or any(item in fragment for item in encoded)
+            encoded_elsewhere = any(item in rest for item in encoded)
+            if in_fragment or encoded_elsewhere:
+                alerts.append({
+                    "url": url, "host": link.get("host"), "level": "HIGH" if in_fragment else "MEDIUM",
+                    "message": (
+                        f"The link to `{link.get('host')}` carries the recipient address "
+                        + ("in its fragment" if in_fragment else "encoded in its path or query")
+                        + ", a technique used by phishing kits to pre-fill a fake login page."
+                    ),
+                })
+                break
+    return alerts[:10]
 
 
 def _is_click_tracking(host: str) -> bool:
@@ -107,5 +218,7 @@ def refresh_link_alerts(report: dict, unsafe_scheme_links: list[dict] | None = N
         lookalike_link_inputs(report), known_brands=protected_brands(report))
     report["sender_lookalike_alerts"] = check_sender_lookalikes(report)
     report["display_mismatch_alerts"] = assess_display_mismatches(report)
+    report["link_hosting_alerts"] = assess_link_hosting(report)
+    report["recipient_link_alerts"] = assess_recipient_in_links(report)
     if unsafe_scheme_links is not None:
         report["unsafe_scheme_links"] = unsafe_scheme_links

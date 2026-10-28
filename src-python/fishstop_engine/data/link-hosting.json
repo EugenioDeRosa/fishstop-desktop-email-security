@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "description": "Hosts that legitimate senders rarely use as the destination of an email call to action but that phishing campaigns frequently abuse. Matching is by exact host or parent domain. These are review signals, never a verdict on their own.",
+  "ipfs_gateways": [
+    "ipfs.io", "dweb.link", "cloudflare-ipfs.com", "gateway.pinata.cloud", "w3s.link",
+    "nftstorage.link", "4everland.io", "fleek.co", "ipfs.fleek.co", "infura-ipfs.io", "ipfs.eth.aragon.network"
+  ],
+  "shorteners": [
+    "bit.ly", "bitly.com", "tinyurl.com", "t.ly", "is.gd", "v.gd", "cutt.ly", "rb.gy", "shorturl.at",
+    "ow.ly", "buff.ly", "rebrand.ly", "s.id", "t2m.io", "tiny.cc", "shorte.st", "qrco.de", "u.to",
+    "clck.ru", "goo.su", "lnkd.in", "surl.li", "linktr.ee"
+  ],
+  "abused_hosting": [
+    "forms.office.com", "forms.gle", "sites.google.com", "storage.googleapis.com",
+    "firebasestorage.googleapis.com", "firebaseapp.com", "web.app", "blob.core.windows.net",
+    "web.core.windows.net", "s3.amazonaws.com", "r2.dev", "pages.dev", "workers.dev", "vercel.app",
+    "netlify.app", "glitch.me", "replit.app", "repl.co", "webflow.io", "framer.app", "framer.website",
+    "wixsite.com", "weebly.com", "godaddysites.com", "square.site", "notion.site", "my.canva.site",
+    "ngrok-free.app", "ngrok.io", "ngrok.app", "trycloudflare.com", "onrender.com", "fly.dev",
+    "herokuapp.com", "github.io", "gitbook.io", "jimdosite.com", "mystrikingly.com", "carrd.co",
+    "typeform.com", "jotform.com", "formstack.com", "surveymonkey.com", "zohopublic.com",
+    "ipfs.io", "telegra.ph", "000webhostapp.com"
+  ]
+}

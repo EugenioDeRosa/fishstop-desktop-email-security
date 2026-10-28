@@ -1207,5 +1207,17 @@
   "A bulk sender uses a reply prefix without threading headers. This misrepresents the message as part of an existing conversation.": "Un mittente massivo usa un prefisso di risposta senza header di thread. Il messaggio viene presentato in modo ingannevole come parte di una conversazione esistente.",
   "the message imitates an existing conversation without belonging to one": "il messaggio imita una conversazione esistente senza farne parte",
   "the message imitates an existing conversation without belonging to one and makes a sensitive request": "il messaggio imita una conversazione esistente senza farne parte e contiene una richiesta sensibile",
-  "the message is presented as a reply but is not linked to a previous message": "il messaggio è presentato come risposta ma non è collegato a un messaggio precedente"
+  "the message is presented as a reply but is not linked to a previous message": "il messaggio è presentato come risposta ma non è collegato a un messaggio precedente",
+  "Payment details": "Coordinate di pagamento",
+  "Link domain age": "Età del dominio del link",
+  "Link hosting": "Hosting del link",
+  "Personalised link": "Link personalizzato",
+  "Calendar invite": "Invito calendario",
+  "The linked domain `{0}` was registered {1} day(s) ago.": "Il dominio del link `{0}` è stato registrato {1} giorno/i fa.",
+  "The linked domain `{0}` was registered {1} day(s) ago. Newly registered domains are a strong phishing indicator.": "Il dominio del link `{0}` è stato registrato {1} giorno/i fa. I domini appena registrati sono un forte indicatore di phishing.",
+  "The link `{0}` uses an IPFS gateway, a hosting method frequently used for phishing pages.": "Il link `{0}` usa un gateway IPFS, un tipo di hosting usato spesso per pagine di phishing.",
+  "The link `{0}` uses a URL shortener that hides the final destination.": "Il link `{0}` usa un servizio di URL brevi che nasconde la destinazione finale.",
+  "The link `{0}` uses a free hosting or form service frequently abused for phishing pages.": "Il link `{0}` usa un servizio di hosting o di moduli gratuito spesso abusato per pagine di phishing.",
+  "The invitation embeds a file inside the calendar data.": "L'invito incorpora un file nei dati del calendario.",
+  "a calendar invitation with links comes from an organiser who does not match the sender": "un invito calendario con link proviene da un organizzatore diverso dal mittente"
 }

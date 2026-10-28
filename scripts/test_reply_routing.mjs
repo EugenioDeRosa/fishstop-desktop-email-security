@@ -16,7 +16,7 @@ const report = {
   flags: [{ level: 'MEDIUM', field: 'Reply-To', message }],
   domain_authentication: { status: 'verified', verified_domains: ['service.example'] },
   from_registered_domain: 'service.example',
-  phi4_analysis: { status: 'ok', analysis: { final_verdict: 'review', content_risk: 'benign',
+  ai_analysis: { status: 'ok', analysis: { final_verdict: 'review', content_risk: 'benign',
     identity_risk: 'uncertain', technical_risk: 'clean', requested_action: 'visit_link', action_channel: 'supplied_link' } },
   links: [{ url: 'https://service.example/document', host: 'service.example', actionable: true }],
 };
@@ -24,7 +24,7 @@ assert.equal(context.assessment(report).tone, 'review');
 assert.equal(context.highSeverityStaticReason(report), null);
 const mismatch = structuredClone(report);
 mismatch.reply_to_routing = {level: 'HIGH', message: 'Unsupported reply routing', exception: false};
-mismatch.phi4_analysis.analysis.final_verdict = 'legitimate';
+mismatch.ai_analysis.analysis.final_verdict = 'legitimate';
 assert.equal(context.assessment(mismatch).tone, 'danger', 'Reply policy takes precedence over benign AI content');
 const legacy = structuredClone(report);
 legacy.flags = [{ level: 'HIGH', field: 'Reply-To', message: 'Reply-To (person@company.example) differs da From (notice@service.example) - possible harvesting' }];
@@ -34,8 +34,8 @@ legacy.reply_to_routing = {level: 'MEDIUM', message, exception: true};
 assert.equal(context.assessment(legacy).tone, 'review', 'Current service-routing assessment overrides a stale stored warning');
 assert.equal(legacy.flags[0].level, 'HIGH', 'Stored evidence stays intact');
 const malicious = structuredClone(report);
-malicious.phi4_analysis.analysis.final_verdict = 'phishing';
-malicious.phi4_analysis.analysis.content_risk = 'malicious';
+malicious.ai_analysis.analysis.final_verdict = 'phishing';
+malicious.ai_analysis.analysis.content_risk = 'malicious';
 assert.equal(context.assessment(malicious).tone, 'danger', 'A real service can still carry phishing content');
 const independent = structuredClone(report);
 independent.flags.push({ level: 'HIGH', field: 'Attachment', message: 'Executable attachment detected' });

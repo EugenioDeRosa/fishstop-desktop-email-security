@@ -34,7 +34,7 @@ async function verifyCompletion(cancelled = false, preparationOutcome = 'success
   const phases = [], sections = [];
   let timingsRecorded = 0;
   const splash = { style: { setProperty() {} }, classList: { add() {} }, querySelector: () => ({ textContent: '' }) };
-  const report = { phi4_analysis: { status: 'ok', performance: { wall_duration_ms: 100 } } };
+  const report = { ai_analysis: { status: 'ok', performance: { wall_duration_ms: 100 } } };
   const context = vm.createContext({ ...globalThis.__fishstopI18n,
     uploadStatus: { textContent: '' }, user: { sub: 'test' }, section: 'analyse', activeAnalysis: null,
     crypto: { randomUUID: () => 'test-analysis' }, performance: { now: () => now }, console: { info() {}, error() {}, warn() {} },

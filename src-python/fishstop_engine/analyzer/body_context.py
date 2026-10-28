@@ -1,5 +1,5 @@
 """
-Utilities for selecting the email text that should be sent to BERT.
+Utilities for selecting the email text that should be sent to the local AI.
 
 Replies and forwards often contain more than one conversation layer. The full
 body remains useful for link extraction and manual inspection, but the model
@@ -404,7 +404,7 @@ def _looks_like_thread_separator(lines: list[str], index: int) -> bool:
 
 def select_body_for_ai(body_clean: str) -> dict:
     """
-    Returns a BERT-focused body while preserving metadata about the selection.
+    Returns an AI-focused body while preserving metadata about the selection.
 
     - Forwarded emails: use the forwarded payload after the separator.
     - Replies: use the new message before the quoted conversation.

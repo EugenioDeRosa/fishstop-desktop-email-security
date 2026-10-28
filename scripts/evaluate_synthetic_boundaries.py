@@ -29,11 +29,11 @@ def direct(row):
  return {'status':'ok','seconds':time.monotonic()-start,'prediction':answer['verdict'],'answer':answer,'telemetry':{k:result.get(k) for k in ['done_reason','load_duration','prompt_eval_count','prompt_eval_duration','eval_count','eval_duration']},'raw_model_output':result['message']['content']}
 def pipeline(id):
  from fishstop_engine.analyzer import EmlSOCAnalyzer
- from fishstop_engine.analyzer.llm_context_analyzer import stream_phi4_email_analysis
+ from fishstop_engine.analyzer.llm_context_analyzer import stream_ai_email_analysis
  # Static MIME parsing only: no IP/URL enrichment or reputation requests.
  soc=EmlSOCAnalyzer().analyze(str(SET/'eml'/f'{id}.eml'))
  start=time.monotonic();last={}
- for event in stream_phi4_email_analysis(soc):
+ for event in stream_ai_email_analysis(soc):
   last=event
   if event.get('status')=='error':raise RuntimeError(event.get('message'))
  if last.get('status')!='ok':raise RuntimeError('No final structured analysis')

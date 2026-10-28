@@ -74,7 +74,7 @@ def build_contract() -> list[dict]:
         (report.get("payment_details") or {}).pop("_body_ibans_raw", None)
         report = _json_safe({key: value for key, value in report.items()
                              if key not in {"raw_eml_bytes", "raw_eml_preview", "body_html", "html_preview"}})
-        report["phi4_analysis"] = {"status": "ok", "analysis": _json_safe(analysis)}
+        report["ai_analysis"] = {"status": "ok", "analysis": _json_safe(analysis)}
         cases.append({"name": name, "python_verdict": analysis["final_verdict"], "report": report})
     return cases
 

@@ -112,7 +112,7 @@ class AIContentVerdictTests(unittest.TestCase):
         with patch.object(llm, "ANALYSIS_MODE", "fast"), patch.object(llm, "_use_ollama", return_value=True), \
                 patch.object(llm, "_request_identity_extraction", return_value={"status": "unavailable"}), \
                 patch.object(llm, "_stream_ollama", side_effect=stream):
-            result = list(llm.stream_phi4_email_analysis(dict(self.soc)))[-1]["analysis"]
+            result = list(llm.stream_ai_email_analysis(dict(self.soc)))[-1]["analysis"]
         self.assertEqual("phishing", result["final_verdict"])
         self.assertEqual("informational", result["requested_action"])
         trace = result["ai_content_trace"]
@@ -182,7 +182,7 @@ class AIContentVerdictTests(unittest.TestCase):
         for mode in ("fast", "balanced", "thorough"):
             for model in ("pro-test", "fast-test"):
                 with self.subTest(mode=mode, model=model), patch.object(llm, "ANALYSIS_MODE", mode), patch.object(llm, "_use_ollama", return_value=True), patch.object(llm, "_request_identity_extraction", return_value={"status": "unavailable"}), patch.object(llm, "_request_content_risk_verification", return_value={"status": "confirmed", "evidence": self.raw["risk_evidence"], "rationale": self.raw["risk_rationale"]}), patch.object(llm, "_stream_ollama", return_value=iter([{"status": "ok", "text": json.dumps(self.raw)}])):
-                    events = list(llm.stream_phi4_email_analysis(dict(self.soc), model=model))
+                    events = list(llm.stream_ai_email_analysis(dict(self.soc), model=model))
                     self.assertEqual("ok", events[-1]["status"])
                     self.assertEqual("phishing", events[-1]["analysis"]["final_verdict"])
 
@@ -195,7 +195,7 @@ class AIContentVerdictTests(unittest.TestCase):
         for status, expected in (("confirmed", "phishing"), ("disagreement", "review"), ("unavailable", "review")):
             with self.subTest(status=status), patch.object(llm, "ANALYSIS_MODE", "fast"), patch.object(llm, "_use_ollama", return_value=True), patch.object(llm, "_request_identity_extraction", return_value={"status": "unavailable"}), patch.object(llm, "_stream_ollama", return_value=iter([{"status": "ok", "text": json.dumps(raw)}])), patch.object(llm, "_request_content_risk_verification", return_value={"status": status}) as verify:
                 verify.return_value.update(evidence=raw["risk_evidence"], rationale=raw["risk_rationale"])
-                result = list(llm.stream_phi4_email_analysis(dict(soc)))[-1]
+                result = list(llm.stream_ai_email_analysis(dict(soc)))[-1]
                 self.assertEqual("ok", result["status"])
                 self.assertEqual(expected, result["analysis"]["final_verdict"])
                 verify.assert_called_once()
@@ -205,7 +205,7 @@ class AIContentVerdictTests(unittest.TestCase):
         verification = {"status": "confirmed", "assessment": "phishing",
                         "evidence": self.raw["risk_evidence"], "rationale": self.raw["risk_rationale"]}
         with patch.object(llm, "ANALYSIS_MODE", "fast"), patch.object(llm, "_use_ollama", return_value=True), patch.object(llm, "_request_identity_extraction", return_value={"status": "unavailable"}), patch.object(llm, "_stream_ollama", return_value=iter([{"status": "ok", "text": json.dumps(raw)}])), patch.object(llm, "_request_content_risk_verification", return_value=verification) as verify:
-            result = list(llm.stream_phi4_email_analysis(dict(self.soc)))[-1]
+            result = list(llm.stream_ai_email_analysis(dict(self.soc)))[-1]
         self.assertEqual("phishing", result["analysis"]["final_verdict"])
         self.assertEqual(self.raw["risk_evidence"], result["analysis"]["ai_content_evidence"])
         verify.assert_called_once()
@@ -258,7 +258,7 @@ class AIContentVerdictTests(unittest.TestCase):
                 patch.object(llm, "_request_identity_extraction", return_value={"status": "unavailable"}), \
                 patch.object(llm, "_stream_ollama", return_value=iter([{"status": "ok", "text": json.dumps(raw)}])), \
                 patch.object(llm, "_request_content_risk_verification", return_value=verification):
-            result = list(llm.stream_phi4_email_analysis(soc))[-1]["analysis"]
+            result = list(llm.stream_ai_email_analysis(soc))[-1]["analysis"]
         trace = result["ai_content_trace"]
         self.assertEqual("provide_credentials", trace["primary_sections"][0]["requested_action"])
         self.assertEqual("informational", trace["final_action"])

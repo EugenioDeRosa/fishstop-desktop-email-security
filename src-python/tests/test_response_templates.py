@@ -65,7 +65,7 @@ class ResponseTemplateTests(unittest.TestCase):
             with patch.object(llm, "ANALYSIS_MODE", "fast"), patch.object(llm, "_use_ollama", return_value=True), \
                     patch.object(llm, "_request_identity_extraction", return_value={"status": "unavailable"}), \
                     patch.object(llm, "_stream_ollama", side_effect=stream):
-                result = list(llm.stream_phi4_email_analysis({"body_for_ai": "The weekly update is available.",
+                result = list(llm.stream_ai_email_analysis({"body_for_ai": "The weekly update is available.",
                                                             "local_only": True, "links": [], "attachments": []}))[-1]
             self.assertEqual("ok", result["status"])
             self.assertEqual(["primary:1"], calls)

@@ -8,7 +8,7 @@ const source=ts.createSourceFile('main.ts',readFileSync(new URL('../src/main.ts'
 const functions=source.statements.filter(ts.isFunctionDeclaration);
 const context=vm.createContext({ ...globalThis.__fishstopI18n,console,URL,URLSearchParams,TextEncoder,TextDecoder});
 vm.runInContext(ts.transpileModule(functions.map(n=>n.getText(source)).join('\n'),{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText,context);
-const informational={phi4_analysis:{status:'ok',analysis:{final_verdict:'legitimate',content_risk:'benign',requested_action:'informational',identity_risk:'uncertain',technical_risk:'clean'}}};
+const informational={ai_analysis:{status:'ok',analysis:{final_verdict:'legitimate',content_risk:'benign',requested_action:'informational',identity_risk:'uncertain',technical_risk:'clean'}}};
 for(const status of ['timeout','fail','permerror','temperror']){
   const report={...informational,auth_results:{DKIM:{status}},flags:[{field:'DKIM',level:'MEDIUM',message:`DKIM ${status} - signature validation should be reviewed`}]};
   assert.equal(context.assessment(report).tone,'review',status);
@@ -25,7 +25,7 @@ for (const language of ['en', 'it']) {
     { semantic_extraction: { scam_type: 'business_email_compromise' } },
   ]) {
     for (const [risk, tone] of [['benign', 'safe'], ['suspicious', 'review'], ['malicious', 'danger']]) {
-      const report = { ...informational, phi4_analysis: { status: 'ok', analysis: { ...informational.phi4_analysis.analysis, ...category, content_risk: risk } } };
+      const report = { ...informational, ai_analysis: { status: 'ok', analysis: { ...informational.ai_analysis.analysis, ...category, content_risk: risk } } };
       const original = JSON.stringify(report);
       const verdict = context.assessment(report);
       assert.equal(verdict.tone, tone, JSON.stringify({ category, risk }));
@@ -34,17 +34,17 @@ for (const language of ['en', 'it']) {
       assert.equal(JSON.stringify(report), original, 'Keep original model evidence intact');
     }
   }
-  const malicious = { ...informational, phi4_analysis: { status: 'ok', analysis: { ...informational.phi4_analysis.analysis, content_risk: 'malicious' } } };
+  const malicious = { ...informational, ai_analysis: { status: 'ok', analysis: { ...informational.ai_analysis.analysis, content_risk: 'malicious' } } };
   assert.equal(context.assessment(malicious).tone, 'danger');
   assert.ok(context.aiThreatLabels(malicious).length);
-  const phishing = { ...informational, phi4_analysis: { status: 'ok', analysis: { ...informational.phi4_analysis.analysis, final_verdict: 'phishing', scam_type: 'invoice_fraud' } } };
+  const phishing = { ...informational, ai_analysis: { status: 'ok', analysis: { ...informational.ai_analysis.analysis, final_verdict: 'phishing', scam_type: 'invoice_fraud' } } };
   assert.equal(context.assessment(phishing).tone, 'danger', 'Explicit phishing verdicts remain high risk');
   assert.ok(context.aiThreatLabels(phishing).length);
   assert.equal(context.assessment(informational).tone, 'safe');
 }
 globalThis.__fishstopI18n.setLanguage('en');
 
-const settings={...informational,phi4_analysis:{status:'ok',analysis:{...informational.phi4_analysis.analysis,requested_action:'change_account_settings',action_channel:'normal_known_procedure',intent_evidence:'Settings > Storage'}},
+const settings={...informational,ai_analysis:{status:'ok',analysis:{...informational.ai_analysis.analysis,requested_action:'change_account_settings',action_channel:'normal_known_procedure',intent_evidence:'Settings > Storage'}},
   links:[{url:'https://unknown.example/settings',host:'unknown.example',scheme:'https',display_text:'Settings > Storage',html_call_to_action:true}],link_reputation:{}};
 assert.equal(context.assessment(settings).tone,'review','a supplied settings CTA is not an independent path');
 assert.equal(context.assessment({...settings,links:[]}).tone,'safe','independent settings instruction with no supplied link');
@@ -76,3 +76,8 @@ for (const report of [informational, settings, partial, logo]) {
   assert.equal(JSON.stringify(report), original, 'Changing language must not mutate original report evidence');
 }
 globalThis.__fishstopI18n.setLanguage('en');
+
+// History saved before the AI result key was renamed is migrated on load.
+const stored = context.validAnalysisRecords([{ id: 'r1', analyzedAt: '2026-10-01T10:00:00Z', report: { phi4_analysis: { status: 'ok', analysis: { final_verdict: 'phishing' } } } }]);
+assert.equal(stored[0].report.ai_analysis.analysis.final_verdict, 'phishing');
+assert.equal('phi4_analysis' in stored[0].report, false);

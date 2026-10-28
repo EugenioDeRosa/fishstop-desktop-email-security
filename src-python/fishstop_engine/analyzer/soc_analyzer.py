@@ -778,11 +778,11 @@ class EmlSOCAnalyzer:
         # text when an explicit HTML signature was actually removed. Otherwise
         # retain the canonical plain alternative, which may contain legitimate
         # details omitted from a divergent HTML alternative.
-        bert_source = report["body_for_intent"]
+        intent_source = report["body_for_intent"]
         if not divergent and not plain_is_structured and not html_is_structured and not (
             combined_html and html_body_for_intent != html_clean
         ):
-            bert_source = plain_body_for_ai
+            intent_source = plain_body_for_ai
         # Identity must see the selected message's contact card, even when
         # HTML intent cleaning or the action model removes that signature.
         identity_selection = (
@@ -800,11 +800,11 @@ class EmlSOCAnalyzer:
             if html_identity and html_identity != identity_body:
                 identity_body, identity_mime_compaction = merge_mime_alternatives(
                     identity_body, html_identity)
-        final_ai_selection = select_body_for_ai(bert_source)
+        final_ai_selection = select_body_for_ai(intent_source)
         report.update(final_ai_selection)
         report["body_for_identity"], identity_compaction = compact_repeated_blocks(identity_body)
         if plain_is_structured and final_ai_selection.get("body_context") == "normal":
-            # ``bert_source`` is already the selected payload, so it no longer
+            # ``intent_source`` is already the selected payload, so it no longer
             # contains the delimiter that originally proved it was forwarded.
             report["body_context"] = plain_ai_selection["body_context"]
             for key in (
@@ -814,7 +814,7 @@ class EmlSOCAnalyzer:
             ):
                 report[key] = plain_ai_selection.get(key, report.get(key, 0))
         essential_body, body_compaction = compact_repeated_blocks(
-            report.get("body_ai") or bert_source)
+            report.get("body_ai") or intent_source)
         report["body_ai"] = essential_body
         report["ai_text_compaction"] = {
             "body": body_compaction,

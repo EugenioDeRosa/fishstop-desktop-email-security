@@ -2006,7 +2006,7 @@ fn analyze_ai_with_engine(
     cancellation: Arc<AnalysisCancellation>,
     app: tauri::AppHandle,
 ) -> Result<serde_json::Value, String> {
-    if command != "phi4" {
+    if command != "ai" {
         return Err("Unsupported AI engine.".to_string());
     }
     let temporary_report =
@@ -2088,7 +2088,7 @@ fn analyze_ai_with_engine(
 }
 
 #[tauri::command]
-async fn analyze_phi4(
+async fn analyze_ai(
     report: serde_json::Value,
     analysis_id: String,
     app: tauri::AppHandle,
@@ -2150,7 +2150,7 @@ async fn analyze_phi4(
                 );
                 let engine_started = Instant::now();
                 let mut value = analyze_ai_with_engine(
-                    "phi4",
+                    "ai",
                     report,
                     &prepared.name,
                     prepared.gpu_accelerated,
@@ -2177,7 +2177,7 @@ async fn analyze_phi4(
         })
     })
     .await
-    .map_err(|error| format!("Phi-4 analysis interrupted: {error}"))?
+    .map_err(|error| format!("AI analysis interrupted: {error}"))?
 }
 
 #[tauri::command]
@@ -2471,7 +2471,7 @@ fn main() {
             analyze_eml_contents,
             cancel_analysis,
             finish_analysis,
-            analyze_phi4,
+            analyze_ai,
             prepare_analysis_ai,
             warm_ollama_model,
             optimize_cpu_performance,

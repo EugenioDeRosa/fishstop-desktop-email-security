@@ -13,7 +13,7 @@
    "message_id": "<synthetic@fishstop.invalid>",
    "importance": null,
    "mime_version": "1.0",
-   "content_type": "multipart/alternative; boundary=\"===============5254190749490069070==\"",
+   "content_type": "multipart/alternative; boundary=\"===============1330455743696360526==\"",
    "bulk_sender_signals": [],
    "bulk_sender_signal_count": 0,
    "is_bulk_sender": false,
@@ -226,7 +226,7 @@
      "message": "Different versions of the message content were checked for inconsistencies."
     }
    ],
-   "phi4_analysis": {
+   "ai_analysis": {
     "status": "ok",
     "analysis": {
      "final_verdict": "legitimate",
@@ -350,7 +350,7 @@
    "message_id": "<synthetic@fishstop.invalid>",
    "importance": null,
    "mime_version": "1.0",
-   "content_type": "multipart/alternative; boundary=\"===============6447009146247856453==\"",
+   "content_type": "multipart/alternative; boundary=\"===============2283076135447326678==\"",
    "bulk_sender_signals": [],
    "bulk_sender_signal_count": 0,
    "is_bulk_sender": false,
@@ -568,7 +568,7 @@
      "message": "Different versions of the message content were checked for inconsistencies."
     }
    ],
-   "phi4_analysis": {
+   "ai_analysis": {
     "status": "ok",
     "analysis": {
      "final_verdict": "phishing",
@@ -691,7 +691,7 @@
    "message_id": "<synthetic@fishstop.invalid>",
    "importance": null,
    "mime_version": "1.0",
-   "content_type": "multipart/alternative; boundary=\"===============8470490571440109879==\"",
+   "content_type": "multipart/alternative; boundary=\"===============0205736084240354671==\"",
    "bulk_sender_signals": [],
    "bulk_sender_signal_count": 0,
    "is_bulk_sender": false,
@@ -951,7 +951,7 @@
      "message": "The link text shows `www.intesasanpaolo.com` but opens `account-check.example`. The visible domain belongs to a protected brand or to the recipient organisation."
     }
    ],
-   "phi4_analysis": {
+   "ai_analysis": {
     "status": "ok",
     "analysis": {
      "final_verdict": "phishing",
@@ -1244,7 +1244,7 @@
      "message": "The subject presents the message as a reply, but it has no In-Reply-To, References or Thread-Index header linking it to a previous message. The previous exchange may not exist."
     }
    ],
-   "phi4_analysis": {
+   "ai_analysis": {
     "status": "ok",
     "analysis": {
      "final_verdict": "review",
@@ -1537,7 +1537,7 @@
      "message": "The message presents itself as a reply and quotes a previous message attributed to the recipient or to the recipient organisation, but no threading header links it to an earlier message. The quoted history may be fabricated to imitate an existing conversation."
     }
    ],
-   "phi4_analysis": {
+   "ai_analysis": {
     "status": "ok",
     "analysis": {
      "final_verdict": "phishing",
@@ -1660,7 +1660,7 @@
    "message_id": "<synthetic@fishstop.invalid>",
    "importance": null,
    "mime_version": "1.0",
-   "content_type": "multipart/mixed; boundary=\"===============3909210405036691571==\"",
+   "content_type": "multipart/mixed; boundary=\"===============9088775070533031603==\"",
    "bulk_sender_signals": [],
    "bulk_sender_signal_count": 0,
    "is_bulk_sender": false,
@@ -1915,7 +1915,7 @@
      "message": "'VM.svg': detected file type: unknown"
     }
    ],
-   "phi4_analysis": {
+   "ai_analysis": {
     "status": "ok",
     "analysis": {
      "final_verdict": "phishing",
@@ -2038,7 +2038,7 @@
    "message_id": "<synthetic@fishstop.invalid>",
    "importance": null,
    "mime_version": "1.0",
-   "content_type": "multipart/mixed; boundary=\"===============4048892121946633741==\"",
+   "content_type": "multipart/mixed; boundary=\"===============7390379053302882733==\"",
    "bulk_sender_signals": [],
    "bulk_sender_signal_count": 0,
    "is_bulk_sender": false,
@@ -2261,7 +2261,7 @@
      "message": "'Ordine.exe': detected file type: exe"
     }
    ],
-   "phi4_analysis": {
+   "ai_analysis": {
     "status": "ok",
     "analysis": {
      "final_verdict": "phishing",
@@ -2568,7 +2568,7 @@
      "message": "The From domain `paypa1.com` imitates `paypal.com`. Character substitution in `paypa1` reproduces `paypal` (brand: paypal.com)"
     }
    ],
-   "phi4_analysis": {
+   "ai_analysis": {
     "status": "ok",
     "analysis": {
      "final_verdict": "phishing",
@@ -2691,7 +2691,7 @@
    "message_id": "<synthetic@fishstop.invalid>",
    "importance": null,
    "mime_version": "1.0",
-   "content_type": "multipart/alternative; boundary=\"===============6315336658450813890==\"",
+   "content_type": "multipart/alternative; boundary=\"===============1974231428538949939==\"",
    "bulk_sender_signals": [],
    "bulk_sender_signal_count": 0,
    "is_bulk_sender": false,
@@ -2917,7 +2917,7 @@
      "message": "The link `ipfs.io` uses an IPFS gateway, a hosting method frequently used for phishing pages."
     }
    ],
-   "phi4_analysis": {
+   "ai_analysis": {
     "status": "ok",
     "analysis": {
      "final_verdict": "review",
@@ -3040,7 +3040,7 @@
    "message_id": "<synthetic@fishstop.invalid>",
    "importance": null,
    "mime_version": "1.0",
-   "content_type": "multipart/mixed; boundary=\"===============7836522731719809812==\"",
+   "content_type": "multipart/mixed; boundary=\"===============7838389068756678108==\"",
    "bulk_sender_signals": [],
    "bulk_sender_signal_count": 0,
    "is_bulk_sender": false,
@@ -3339,7 +3339,7 @@
      "message": "The calendar invitation 'Verifica account' contains 1 link(s) and its organiser (it@other-org.example) does not match the sender."
     }
    ],
-   "phi4_analysis": {
+   "ai_analysis": {
     "status": "ok",
     "analysis": {
      "final_verdict": "review",
@@ -3627,7 +3627,7 @@
      "message": "No DMARC result is available in this EML export"
     }
    ],
-   "phi4_analysis": {
+   "ai_analysis": {
     "status": "ok",
     "analysis": {
      "final_verdict": "phishing",
@@ -3929,7 +3929,7 @@
      "message": "The message announces changed bank details ('nuove coordinate') and provides LT12 **** 1000. The account is registered in LT while the sender domain is in IT. Confirm through a contact you already know before paying."
     }
    ],
-   "phi4_analysis": {
+   "ai_analysis": {
     "status": "ok",
     "analysis": {
      "final_verdict": "phishing",
@@ -4219,7 +4219,7 @@
      "message": "No DMARC result is available in this EML export"
     }
    ],
-   "phi4_analysis": {
+   "ai_analysis": {
     "status": "ok",
     "analysis": {
      "final_verdict": "legitimate",
@@ -4343,7 +4343,7 @@
    "message_id": "<synthetic@fishstop.invalid>",
    "importance": null,
    "mime_version": "1.0",
-   "content_type": "multipart/alternative; boundary=\"===============7448116634214172326==\"",
+   "content_type": "multipart/alternative; boundary=\"===============8130886057064269116==\"",
    "bulk_sender_signals": [],
    "bulk_sender_signal_count": 0,
    "is_bulk_sender": false,
@@ -4568,7 +4568,7 @@
      "message": "The link to `login.example.com` carries the recipient address in its fragment, a technique used by phishing kits to pre-fill a fake login page."
     }
    ],
-   "phi4_analysis": {
+   "ai_analysis": {
     "status": "ok",
     "analysis": {
      "final_verdict": "phishing",
@@ -4856,7 +4856,7 @@
      "message": "No DMARC result is available in this EML export"
     }
    ],
-   "phi4_analysis": {
+   "ai_analysis": {
     "status": "ok",
     "analysis": {
      "final_verdict": "legitimate",

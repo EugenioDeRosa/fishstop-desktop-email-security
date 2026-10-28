@@ -179,16 +179,16 @@ def analyze(path_value: str) -> dict[str, Any]:
     return _json_safe(report)
 
 
-def analyze_phi4(report_path: str) -> dict[str, Any]:
-    """Run the original structured Phi-4-mini policy pipeline."""
-    from fishstop_engine.analyzer.llm_context_analyzer import stream_phi4_email_analysis
+def analyze_ai(report_path: str) -> dict[str, Any]:
+    """Run the original structured local AI policy pipeline."""
+    from fishstop_engine.analyzer.llm_context_analyzer import stream_ai_email_analysis
 
     report = json.loads(Path(report_path).read_text(encoding="utf-8"))
     if report.get("local_only"):
         from fishstop_engine.network_policy import install_local_only_guard
         install_local_only_guard()
     last_event: dict[str, Any] = {}
-    for event in stream_phi4_email_analysis(report):
+    for event in stream_ai_email_analysis(report):
         last_event = event
         if event.get("status") == "progress":
             stage = str(event.get("stage") or "content")
@@ -213,9 +213,9 @@ def analyze_phi4(report_path: str) -> dict[str, Any]:
             completed_check = 2 if stage in {"merge", "primary-complete"} else None
             _write_analysis_progress(stage, message, completed_check, current, total)
         if event.get("status") == "error":
-            raise RuntimeError(str(event.get("message") or "Phi-4 analysis failed."))
+            raise RuntimeError(str(event.get("message") or "AI analysis failed."))
     if last_event.get("status") != "ok":
-        raise RuntimeError("Phi-4 did not return a final result.")
+        raise RuntimeError("The local AI did not return a final result.")
     return _json_safe({
         "status": "ok", "analysis": last_event.get("analysis"),
         "backend": last_event.get("backend"), "model": last_event.get("model"),
@@ -230,7 +230,7 @@ def analyze_summary(report_path: str) -> dict[str, Any]:
     from fishstop_engine.analyzer.llm_context_analyzer import generate_analysis_summary
 
     report = json.loads(Path(report_path).read_text(encoding="utf-8"))
-    semantic = ((report.get("phi4_analysis") or {}).get("analysis") or report.get("semantic_analysis") or {})
+    semantic = ((report.get("ai_analysis") or {}).get("analysis") or report.get("semantic_analysis") or {})
     if not semantic:
         raise RuntimeError("Semantic intent analysis is required before generating the summary.")
     return _json_safe(generate_analysis_summary(report, semantic))
@@ -266,14 +266,14 @@ def main() -> None:
         command, value = sys.argv[1], sys.argv[2]
     else:
         raise SystemExit(
-            "Usage: main.py [inspect|static|phi4|content-summary|summary] <file>"
+            "Usage: main.py [inspect|static|ai|content-summary|summary] <file>"
         )
     try:
         result = {
             "identity-registry": identity_registry,
             "static": analyze,
             "inspect": inspect,
-            "phi4": analyze_phi4,
+            "ai": analyze_ai,
             "content-summary": analyze_content_summary,
             "summary": analyze_summary,
         }.get(command)

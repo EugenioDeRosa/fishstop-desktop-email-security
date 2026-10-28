@@ -180,7 +180,7 @@ class BalancedPipelineTests(unittest.TestCase):
         bodies[1] = bodies[1] * 15
         prompts[1] = (bodies[1], f"BODY: {bodies[1]}")
         with patch.object(llm, "_build_complete_email_prompts", return_value=prompts), patch.object(llm, "_use_ollama", return_value=True), patch.object(llm, "_stream_ollama", side_effect=stream), patch.object(llm, "ANALYSIS_MODE", "fast"):
-            events = list(llm.stream_phi4_email_analysis({"body_for_ai": "ordinary update"}))
+            events = list(llm.stream_ai_email_analysis({"body_for_ai": "ordinary update"}))
         self.assertEqual("ok", events[-1]["status"])
         self.assertEqual(4, len(calls))
         self.assertEqual(1, sum(bodies[0] in call for call in calls))
@@ -191,7 +191,7 @@ class BalancedPipelineTests(unittest.TestCase):
 
     def test_context_recovery_is_bounded_for_unsplittable_section(self):
         with patch.object(llm, "_use_ollama", return_value=True), patch.object(llm, "_stream_ollama", return_value=iter([{"status": "error", "error_code": "context_length_exceeded"}])):
-            events = list(llm.stream_phi4_email_analysis({"body_for_ai": "small body"}))
+            events = list(llm.stream_ai_email_analysis({"body_for_ai": "small body"}))
         self.assertEqual("context_length_exceeded", events[-1]["error_code"])
         self.assertIn("after splitting", events[-1]["message"])
 
@@ -201,7 +201,7 @@ class BalancedPipelineTests(unittest.TestCase):
             parts = llm._build_complete_email_prompts(soc)
         self.assertGreater(len(parts), 1)
         self.assertTrue(any("UNIQUE_ATTACHMENT_TAIL" in prompt for _, prompt in parts))
-        self.assertTrue(all(len(body) < llm.PHI4_BODY_CHUNK_CHARS for body, _ in parts))
+        self.assertTrue(all(len(body) < llm.AI_BODY_CHUNK_CHARS for body, _ in parts))
 
     def _analyze(self, soc, primary, audit=None, mode="balanced"):
         calls = []
@@ -215,7 +215,7 @@ class BalancedPipelineTests(unittest.TestCase):
                 return_value=[],
             ),
         ):
-            events = list(llm.stream_phi4_email_analysis(soc))
+            events = list(llm.stream_ai_email_analysis(soc))
         self.assertEqual(events[-1]["status"], "ok")
         return events[-1], calls
 
@@ -1014,13 +1014,13 @@ class BalancedPipelineTests(unittest.TestCase):
 
     def test_primary_schema_requires_only_core_semantic_fields(self):
         self.assertEqual(
-            llm.PHI4_OUTPUT_SCHEMA["required"],
+            llm.AI_OUTPUT_SCHEMA["required"],
             [
                 "summary", "action", "channel", "evidence", "signals", "ambiguity",
                 "risk_assessment", "risk_evidence", "risk_rationale",
             ],
         )
-        self.assertNotIn("confidence", llm.PHI4_OUTPUT_SCHEMA["properties"])
+        self.assertNotIn("confidence", llm.AI_OUTPUT_SCHEMA["properties"])
 
     def test_informational_action_cannot_keep_channel_or_evidence(self):
         result = llm.normalize_semantic_extraction(

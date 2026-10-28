@@ -19,7 +19,7 @@ assert.equal(context.stronglyAuthenticatedSender({ ...original, domain_authentic
 const benign = { from_registered_domain: 'example.com', domain_authentication: { status: 'unverified', reason: 'signature_absent' },
   identity_analysis: { coherence: [{ contacts: [{ source: 'From', matches_official: true }],
     evidence: [{ source: 'maintained_catalog', expires_at: Date.now() / 1000 + 3600 }] }] },
-  phi4_analysis: { status: 'ok', analysis: { final_verdict: 'legitimate', content_risk: 'benign', identity_risk: 'uncertain', technical_risk: 'clean', requested_action: 'visit_link', action_channel: 'supplied_link' } },
+  ai_analysis: { status: 'ok', analysis: { final_verdict: 'legitimate', content_risk: 'benign', identity_risk: 'uncertain', technical_risk: 'clean', requested_action: 'visit_link', action_channel: 'supplied_link' } },
   links: [{ url: 'https://documents.example.com/guide', scheme: 'https', host: 'documents.example.com', role: 'body_action', actionable: true }],
   link_reputation: {} };
 assert.equal(context.assessment(benign).tone, 'safe', 'Unavailable reputation alone must not veto benign clean content');
@@ -30,15 +30,15 @@ const unknown = structuredClone(benign);
 delete unknown.identity_analysis;
 assert.equal(context.assessment(unknown).tone, 'review', 'Unknown sender references retain uncertainty');
 const sensitive = structuredClone(benign);
-sensitive.phi4_analysis.analysis.requested_action = 'provide_credentials';
+sensitive.ai_analysis.analysis.requested_action = 'provide_credentials';
 assert.equal(context.assessment(sensitive).tone, 'review', 'A supplied collection channel still needs verification');
 const malicious = structuredClone(benign);
-malicious.phi4_analysis.analysis.final_verdict = 'phishing';
-malicious.phi4_analysis.analysis.content_risk = 'malicious';
+malicious.ai_analysis.analysis.final_verdict = 'phishing';
+malicious.ai_analysis.analysis.content_risk = 'malicious';
 assert.equal(context.assessment(malicious).tone, 'danger', 'Authentic or benign-looking transport cannot clear a content threat');
 const document = structuredClone(benign);
-document.phi4_analysis.analysis.requested_action = 'open_attachment';
-document.phi4_analysis.analysis.action_channel = 'supplied_attachment';
+document.ai_analysis.analysis.requested_action = 'open_attachment';
+document.ai_analysis.analysis.action_channel = 'supplied_attachment';
 document.links = [];
 document.attachments = [{ filename: 'guide.pdf', attachment_security: { risk_level: 'clean' }, pdf_security: { risk_level: 'low', analysis_complete: true }, inspection: { analysis_complete: true, content_inspected: true } }];
 assert.equal(context.assessment(document).tone, 'safe', 'A locally inspected ordinary document does not require an external reputation result');

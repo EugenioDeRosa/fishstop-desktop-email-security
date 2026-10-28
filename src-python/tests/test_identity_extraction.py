@@ -230,7 +230,7 @@ class IdentityExtractionTests(unittest.TestCase):
              patch.object(llm, "_use_ollama", return_value=True), \
              patch.object(llm, "ANALYSIS_MODE", "fast"), \
              patch("fishstop_engine.brand_intelligence.assess_brand_coherence", return_value=[]):
-            result = list(llm.stream_phi4_email_analysis({
+            result = list(llm.stream_ai_email_analysis({
                 "from_": "Microsoft <notice@example.test>", "body_clean": "An update."}))[-1]
         self.assertEqual("ok", result["status"])
         self.assertEqual([], result["identity_analysis"]["entities"])
@@ -259,7 +259,7 @@ class IdentityExtractionTests(unittest.TestCase):
              patch.dict("os.environ", {"FISHSTOP_IDENTITY_MODEL": "other-model-must-not-be-used"}), \
              patch.object(llm, "_visible_identity_fallback", side_effect=AssertionError("No brand dictionary")), \
              patch("fishstop_engine.brand_intelligence.assess_brand_coherence", return_value=[]):
-            result = list(llm.stream_phi4_email_analysis({
+            result = list(llm.stream_ai_email_analysis({
                 "from_": "Unlisted Example <notice@example.test>", "body_clean": "An update."}, model=selected))[-1]
         self.assertEqual("ok", result["status"])
         self.assertEqual("Unlisted Example", result["identity_analysis"]["entities"][0]["name"])

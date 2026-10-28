@@ -6,7 +6,7 @@ Espone:
 
 Gli attaccanti inseriscono tag o commenti HTML invisibili in mezzo alle parole
 (es. Pa<!-- x -->ypal) per aggirare i filtri basati su stringhe. Senza
-stripping, BERT riceve token sporchi e le regex sui link non trovano le URL reali.
+stripping, l'AI locale riceve testo sporco e le regex sui link non trovano le URL reali.
 """
 
 import html as html_lib

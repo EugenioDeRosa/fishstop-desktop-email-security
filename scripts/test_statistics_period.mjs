@@ -93,7 +93,7 @@ const reasonFunctions = source.statements.filter(node => ts.isFunctionDeclaratio
 const reasonContext = vm.createContext({ ...globalThis.__fishstopI18n, verdictFlags: report => report.flags || [], returnPathMismatchForVerdict: () => false });
 vm.runInContext(ts.transpileModule(reasonFunctions, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None } }).outputText, reasonContext);
 assert.equal(reasonContext.riskReasons({ attachments: [{ inspection: { status: 'unavailable' } }] }).length, 0);
-const repeatedSignals = { links: [{ dangerous_download: true }, { dangerous_download: true }], attachments: [{ archive_security: { risk_level: 'high' } }, { html_security: { risk_level: 'high' } }], phi4_analysis: { analysis: { semantic_extraction: { asks_for_credentials: true } } } };
+const repeatedSignals = { links: [{ dangerous_download: true }, { dangerous_download: true }], attachments: [{ archive_security: { risk_level: 'high' } }, { html_security: { risk_level: 'high' } }], ai_analysis: { analysis: { semantic_extraction: { asks_for_credentials: true } } } };
 const reasons = reasonContext.riskReasonCounts([{ report: repeatedSignals }, { report: {} }]);
 assert.equal(reasons.length, 3);
 assert.ok(reasons.every(reason => reason.count === 1));

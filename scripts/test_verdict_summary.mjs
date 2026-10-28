@@ -15,7 +15,7 @@ const context = vm.createContext({ ...globalThis.__fishstopI18n,
 vm.runInContext(ts.transpileModule(functions.map(node => node.getText(source)).join('\n'), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText, context);
 context.assessment = report => ({ detail: context.writtenVerdictSummary(report, 'Fallback'), tone: 'danger' });
 const report = {
-  phi4_analysis: { status: 'ok', analysis: {
+  ai_analysis: { status: 'ok', analysis: {
     final_verdict: 'phishing', requested_action: 'visit_link',
     semantic_extraction: { identity_deception: true }, claimed_brand: 'American Express',
   } },
@@ -29,11 +29,11 @@ assert.match(summary, /request to follow a link/);
 assert.doesNotMatch(summary, /VirusTotal only summary/);
 assert.match(context.verdictRationale(report), /VirusTotal: URL https:\/\/example.test detected as malicious/);
 
-report.phi4_analysis.analysis.semantic_extraction = {};
+report.ai_analysis.analysis.semantic_extraction = {};
 assert.match(context.writtenVerdictSummary(report, 'Fallback'), /potentially malicious behaviour/);
-report.phi4_analysis.analysis.scam_type = 'credential_phishing';
+report.ai_analysis.analysis.scam_type = 'credential_phishing';
 assert.match(context.writtenVerdictSummary(report, 'Fallback'), /indicators of credential phishing/);
-report.phi4_analysis.analysis = { final_verdict: 'legitimate', requested_action: 'visit_link' };
+report.ai_analysis.analysis = { final_verdict: 'legitimate', requested_action: 'visit_link' };
 report.link_reputation = {};
 report.ai_summary.summary = 'An informational newsletter.';
 const legitimate = context.writtenVerdictSummary(report, 'Fallback');
@@ -53,9 +53,9 @@ deduplicated = context.writtenVerdictSummary(report, `Other context. ${actionSen
 assert.equal(deduplicated.split(actionSentence).length - 1, 1);
 assert.match(deduplicated, /Other context/);
 
-report.phi4_analysis.analysis = { final_verdict: 'review', requested_action: 'none' };
+report.ai_analysis.analysis = { final_verdict: 'review', requested_action: 'none' };
 assert.doesNotMatch(context.writtenVerdictSummary(report, 'Fallback'), /request to/);
-report.phi4_analysis.analysis = { final_verdict: 'phishing', claimed_brand: '<script>', semantic_extraction: { identity_deception: true } };
+report.ai_analysis.analysis = { final_verdict: 'phishing', claimed_brand: '<script>', semantic_extraction: { identity_deception: true } };
 assert.match(context.verdictRationale(report), /&lt;script&gt;/);
 assert.doesNotMatch(context.verdictRationale(report), /<script>/);
 console.log('Verdict summary checks passed: combined AI/reputation evidence, actions, neutral newsletters, and escaped output.');

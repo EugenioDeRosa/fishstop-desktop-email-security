@@ -128,7 +128,7 @@ type AnalysisReport = {
   identity_analysis?: { impersonation?: ImpersonationAssessment; status?: string; model?: string; backend?: string; message?: string; segments_analyzed?: number; entities?: Array<{ name?: string; confidence?: number; entity_type?: string; entity_types?: string[]; occurrences?: Array<{ source?: string; evidence?: string }> }>; coherence?: Array<{ brand?: string; official_website?: string; official_websites?: string[]; official_domain?: string; official_domains?: string[]; associated_domains?: string[]; trusted_action_domains?: string[]; external_reply_domains?: string[]; resolution_source?: string; reference_status?: string; sender_authentication?: string; contacts?: Array<{ source?: string; matches_official?: boolean }>; evidence?: Array<{ source?: string; reference?: string; observed_at?: number; expires_at?: number; confidence?: string }>; dns_observations?: { provider?: string; bimi_present?: boolean }; anomalies?: string[]; status?: string; message?: string; mismatches?: Array<{ source?: string; domain?: string }> }> };
   verdict_signals?: Array<{ id?: string; category?: string; field?: string; level?: string; effect?: string; message?: string }>;
   signal_policy_version?: number;
-  phi4_analysis?: { status?: string; model?: string; duration_ms?: number; performance?: { analysis_mode?: string; llm_calls?: number; wall_duration_ms?: number; load_duration_ms?: number; prompt_tokens?: number; generated_tokens?: number; calls?: Array<{ stage?: string; wall_duration_ms?: number; load_duration_ms?: number; prompt_eval_count?: number; prompt_eval_duration_ms?: number; eval_count?: number; eval_duration_ms?: number }> }; analysis?: { final_verdict?: string; content_summary?: string; content_summary_source?: string; content_summary_parts?: string[]; semantic_reason?: string; explanation?: string; confidence?: number; requested_action?: string; action_channel?: string; intent_evidence?: string; intent_signals?: string[]; signal_evidence?: string; content_risk?: string; identity_risk?: string; technical_risk?: string; ambiguity?: string; scam_type?: string; threat_type?: string; coercion?: boolean; claimed_brand?: string; payment_destination_change?: boolean; semantic_extraction?: { asks_for_credentials?: boolean; asks_for_payment?: boolean; asks_for_sensitive_information?: boolean; asks_to_change_account_settings?: boolean; asks_to_verify_account?: boolean; asks_to_open_attachment?: boolean; requested_external_action?: boolean; security_alert?: boolean; impersonation_or_deception?: boolean; identity_deception?: boolean; scam_type?: string; threat_type?: string; coercion?: boolean }; corroboration?: { supports_decision?: boolean; details?: string[]; caveats?: string[] } }; message?: string };
+  ai_analysis?: { status?: string; model?: string; duration_ms?: number; performance?: { analysis_mode?: string; llm_calls?: number; wall_duration_ms?: number; load_duration_ms?: number; prompt_tokens?: number; generated_tokens?: number; calls?: Array<{ stage?: string; wall_duration_ms?: number; load_duration_ms?: number; prompt_eval_count?: number; prompt_eval_duration_ms?: number; eval_count?: number; eval_duration_ms?: number }> }; analysis?: { final_verdict?: string; content_summary?: string; content_summary_source?: string; content_summary_parts?: string[]; semantic_reason?: string; explanation?: string; confidence?: number; requested_action?: string; action_channel?: string; intent_evidence?: string; intent_signals?: string[]; signal_evidence?: string; content_risk?: string; identity_risk?: string; technical_risk?: string; ambiguity?: string; scam_type?: string; threat_type?: string; coercion?: boolean; claimed_brand?: string; payment_destination_change?: boolean; semantic_extraction?: { asks_for_credentials?: boolean; asks_for_payment?: boolean; asks_for_sensitive_information?: boolean; asks_to_change_account_settings?: boolean; asks_to_verify_account?: boolean; asks_to_open_attachment?: boolean; requested_external_action?: boolean; security_alert?: boolean; impersonation_or_deception?: boolean; identity_deception?: boolean; scam_type?: string; threat_type?: string; coercion?: boolean }; corroboration?: { supports_decision?: boolean; details?: string[]; caveats?: string[] } }; message?: string };
   ai_content_summary?: { status?: string; summary?: string; model?: string; backend?: string; message?: string };
   ai_summary?: { status?: string; summary?: string; model?: string; backend?: string; message?: string };
   authentication_scope?: string;
@@ -195,7 +195,7 @@ type ProtectionTone = "checking" | "ok" | "warning" | "error";
 type LocalEngineStatus = { static_engine: boolean; python_runtime: boolean };
 type ReputationKeyStatus = { virustotal: boolean; abuseipdb: boolean; otx: boolean };
 type AnalysisProgress = { analysis_id: string; stage: string; completed_check?: number; message: string; current?: number; total?: number };
-type AiAnalysisResult = NonNullable<AnalysisReport["phi4_analysis"]> & { identity_analysis?: NonNullable<AnalysisReport["identity_analysis"]> };
+type AiAnalysisResult = NonNullable<AnalysisReport["ai_analysis"]> & { identity_analysis?: NonNullable<AnalysisReport["identity_analysis"]> };
 type OllamaRuntimeStatus = {
   runtime_ready: boolean; model_ready: boolean; managed: boolean; model: string;
   platform: string; architecture: string; cpu: string; memory_bytes?: number;
@@ -282,7 +282,7 @@ function analysisTimeMarkup(user: AuthUser, durationMs?: number): string {
 }
 
 function analysisModeMarkup(report?: AnalysisReport): string {
-  const model = report?.phi4_analysis?.model || "";
+  const model = report?.ai_analysis?.model || "";
   const mode = /1\.7b/i.test(model) ? "Fast" : /4b/i.test(model) ? "Pro" : "";
   return mode ? html`<span class="analysis-mode" title="Analysis mode used for this email">${mode}</span>` : "";
 }
@@ -451,6 +451,16 @@ function analysisFingerprint(report: AnalysisReport): string {
     .join("|");
 }
 
+function migrateStoredReport(report: AnalysisReport): AnalysisReport {
+  // Analyses saved by versions up to 1.2.2 store the AI result under this key.
+  // It is read only to migrate existing history to `ai_analysis`.
+  const LEGACY_AI_ANALYSIS_KEY = "phi4_analysis";
+  const legacy = report as AnalysisReport & Record<string, unknown>;
+  if (legacy[LEGACY_AI_ANALYSIS_KEY] && !report.ai_analysis) report.ai_analysis = legacy[LEGACY_AI_ANALYSIS_KEY] as AnalysisReport["ai_analysis"];
+  delete legacy[LEGACY_AI_ANALYSIS_KEY];
+  return report;
+}
+
 function validAnalysisRecords(value: unknown): AnalysisRecord[] {
   try {
     if (!Array.isArray(value)) return [];
@@ -463,6 +473,7 @@ function validAnalysisRecords(value: unknown): AnalysisRecord[] {
         || !record.report || typeof record.report !== "object"
         || !Number.isFinite(Date.parse(String(record.analyzedAt)))
       ) return false;
+      migrateStoredReport(record.report);
       const fingerprint = analysisFingerprint(record.report);
       if (!fingerprint) return true;
       if (fingerprints.has(fingerprint)) return false;
@@ -855,7 +866,7 @@ function structuredReportData(report: AnalysisReport): SiemReport {
 
 function buildStructuredReportData(report: AnalysisReport): SiemReport {
   const verdict = assessment(report);
-  const semantic = report.phi4_analysis?.analysis;
+  const semantic = report.ai_analysis?.analysis;
   const severity = verdict.tone === "danger" ? "high" : verdict.tone === "review" ? "medium" : "low";
   const riskScore = verdict.tone === "danger" ? 90 : verdict.tone === "review" ? 55 : 15;
   const auth = (protocol: "SPF" | "DKIM" | "DMARC") => {
@@ -967,9 +978,9 @@ function buildStructuredReportData(report: AnalysisReport): SiemReport {
       identity_risk: semantic?.identity_risk, content_risk: semantic?.content_risk, technical_risk: semantic?.technical_risk,
     },
     analysis: {
-      static_engine: "FishStop", ai_status: report.phi4_analysis?.status,
-      ai_model: report.phi4_analysis?.model, ai_backend: report.identity_analysis?.backend,
-      duration_ms: report.phi4_analysis?.duration_ms,
+      static_engine: "FishStop", ai_status: report.ai_analysis?.status,
+      ai_model: report.ai_analysis?.model, ai_backend: report.identity_analysis?.backend,
+      duration_ms: report.ai_analysis?.duration_ms,
       authentication_scope: report.selected_target_authentication_scope || report.authentication_scope,
       coverage: incompleteAnalysisReason(report) ? "incomplete" : "complete",
       coverage_scope: "body_and_actionable_attachments",
@@ -1260,7 +1271,7 @@ function primaryRequestedLinks(report: AnalysisReport): NonNullable<AnalysisRepo
   );
   const explicitCallsToAction = actionable.filter((link) => link.html_call_to_action);
   const candidates = explicitCallsToAction.length ? explicitCallsToAction : actionable;
-  const intent = normalizedIntentText(report.phi4_analysis?.analysis?.intent_evidence);
+  const intent = normalizedIntentText(report.ai_analysis?.analysis?.intent_evidence);
   if (!intent) return candidates;
   const matched = candidates.filter((link) => {
     const visibleText = normalizedIntentText(link.display_text);
@@ -1283,7 +1294,7 @@ function structurallySuspiciousLink(link: NonNullable<AnalysisReport["links"]>[n
 }
 
 function sensitiveRequestedAction(report: AnalysisReport): boolean {
-  const semantic = report.phi4_analysis?.analysis;
+  const semantic = report.ai_analysis?.analysis;
   const extraction = semantic?.semantic_extraction;
   const action = (semantic?.requested_action || "").toLowerCase();
   return new Set([
@@ -1300,7 +1311,7 @@ function sensitiveRequestedAction(report: AnalysisReport): boolean {
 }
 
 function benignContentDecision(report: AnalysisReport): boolean {
-  const semantic = report.phi4_analysis?.analysis;
+  const semantic = report.ai_analysis?.analysis;
   const identity = report.identity_analysis?.impersonation;
   return semantic?.final_verdict === "legitimate"
     && (["verified", "clean", "aligned"].includes(semantic.identity_risk || "") || documentedSenderDomain(report))
@@ -1321,7 +1332,7 @@ function documentedSenderDomain(report: AnalysisReport): boolean {
 }
 
 function authenticatedFirstPartySecurityNotice(report: AnalysisReport): boolean {
-  const semantic = report.phi4_analysis?.analysis;
+  const semantic = report.ai_analysis?.analysis;
   const extraction = semantic?.semantic_extraction;
   const action = (semantic?.requested_action || "").toLowerCase();
   const identityMismatch = Boolean(
@@ -1367,7 +1378,7 @@ function safeGeneratedSummary(value?: string): string {
 }
 
 function unverifiedRequestedResourceReason(report: AnalysisReport): string | null {
-  const semantic = report.phi4_analysis?.analysis;
+  const semantic = report.ai_analysis?.analysis;
   const action = (semantic?.requested_action || "").toLowerCase();
   const cannotVerify = (result?: ReputationResult) => !["clean", "malicious", "suspicious"].includes((result?.status || "").toLowerCase());
   const requestedLinks = primaryRequestedLinks(report);
@@ -1460,13 +1471,13 @@ function authenticationReviewReason(report: AnalysisReport): string | null {
   return null;
 }
 
-function templateContentSummary(analysis?: NonNullable<NonNullable<AnalysisReport["phi4_analysis"]>["analysis"]>): string {
+function templateContentSummary(analysis?: NonNullable<NonNullable<AnalysisReport["ai_analysis"]>["analysis"]>): string {
   if (analysis?.content_summary_source !== "template-v1") return "";
   return (analysis.content_summary_parts || []).map(part => engineText(part)).join(" ");
 }
 
 function conciseAiVerdict(report: AnalysisReport, fallback: string): string {
-  const analysis = report.phi4_analysis?.analysis;
+  const analysis = report.ai_analysis?.analysis;
   const summary = (templateContentSummary(analysis) || analysis?.content_summary || analysis?.semantic_reason || "").replace(/\s+/g, " ").trim();
   const evidence = (analysis?.corroboration?.details || []).filter(Boolean).slice(0, 2).join("; ");
   const combined = [summary, evidence].filter(Boolean).join(" · ");
@@ -1487,8 +1498,8 @@ function incompleteAnalysisReason(report: AnalysisReport): string | null {
   if (report.body_analysis_incomplete) {
     reasons.push(t("Only part of the email body was inspected because it exceeded the analysis budget."));
   }
-  if (report.phi4_analysis?.status !== "ok"
-    || !["legitimate", "review", "phishing"].includes((report.phi4_analysis?.analysis?.final_verdict || "").toLowerCase())) {
+  if (report.ai_analysis?.status !== "ok"
+    || !["legitimate", "review", "phishing"].includes((report.ai_analysis?.analysis?.final_verdict || "").toLowerCase())) {
     reasons.push(t("The local AI analysis did not complete, so the message content could not be fully assessed."));
   }
   if ((report.attachments || []).some(attachmentInspectionIncomplete)) {
@@ -1498,7 +1509,7 @@ function incompleteAnalysisReason(report: AnalysisReport): string | null {
 }
 
 function writtenVerdictSummary(report: AnalysisReport, fallback: string): string {
-  const analysis = report.phi4_analysis?.analysis;
+  const analysis = report.ai_analysis?.analysis;
   const labels = aiThreatLabels(report);
   const evidence: string[] = [];
   const staticReason = highSeverityStaticReason(report);
@@ -1555,8 +1566,8 @@ function writtenVerdictSummary(report: AnalysisReport, fallback: string): string
 }
 
 function assessment(report: AnalysisReport): { tone: "safe" | "review" | "danger"; label: string; detail: string } {
-  const semantic = report.phi4_analysis?.analysis;
-  const phi = (semantic?.final_verdict || "").toLowerCase();
+  const semantic = report.ai_analysis?.analysis;
+  const aiVerdict = (semantic?.final_verdict || "").toLowerCase();
   const flags = verdictFlags(report);
   const high = flags.some((flag) => flag.level === "HIGH");
   const mediumFlags = flags.filter((flag) => flag.level === "MEDIUM");
@@ -1574,7 +1585,7 @@ function assessment(report: AnalysisReport): { tone: "safe" | "review" | "danger
     && !/\b(?:fail|timeout|temperror|permerror|mixed)\b/i.test(flag.message),
   );
   const identityMismatch = Boolean(report.reply_to_mismatch || returnPathMismatchForVerdict(report) || report.display_name_spoofing && !["none", "false", "no"].includes(String(report.display_name_spoofing).toLowerCase()));
-  const aiClearsInformationalMessage = phi === "legitimate" && benignContent && noExternalOrSensitiveAction && isolatedMissingDkim && !identityMismatch;
+  const aiClearsInformationalMessage = aiVerdict === "legitimate" && benignContent && noExternalOrSensitiveAction && isolatedMissingDkim && !identityMismatch;
   const result = (tone: "safe" | "review" | "danger", label: string, fallback: string) => ({ tone, label, detail: writtenVerdictSummary(report, fallback) });
   // The Ollama policy receives static, reputation and identity evidence: when available,
   // it is the final synthesis. Confirmed external detections and strong static
@@ -1582,9 +1593,9 @@ function assessment(report: AnalysisReport): { tone: "safe" | "review" | "danger
   if (staticReason) return result("danger", t("HIGH RISK"), staticReason);
   // Risk classifications come from the engine's evidence policy. A scam type
   // alone is a semantic category, not an independent finding of maliciousness.
-  const contentRisk = report.phi4_analysis?.status === "ok" ? (semantic?.content_risk || "").toLowerCase() : "";
+  const contentRisk = report.ai_analysis?.status === "ok" ? (semantic?.content_risk || "").toLowerCase() : "";
   const contentThreat = contentRisk === "malicious";
-  if (phi === "phishing" || contentThreat) return result("danger", t("HIGH RISK"), conciseAiVerdict(report, t("Risk indicators were found. Do not interact with this message.")));
+  if (aiVerdict === "phishing" || contentThreat) return result("danger", t("HIGH RISK"), conciseAiVerdict(report, t("Risk indicators were found. Do not interact with this message.")));
   const incomplete = incompleteAnalysisReason(report);
   if (incomplete) return result("review", t("ANALYSIS INCOMPLETE"), incomplete);
   if (unverifiedRequestedResource) return result("review", t("REVIEW REQUIRED"), unverifiedRequestedResource);
@@ -1598,13 +1609,13 @@ function assessment(report: AnalysisReport): { tone: "safe" | "review" | "danger
   // legitimate routing. Let an explicit benign, informational intent prevail
   // when there is no sender inconsistency or actionable external request.
   if (aiClearsInformationalMessage) return result("safe", t("LIKELY LEGITIMATE"), conciseAiVerdict(report, t("The message is informational and no meaningful risk indicator was found.")));
-  if (phi === "review" || medium) return result("review", t("REVIEW REQUIRED"), authenticationReview || conciseAiVerdict(report, t("Anomalies were found. Verify the message before taking any action.")));
-  if (phi === "legitimate") return result("safe", t("LIKELY LEGITIMATE"), conciseAiVerdict(report, t("No relevant technical or content indicators were found.")));
+  if (aiVerdict === "review" || medium) return result("review", t("REVIEW REQUIRED"), authenticationReview || conciseAiVerdict(report, t("Anomalies were found. Verify the message before taking any action.")));
+  if (aiVerdict === "legitimate") return result("safe", t("LIKELY LEGITIMATE"), conciseAiVerdict(report, t("No relevant technical or content indicators were found.")));
   return result("review", t("ANALYSIS INCOMPLETE"), t("A complete assessment is not available. Review the message before taking action."));
 }
 
 function verdictRationale(report: AnalysisReport): string {
-  const semantic = report.phi4_analysis?.analysis;
+  const semantic = report.ai_analysis?.analysis;
   const verdict = assessment(report);
   const findings = verdictFlags(report).filter((flag) => flag.level === "HIGH" || flag.level === "MEDIUM").sort((left, right) => {
     const priority = (flag: SocFlag) => (flag.level === "HIGH" ? 100 : 0) + (/pdf/i.test(flag.field) ? 20 : /attachment/i.test(flag.field) ? 10 : 0);
@@ -2607,10 +2618,10 @@ function bindReportInteractions(user: AuthUser, report: AnalysisReport): void {
 function renderAiPanels(container: HTMLElement): void {
   const contentPanel = container.querySelector<HTMLElement>('[data-report-panel="content"]');
   if (!contentPanel) return;
-  contentPanel.insertAdjacentHTML("afterbegin", html`<section class="ai-panels"><article data-ai-panel="identity"><h3>Sender identity</h3><p>Verifying the claimed company…</p></article><article data-ai-panel="phi4"><p class="page-kicker">LOCAL AI</p><h3>Semantic analysis</h3><p>Preparing the model…</p></article></section>`);
+  contentPanel.insertAdjacentHTML("afterbegin", html`<section class="ai-panels"><article data-ai-panel="identity"><h3>Sender identity</h3><p>Verifying the claimed company…</p></article><article data-ai-panel="semantic"><p class="page-kicker">LOCAL AI</p><h3>Semantic analysis</h3><p>Preparing the model…</p></article></section>`);
 }
 
-function setAiPanel(container: HTMLElement, engine: "identity" | "phi4", title: string, message: string, state: "loading" | "ok" | "error"): void {
+function setAiPanel(container: HTMLElement, engine: "identity" | "semantic", title: string, message: string, state: "loading" | "ok" | "error"): void {
   const panel = container.querySelector<HTMLElement>(`[data-ai-panel="${engine}"]`);
   if (panel) panel.innerHTML = html`<p class="page-kicker">${engine === "identity" ? t("SENDER IDENTITY") : t("LOCAL AI")}</p><h3>${escapeHtml(title)}</h3><p class="ai-${state}">${escapeHtml(engineText(message))}</p>`;
 }
@@ -2619,7 +2630,7 @@ function isIdentityEvidence(value: string): boolean {
   return /impersonat|identity|claimed[_ ](?:brand|company|sender)|spoof|lookalike|display[_ -]?name|sender.*(?:mismatch|match|domain|verif)|(?:domain|brand).*(?:mismatch|match|official|legitimate)/i.test(value);
 }
 
-function setIdentityPanel(container: HTMLElement, analysis: NonNullable<AnalysisReport["identity_analysis"]>, semantic?: NonNullable<NonNullable<AnalysisReport["phi4_analysis"]>["analysis"]>): void {
+function setIdentityPanel(container: HTMLElement, analysis: NonNullable<AnalysisReport["identity_analysis"]>, semantic?: NonNullable<NonNullable<AnalysisReport["ai_analysis"]>["analysis"]>): void {
   const panel = container.querySelector<HTMLElement>('[data-ai-panel="identity"]');
   if (!panel) return;
   const assessment = analysis.impersonation;
@@ -2659,7 +2670,7 @@ function semanticLabel(value: string | undefined): string {
 }
 
 function aiThreatLabels(report: AnalysisReport): string[] {
-  const analysis = report.phi4_analysis?.analysis;
+  const analysis = report.ai_analysis?.analysis;
   if (!analysis) return [];
 
   const extraction = analysis.semantic_extraction;
@@ -2704,8 +2715,8 @@ function aiThreatLabels(report: AnalysisReport): string[] {
   return [...labels].slice(0, 3);
 }
 
-function setPhiSemanticPanel(container: HTMLElement, analysis: NonNullable<NonNullable<AnalysisReport["phi4_analysis"]>["analysis"]>, model: string, durationMs?: number, generatedContentSummary?: string, performance?: NonNullable<AnalysisReport["phi4_analysis"]>["performance"]): void {
-  const panel = container.querySelector<HTMLElement>('[data-ai-panel="phi4"]');
+function setAiSemanticPanel(container: HTMLElement, analysis: NonNullable<NonNullable<AnalysisReport["ai_analysis"]>["analysis"]>, model: string, durationMs?: number, generatedContentSummary?: string, performance?: NonNullable<AnalysisReport["ai_analysis"]>["performance"]): void {
+  const panel = container.querySelector<HTMLElement>('[data-ai-panel="semantic"]');
   if (!panel) return;
   const meaningful = (value: unknown): value is string => typeof value === "string" && Boolean(value.trim()) && !/^[-—•]+$/.test(value.trim());
   const signals = Array.from(new Set((analysis.intent_signals || []).filter(meaningful).filter(value => !isIdentityEvidence(value)).map((value) => value.trim())));
@@ -2734,7 +2745,7 @@ function localAiErrorMessage(error: unknown): string {
   return t("The local AI could not complete this message. The technical checks remain available.");
 }
 
-async function runAiAnalysis(user: AuthUser, report: AnalysisReport, recordId: string | null, container: HTMLElement, startedAt: number, analysisId: string, isCurrent: () => boolean, onSettled?: (engine: "identity" | "phi4" | "content-summary" | "summary") => void, onRuntime?: (runtime: OllamaRuntimeStatus | null) => void): Promise<void> {
+async function runAiAnalysis(user: AuthUser, report: AnalysisReport, recordId: string | null, container: HTMLElement, startedAt: number, analysisId: string, isCurrent: () => boolean, onSettled?: (engine: "identity" | "semantic" | "content-summary" | "summary") => void, onRuntime?: (runtime: OllamaRuntimeStatus | null) => void): Promise<void> {
   // Runtime inspection is presentation metadata. The native analysis command
   // chooses and prepares the model itself; do not make it wait for another probe.
   const runtime = ollamaRuntimeSnapshot;
@@ -2742,19 +2753,19 @@ async function runAiAnalysis(user: AuthUser, report: AnalysisReport, recordId: s
   const model = runtime?.model || DEFAULT_OLLAMA_MODEL;
   renderAiPanels(container);
   if (!isCurrent()) return;
-  if (runtime?.model_ready) setAiPanel(container, "phi4", t("Preparing AI"), t("Loading the local model…"), "loading");
+  if (runtime?.model_ready) setAiPanel(container, "semantic", t("Preparing AI"), t("Loading the local model…"), "loading");
   if (!isCurrent()) return;
-  const phiStartedAt = performance.now();
-  await invoke<AiAnalysisResult>("analyze_phi4", { report, analysisId }).then((value) => {
+  const aiStartedAt = performance.now();
+  await invoke<AiAnalysisResult>("analyze_ai", { report, analysisId }).then((value) => {
     if (!isCurrent()) return;
-    const { identity_analysis: identityAnalysis, ...phiValue } = value;
+    const { identity_analysis: identityAnalysis, ...aiValue } = value;
     report.identity_analysis = identityAnalysis || { status: "ok", entities: [], coherence: [], backend: "ollama-semantic", model: value.model || model };
     setIdentityPanel(container, report.identity_analysis, value.analysis);
     onSettled?.("identity");
-    report.phi4_analysis = { ...phiValue, model: value.model || model, duration_ms: Math.round(performance.now() - phiStartedAt) };
+    report.ai_analysis = { ...aiValue, model: value.model || model, duration_ms: Math.round(performance.now() - aiStartedAt) };
     const analysis = value.analysis || {};
-    setPhiSemanticPanel(container, analysis, value.model || model, report.phi4_analysis.duration_ms, report.ai_content_summary?.summary, report.phi4_analysis.performance);
-    onSettled?.("phi4");
+    setAiSemanticPanel(container, analysis, value.model || model, report.ai_analysis.duration_ms, report.ai_content_summary?.summary, report.ai_analysis.performance);
+    onSettled?.("semantic");
   }).catch((error) => {
     if (!isCurrent()) return;
     console.error("Local AI analysis failed", error);
@@ -2762,21 +2773,21 @@ async function runAiAnalysis(user: AuthUser, report: AnalysisReport, recordId: s
     report.identity_analysis = { status: "error", message: t("Identity verification depends on the AI assessment, which could not be completed.") };
     setAiPanel(container, "identity", t("Identity verification unavailable"), t("Identity verification depends on the AI assessment, which could not be completed."), "error");
     onSettled?.("identity");
-    report.phi4_analysis = { status: "error", message };
-    setAiPanel(container, "phi4", t("Analysis unavailable"), message, "error");
-    onSettled?.("phi4");
+    report.ai_analysis = { status: "error", message };
+    setAiPanel(container, "semantic", t("Analysis unavailable"), message, "error");
+    onSettled?.("semantic");
   });
   if (!isCurrent()) return;
-  if (report.phi4_analysis?.status === "ok" && report.phi4_analysis.analysis) {
-    const structuredSummary = (report.phi4_analysis.analysis.content_summary || report.phi4_analysis.analysis.explanation || "Content analysis complete.").replace(/\s+/g, " ").trim();
-    report.ai_content_summary = { status: "ok", summary: structuredSummary, model, backend: report.phi4_analysis.analysis.content_summary_source === "template-v1" ? "local-template" : "ollama-structured" };
-    setPhiSemanticPanel(container, report.phi4_analysis.analysis, report.phi4_analysis.model || model, report.phi4_analysis.duration_ms, structuredSummary, report.phi4_analysis.performance);
+  if (report.ai_analysis?.status === "ok" && report.ai_analysis.analysis) {
+    const structuredSummary = (report.ai_analysis.analysis.content_summary || report.ai_analysis.analysis.explanation || "Content analysis complete.").replace(/\s+/g, " ").trim();
+    report.ai_content_summary = { status: "ok", summary: structuredSummary, model, backend: report.ai_analysis.analysis.content_summary_source === "template-v1" ? "local-template" : "ollama-structured" };
+    setAiSemanticPanel(container, report.ai_analysis.analysis, report.ai_analysis.model || model, report.ai_analysis.duration_ms, structuredSummary, report.ai_analysis.performance);
     onSettled?.("content-summary");
     const policySummary = assessment({ ...report, ai_summary: undefined }).detail;
     report.ai_summary = { status: "ok", summary: policySummary, model, backend: "local-policy" };
     onSettled?.("summary");
   } else {
-    const message = report.phi4_analysis?.message || t("Semantic analysis unavailable.");
+    const message = report.ai_analysis?.message || t("Semantic analysis unavailable.");
     report.ai_content_summary = { status: "error", message, model };
     report.ai_summary = { status: "error", message, model };
     onSettled?.("content-summary");
@@ -2784,24 +2795,24 @@ async function runAiAnalysis(user: AuthUser, report: AnalysisReport, recordId: s
   }
   if (recordId) await updateStoredAnalysis(user, recordId, {
     identity_analysis: report.identity_analysis,
-    phi4_analysis: report.phi4_analysis,
+    ai_analysis: report.ai_analysis,
     ai_content_summary: report.ai_content_summary,
     ai_summary: report.ai_summary,
   }, Math.round(performance.now() - startedAt));
 }
 
 function restoreAiAnalysis(report: AnalysisReport, container: HTMLElement): void {
-  if (!report.identity_analysis && !report.phi4_analysis) return;
+  if (!report.identity_analysis && !report.ai_analysis) return;
   renderAiPanels(container);
   const identity = report.identity_analysis;
   if (identity) {
-    if (identity.status === "ok") setIdentityPanel(container, identity, report.phi4_analysis?.analysis);
+    if (identity.status === "ok") setIdentityPanel(container, identity, report.ai_analysis?.analysis);
     else setAiPanel(container, "identity", t("Identity verification unavailable"), identity.message || t("Identity analysis error"), "error");
   }
-  const phi4 = report.phi4_analysis;
-  if (phi4) {
-    if (phi4.status === "ok" && phi4.analysis) setPhiSemanticPanel(container, phi4.analysis, phi4.model || DEFAULT_OLLAMA_MODEL, phi4.duration_ms, report.ai_content_summary?.summary, phi4.performance);
-    else setAiPanel(container, "phi4", t("Analysis unavailable"), phi4.message || t("Local AI error"), "error");
+  const aiResult = report.ai_analysis;
+  if (aiResult) {
+    if (aiResult.status === "ok" && aiResult.analysis) setAiSemanticPanel(container, aiResult.analysis, aiResult.model || DEFAULT_OLLAMA_MODEL, aiResult.duration_ms, report.ai_content_summary?.summary, aiResult.performance);
+    else setAiPanel(container, "semantic", t("Analysis unavailable"), aiResult.message || t("Local AI error"), "error");
   }
 }
 
@@ -2918,7 +2929,7 @@ function renderLogin(): void {
 function riskReasons(report: AnalysisReport): string[] {
   const reasons = new Set<string>();
   const flags = verdictFlags(report).map((flag) => `${flag.field} ${flag.message}`.toLowerCase()).join(" ");
-  const semantic = report.phi4_analysis?.analysis;
+  const semantic = report.ai_analysis?.analysis;
   const intentSignals = (semantic?.intent_signals || []).join(" ").toLowerCase();
   const requestedAction = (semantic?.requested_action || "").toLowerCase();
   const maliciousLink = (result?: ReputationResult) => ["malicious", "suspicious"].includes((result?.status || "").toLowerCase()) || Number(result?.malicious || 0) > 0 || Number(result?.suspicious || 0) > 0;
@@ -4103,8 +4114,8 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       if (activeAnalysis !== session) return;
       await runAiAnalysis(user, report, null, document.createElement("div"), startedAt, analysisId, () => activeAnalysis === session, (engine) => {
         if (activeAnalysis === session) {
-          if (engine === "phi4") { progress.enter("finishing", performance.now()); paintHeuristicProgress(); }
-          queueProgress(engine === "phi4" ? 2 : undefined);
+          if (engine === "semantic") { progress.enter("finishing", performance.now()); paintHeuristicProgress(); }
+          queueProgress(engine === "semantic" ? 2 : undefined);
         }
       }, startHeuristicProgress);
       if (activeAnalysis !== session) return;
@@ -4113,8 +4124,8 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       console.info("FishStop analysis timing (ms)", {
         technical: Math.round(technicalDuration),
         aiPipeline: Math.round(resultDuration - technicalDuration),
-        modelCalls: report.phi4_analysis?.performance?.wall_duration_ms,
-        modelLoad: report.phi4_analysis?.performance?.load_duration_ms,
+        modelCalls: report.ai_analysis?.performance?.wall_duration_ms,
+        modelLoad: report.ai_analysis?.performance?.load_duration_ms,
         resultReady: Math.round(resultDuration),
       });
       if (heuristicTimer !== undefined) window.clearInterval(heuristicTimer);
@@ -4133,7 +4144,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       if (completionSplash) await new Promise<void>((resolve) => window.setTimeout(resolve, 350));
       if (activeAnalysis !== session) return;
       session.status = "complete";
-      if (report.phi4_analysis?.status === "ok") {
+      if (report.ai_analysis?.status === "ok") {
         try {
           recordAnalysisDuration(localStorage, durationProfile, resultDuration);
           recordAnalysisTimings(localStorage, durationProfile, progress.timings(startedAt + resultDuration));

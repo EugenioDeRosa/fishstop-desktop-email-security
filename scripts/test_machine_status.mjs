@@ -36,8 +36,8 @@ const context = vm.createContext({ ...globalThis.__fishstopI18n,
   renderManagedOperation: () => false, cpuOptimization: null,
 });
 vm.runInContext(compile([extract('readRuntimeSnapshot'), extract('renderRuntimeStatus'), extract('refreshManagedModel'), extract('analysisModeMarkup')].join('\n')), context);
-assert.match(context.analysisModeMarkup({ phi4_analysis: { model: 'qwen3:1.7b-q4_K_M' } }), />Fast</);
-assert.match(context.analysisModeMarkup({ phi4_analysis: { model: 'fishstop-qwen3:4b-finetuned-v5-q4_K_M' } }), />Pro</, 'Saved analyses show their actual model even when current settings use Fast');
+assert.match(context.analysisModeMarkup({ ai_analysis: { model: 'qwen3:1.7b-q4_K_M' } }), />Fast</);
+assert.match(context.analysisModeMarkup({ ai_analysis: { model: 'fishstop-qwen3:4b-finetuned-v5-q4_K_M' } }), />Pro</, 'Saved analyses show their actual model even when current settings use Fast');
 assert.equal(context.analysisModeMarkup({}), '', 'Do not invent a mode for old reports without a model');
 assert.equal(context.readRuntimeSnapshot().cpu, runtime.cpu, 'Machine snapshot survives restart');
 saved = '{broken'; assert.equal(context.readRuntimeSnapshot(), null);

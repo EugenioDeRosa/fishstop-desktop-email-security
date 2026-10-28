@@ -1199,5 +1199,13 @@
   "The SVG image contains scripts or embedded HTML; images received by email should not contain active content.": "L'immagine SVG contiene script o HTML incorporato; le immagini ricevute via email non dovrebbero avere contenuti attivi.",
   "The attached document contains scripts; legitimate attachments rarely need them.": "Il documento allegato contiene script; gli allegati legittimi ne hanno raramente bisogno.",
   "Brand name in unrelated domain": "Nome del brand in un dominio non correlato",
-  "Official domain used as subdomain": "Dominio ufficiale usato come sottodominio"
+  "Official domain used as subdomain": "Dominio ufficiale usato come sottodominio",
+  "Reply thread": "Thread di risposta",
+  "The subject presents the message as a reply, but it has no In-Reply-To, References or Thread-Index header linking it to a previous message. The previous exchange may not exist.": "L'oggetto presenta il messaggio come una risposta, ma manca l'header In-Reply-To, References o Thread-Index che lo collega a un messaggio precedente. Lo scambio precedente potrebbe non esistere.",
+  "The message presents itself as a reply and quotes a previous exchange, but no threading header links it to an earlier message. The quoted history may be fabricated.": "Il messaggio si presenta come una risposta e cita uno scambio precedente, ma nessun header lo collega a un messaggio precedente. La cronologia citata potrebbe essere inventata.",
+  "The message presents itself as a reply and quotes a previous message attributed to the recipient or to the recipient organisation, but no threading header links it to an earlier message. The quoted history may be fabricated to imitate an existing conversation.": "Il messaggio si presenta come una risposta e cita un messaggio attribuito al destinatario o alla sua organizzazione, ma nessun header lo collega a un messaggio precedente. La cronologia citata potrebbe essere inventata per imitare una conversazione esistente.",
+  "A bulk sender uses a reply prefix without threading headers. This misrepresents the message as part of an existing conversation.": "Un mittente massivo usa un prefisso di risposta senza header di thread. Il messaggio viene presentato in modo ingannevole come parte di una conversazione esistente.",
+  "the message imitates an existing conversation without belonging to one": "il messaggio imita una conversazione esistente senza farne parte",
+  "the message imitates an existing conversation without belonging to one and makes a sensitive request": "il messaggio imita una conversazione esistente senza farne parte e contiene una richiesta sensibile",
+  "the message is presented as a reply but is not linked to a previous message": "il messaggio è presentato come risposta ma non è collegato a un messaggio precedente"
 }

@@ -1197,7 +1197,7 @@ function verdictFlags(report: AnalysisReport): SocFlag[] {
     if (flag.field.trim().toLowerCase().startsWith("mime ")) return false;
     if (
       report.selected_target_authentication_scope === "embedded_unavailable"
-      && ["spf", "dkim", "dmarc", "authentication-results", "received", "return-path", "reply-to", "display name"].includes(flag.field.trim().toLowerCase())
+      && ["spf", "dkim", "dmarc", "authentication-results", "received", "return-path", "reply-to", "display name", "reply thread"].includes(flag.field.trim().toLowerCase())
     ) return false;
     if (dmarcPassed && flag.field.toLowerCase() === "return-path") return false;
     // Older saved reports may contain the former `.com`/DOS-extension false

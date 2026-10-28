@@ -3439,6 +3439,20 @@ def _technical_risk(soc: dict, semantic: dict | None = None) -> tuple[str, list[
         suspicious.append("a link displays a different domain than the one it opens")
     if soc.get("unsafe_scheme_links"):
         malicious.append("a clickable element uses a javascript:, data: or file: target")
+    threading = soc.get("reply_threading") or {}
+    if threading.get("level") in {"HIGH", "MEDIUM"} and soc.get("selected_target_authentication_scope") != "embedded_unavailable":
+        sensitive_request = bool(semantic) and bool(
+            semantic.get("asks_for_payment") or semantic.get("asks_for_credentials")
+            or semantic.get("asks_for_sensitive_information") or semantic.get("asks_to_bypass_procedure")
+            or semantic.get("asks_to_change_account_settings"))
+        if threading["level"] == "HIGH" or sensitive_request:
+            # A fabricated conversation is a deception technique on its own;
+            # combined with a sensitive request it is the typical BEC pattern.
+            malicious.append(
+                "the message imitates an existing conversation without belonging to one"
+                + (" and makes a sensitive request" if sensitive_request else ""))
+        else:
+            suspicious.append("the message is presented as a reply but is not linked to a previous message")
     for link in (soc.get("links") or []):
         if link.get("actionable") is False or not link.get("financial_attachment_mismatch"):
             continue

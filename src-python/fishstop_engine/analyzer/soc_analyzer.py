@@ -46,6 +46,8 @@ from .html_utils      import (
 )
 from .link_extractor  import extract_links, extract_unsafe_scheme_links
 from .link_deception  import refresh_link_alerts
+from .thread_integrity import assess_reply_threading, threading_headers
+from .conversation    import inspect_conversation_bytes
 from .lookalike       import check_lookalike_domains
 from .received_parser import (
     build_authentication_checkpoints,
@@ -485,6 +487,7 @@ class EmlSOCAnalyzer:
             _extract_domain(report["from_"] or "")
         )
         report["subject"]      = self._header(msg, "Subject")
+        report["threading_headers"] = threading_headers(msg)
         report["date"]         = self._header(msg, "Date")
         report["message_id"]   = self._header(msg, "Message-Id")
         report["importance"]   = self._header(msg, "Importance") or self._header(msg, "X-Priority")
@@ -869,6 +872,12 @@ class EmlSOCAnalyzer:
         # web destinations and therefore must not alter Streamlit-equivalent
         # lookalike/typosquatting checks.
         refresh_link_alerts(report, extract_unsafe_scheme_links(report.get("body_html") or ""))
+        try:
+            conversation_segments = inspect_conversation_bytes(raw_bytes).get("segments") or []
+        except Exception:
+            conversation_segments = []
+        report["reply_threading"] = assess_reply_threading(
+            report, report.get("threading_headers") or {}, conversation_segments)
         report["link_context_alerts"] = self._assess_link_context(report)
         # ── 11. Flag SOC ──────────────────────────────────────────────────
         report["flags"] = self._build_flags(report)
@@ -1283,6 +1292,10 @@ class EmlSOCAnalyzer:
             flag(level if level in {"HIGH", "MEDIUM"} else "MEDIUM", "Sender lookalike",
                  f"The {alert.get('field') or 'sender'} domain `{alert.get('host')}` imitates {target}. "
                  f"{alert.get('detail') or ''}".strip())
+
+        threading = report.get("reply_threading") or {}
+        if threading.get("level") in {"HIGH", "MEDIUM", "LOW"}:
+            flag(threading["level"], "Reply thread", str(threading.get("message") or ""))
 
         for alert in report.get("display_mismatch_alerts") or []:
             flag(str(alert.get("level") or "MEDIUM"), "Masked link", str(alert.get("message") or ""))

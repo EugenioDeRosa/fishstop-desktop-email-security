@@ -64,6 +64,31 @@ authenticated sharing or notification routing is HIGH. In addition, a reply
 domain that imitates a protected brand or the recipient organisation is
 reported as a `Sender lookalike` finding on the Reply-To field.
 
+## Fake replies
+
+A subject with a reply prefix (`RE:`, `R:`, `AW:`, `SV:`, `VS:`, `RIF:`,
+`RES:`, also after tags such as `[EXT]` and with counters such as `RE[2]:`)
+is compared with the delivered message's threading headers (`In-Reply-To`,
+`References`, Outlook `Thread-Index`). Forward prefixes are not replies.
+
+| Situation | Level |
+|---|---|
+| Threading header present, or no reply prefix | none |
+| Bulk sender, reply prefix, no threading header | LOW |
+| Reply prefix, no threading header | MEDIUM |
+| As above, with a quoted history from third parties | MEDIUM |
+| As above, with a quoted message attributed to the recipient or the recipient organisation | HIGH |
+
+HIGH makes the technical axis malicious. MEDIUM is suspicious, and becomes
+malicious when the semantic analysis grounds a payment, credential,
+sensitive-data, settings-change or procedure-bypass request (typical BEC).
+The check is skipped when an embedded forwarded message is the selected
+target, because the threading headers belong to the outer message.
+
+Limit: an EML exported by a tool that drops threading headers makes a genuine
+reply look unthreaded. Gmail, Outlook, Apple Mail and Thunderbird keep them in
+the original message source.
+
 ## Known gaps
 
 Callback (telephone) scams, brand display names on personal mailboxes, URL

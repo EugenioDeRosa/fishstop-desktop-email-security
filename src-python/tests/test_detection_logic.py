@@ -219,5 +219,70 @@ class ReplyRoutingRegressionTests(unittest.TestCase):
         self.assertTrue(any(alert["field"] == "Reply-To" for alert in report["sender_lookalike_alerts"]))
 
 
+QUOTED_FROM_RECIPIENT = (
+    "Ciao Mario, come d'accordo procedi con il bonifico sul nuovo IBAN entro oggi.\n\n"
+    "Da: Mario Rossi <mario.rossi@azienda.it>\n"
+    "Inviato: lunedì 26 ottobre 2026 09:12\n"
+    "A: Luca Bianchi <luca@fornitore.example>\n"
+    "Oggetto: Fattura 2026/118\n\n"
+    "Buongiorno, attendo le nuove coordinate per il pagamento.\n"
+)
+QUOTED_THIRD_PARTY = (
+    "Vedi sotto, serve conferma.\n\n"
+    "Da: Giulia Verdi <giulia@partner.example>\n"
+    "Inviato: lunedì 26 ottobre 2026 09:12\n"
+    "A: Luca Bianchi <luca@fornitore.example>\n"
+    "Oggetto: Ordine\n\n"
+    "Confermo l'ordine.\n"
+)
+
+
+class FakeReplyTests(unittest.TestCase):
+    def test_reply_prefix_without_threading_headers_requires_review(self):
+        for subject in ("RE: Fattura 2026/118", "R: pagamento", "[EXT] Re: ordine", "AW: Rechnung", "RE[2]: contratto"):
+            with self.subTest(subject=subject):
+                report = analyze("Luca <luca@fornitore.example>", subject, text="Ti allego il documento.")
+                self.assertEqual("MEDIUM", report["reply_threading"]["level"])
+                self.assertTrue(flags(report, "Reply thread"))
+                self.assertEqual("uncertain", llm._technical_risk(report)[0])
+
+    def test_genuine_replies_are_not_reported(self):
+        for headers in ({"In-Reply-To": "<a1@fornitore.example>"},
+                        {"References": "<a1@fornitore.example> <a2@azienda.it>"},
+                        {"Thread-Index": "AQHZx1y2abcdEFGH"}):
+            with self.subTest(headers=headers):
+                report = analyze("Luca <luca@fornitore.example>", "RE: Fattura", text="Ok.", headers=headers)
+                self.assertEqual("NONE", report["reply_threading"]["level"])
+                self.assertFalse(flags(report, "Reply thread", ("HIGH", "MEDIUM", "LOW")))
+
+    def test_non_reply_subjects_are_ignored(self):
+        for subject in ("Fattura RE: 2026", "Regolamento", "Riunione", "FW: documento", "Rif. ordine 12"):
+            with self.subTest(subject=subject):
+                report = analyze("Luca <luca@fornitore.example>", subject, text="Testo.")
+                self.assertEqual("NONE", report["reply_threading"]["level"])
+
+    def test_fabricated_history_attributed_to_the_recipient_is_high(self):
+        report = analyze("Luca <luca@fornitore-amministrazione.example>", "RE: Fattura 2026/118",
+                         text=QUOTED_FROM_RECIPIENT, to="mario.rossi@azienda.it")
+        threading = report["reply_threading"]
+        self.assertEqual("HIGH", threading["level"])
+        self.assertTrue(threading["quoted_from_recipient"])
+        self.assertEqual("malicious", llm._technical_risk(report)[0])
+
+    def test_fabricated_third_party_history_is_review_unless_sensitive(self):
+        report = analyze("Luca <luca@fornitore.example>", "RE: Ordine", text=QUOTED_THIRD_PARTY)
+        self.assertEqual("MEDIUM", report["reply_threading"]["level"])
+        self.assertEqual("uncertain", llm._technical_risk(report)[0])
+        self.assertEqual("malicious", llm._technical_risk(report, {"asks_for_payment": True})[0])
+
+    def test_bulk_sender_fake_reply_is_low(self):
+        report = analyze("Shop <news@shop.example>", "RE: la tua offerta", text="Sconti.", headers={
+            "List-Unsubscribe": "<https://shop.example/u>", "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+            "Precedence": "bulk", "List-Id": "<news.shop.example>", "Feedback-ID": "1:2:3:shop"})
+        self.assertIn(report["reply_threading"]["level"], {"LOW", "MEDIUM"})
+        if report["is_bulk_sender"]:
+            self.assertEqual("LOW", report["reply_threading"]["level"])
+
+
 if __name__ == "__main__":
     unittest.main()

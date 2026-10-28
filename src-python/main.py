@@ -138,7 +138,7 @@ def analyze(path_value: str) -> dict[str, Any]:
         if report.get("selected_target_authentication_scope") == "embedded_unavailable":
             transport_fields = {
                 "spf", "dkim", "dmarc", "authentication-results", "received",
-                "return-path", "reply-to", "display name",
+                "return-path", "reply-to", "display name", "reply thread",
             }
             report["flags"] = [
                 finding for finding in report["flags"]

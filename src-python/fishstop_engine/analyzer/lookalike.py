@@ -68,6 +68,15 @@ def _brand_data() -> dict:
     }
 
 
+# Labels too generic to identify an organisation inside another domain.
+_GENERIC_ORGANISATION_LABELS = frozenset({
+    "example", "test", "mail", "email", "info", "admin", "office", "online", "group", "company",
+    "service", "services", "web", "site", "home", "shop", "store", "studio", "network", "cloud",
+    "global", "italia", "italy", "europe", "digital", "media", "news", "consulting", "solutions",
+})
+_RESERVED_TLDS = frozenset({"invalid", "example", "test", "local", "localhost", "internal", "lan", "corp", "home"})
+
+
 def _brand_record(brand_domain: str) -> dict:
     """Return the catalog entry for a brand domain, or a single-domain record."""
     registered = registered_domain(brand_domain)
@@ -75,8 +84,9 @@ def _brand_record(brand_domain: str) -> dict:
         if registered in record["domains"]:
             return record
     label = registrable_label(registered)
+    usable = len(label) >= 3 and label not in _GENERIC_ORGANISATION_LABELS
     return {"brand": registered, "domains": frozenset({registered}),
-            "tokens": frozenset({label}) if len(label) >= 3 else frozenset()}
+            "tokens": frozenset({label}) if usable else frozenset()}
 
 
 def _confusable_skeletons(value: str) -> set[str]:
@@ -544,7 +554,7 @@ def organization_domains(report: dict) -> list[str]:
                 continue
             except ValueError:
                 pass
-            if "." not in domain:
+            if "." not in domain or domain.rsplit(".", 1)[-1] in _RESERVED_TLDS:
                 continue
             domains.append(domain)
     return domains[:5]

@@ -4,12 +4,6 @@ from urllib.parse import urlsplit
 from fishstop_engine.domain_utils import mailbox_candidates, registered_domain
 
 HIGH_MESSAGE = "The reply address differs from the sender and no supported sharing or notification routing was established. Replies may reach a different recipient."
-LOOKALIKE_MESSAGE = "The reply address uses a domain that imitates the sender, the recipient organisation or a known brand. Replies would reach a different, deceptive recipient."
-FREEMAIL_MESSAGE = "The reply address is a personal mailbox provider account while the sender claims an organisation domain that could not be independently authenticated. Replies would bypass the sender's organisation."
-FREEMAIL_AUTHENTICATED_MESSAGE = "The reply address is a personal mailbox provider account although the organisation sender was authenticated. Verify the reply destination before sending sensitive information."
-CROSS_DOMAIN_MESSAGE = "The reply address belongs to a different domain than the sender. This is common for helpdesk or CRM services, but replies reach a different organisation: verify before sending sensitive information."
-BULK_MESSAGE = "The authenticated bulk sender routes replies to a different domain, a common helpdesk or CRM configuration. Replies reach a different organisation."
-SAME_ORGANISATION_MESSAGE = "The reply address is a different mailbox of the sender's organisation."
 REVIEW_MESSAGE = "Sharing or notification routing was recognized, but the service sender could not be independently authenticated. Verify the reply destination."
 SERVICE_MESSAGE = "The reply address differs from the sender as part of authenticated sharing or notification routing. This does not authenticate the reply recipient or the message content."
 
@@ -66,45 +60,7 @@ def assess_reply_routing(report: dict) -> dict:
         return {"level": "INFO", "message": SERVICE_MESSAGE, "exception": True}
     if known_service and proof.get("status") not in {"failed", "invalid"}:
         return {"level": "MEDIUM", "message": REVIEW_MESSAGE, "exception": True}
-    return _classify_unrecognized_routing(report, sender_domain, replies[0].rsplit("@", 1)[-1], authenticated)
-
-
-def _classify_unrecognized_routing(report: dict, sender_domain: str, reply_domain: str, authenticated: bool) -> dict:
-    """Grade a reply destination that no service exception explains.
-
-    A different reply domain alone is a routing anomaly, not a phishing
-    conviction: helpdesk and CRM platforms routinely use one. HIGH is kept for
-    corroborated patterns: a deceptive lookalike reply domain, or a personal
-    mailbox behind an unauthenticated organisation sender. The semantic policy
-    separately escalates a sensitive request that asks for a reply.
-    """
-    from fishstop_engine.analyzer.lookalike import (
-        _public_email_provider, check_lookalike_domains, protected_brands,
-    )
-    sender_registered = registered_domain(sender_domain)
-    reply_registered = registered_domain(reply_domain)
-    if not sender_registered or not reply_registered:
-        return {"level": "HIGH", "message": HIGH_MESSAGE, "exception": False}
-    if sender_registered == reply_registered:
-        return {"level": "LOW", "message": SAME_ORGANISATION_MESSAGE, "exception": False}
-    if (report.get("domain_authentication") or {}).get("status") in {"failed", "invalid"}:
-        # The sender failed an explicit independent verification: a reply to
-        # another organisation is then a corroborated hijack pattern.
-        return {"level": "HIGH", "message": HIGH_MESSAGE, "exception": False}
-    sender_is_mailbox_provider = _public_email_provider(sender_registered)
-    reply_is_mailbox_provider = _public_email_provider(reply_registered)
-    if not reply_is_mailbox_provider:
-        brands = [sender_registered] + [brand for brand in protected_brands(report) if brand != sender_registered]
-        alerts = check_lookalike_domains([{"host": reply_domain, "url": "mailto:reply@" + reply_domain}], known_brands=brands)
-        if any(str(alert.get("level") or "").upper() == "HIGH" for alert in alerts):
-            return {"level": "HIGH", "message": LOOKALIKE_MESSAGE, "exception": False}
-    if reply_is_mailbox_provider and not sender_is_mailbox_provider:
-        if authenticated:
-            return {"level": "MEDIUM", "message": FREEMAIL_AUTHENTICATED_MESSAGE, "exception": False}
-        return {"level": "HIGH", "message": FREEMAIL_MESSAGE, "exception": False}
-    if authenticated and report.get("is_bulk_sender") and not reply_is_mailbox_provider:
-        return {"level": "LOW", "message": BULK_MESSAGE, "exception": False}
-    return {"level": "MEDIUM", "message": CROSS_DOMAIN_MESSAGE, "exception": False}
+    return result
 
 
 def refresh_reply_routing(report: dict) -> dict:

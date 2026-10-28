@@ -203,16 +203,20 @@ class ActiveAttachmentTests(unittest.TestCase):
 
 
 class ReplyRoutingRegressionTests(unittest.TestCase):
-    def test_newsletter_with_helpdesk_reply_is_review_not_phishing(self):
+    def test_cross_domain_reply_remains_a_strong_indicator(self):
+        # Product policy: an unexplained Reply-To on another domain is HIGH,
+        # also for newsletters claiming bulk headers.
         report = analyze("Newsletter <news@shop.example>", reply_to="care@shop-help.zendesk.com",
                          html='<a href="https://www.shop.example/new">Nuovi arrivi</a>',
-                         headers={"List-Unsubscribe": "<https://shop.example/unsub>", "List-Unsubscribe-Post": "List-Unsubscribe=One-Click", "Precedence": "bulk"})
-        self.assertEqual("MEDIUM", report["reply_to_routing"]["level"])
-        result = llm.apply_email_risk_policy(report, dict(BENIGN_LINK, evidence="Nuovi arrivi"))
-        self.assertEqual("review", result["final_verdict"])
-        report["domain_authentication"] = {"status": "verified", "verified_domains": ["shop.example"]}
-        from fishstop_engine.analyzer.reply_routing import assess_reply_routing
-        self.assertEqual("LOW", assess_reply_routing(report)["level"])
+                         headers={"List-Unsubscribe": "<https://shop.example/unsub>"})
+        self.assertEqual("HIGH", report["reply_to_routing"]["level"])
+        self.assertEqual("malicious", llm._technical_risk(report)[0])
+
+    def test_lookalike_reply_domain_is_also_reported_as_sender_lookalike(self):
+        report = analyze("Accounts <accounts@paypal.com>", reply_to="support@paypal-help-desk.com",
+                         text="Rispondi per confermare.")
+        self.assertEqual("HIGH", report["reply_to_routing"]["level"])
+        self.assertTrue(any(alert["field"] == "Reply-To" for alert in report["sender_lookalike_alerts"]))
 
 
 if __name__ == "__main__":

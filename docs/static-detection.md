@@ -59,21 +59,10 @@ high-risk delivery formats.
 
 ## Reply-To routing
 
-A different reply domain alone is a review signal, not a phishing conviction.
-
-| Situation | Level |
-|---|---|
-| Same organisation, different mailbox | LOW |
-| Authenticated bulk sender, helpdesk/CRM reply domain | LOW |
-| Other domain | MEDIUM |
-| Personal mailbox provider behind an authenticated organisation sender | MEDIUM |
-| Personal mailbox provider behind an unauthenticated organisation sender | HIGH |
-| Reply domain imitating the sender, the recipient organisation or a brand | HIGH |
-| Sender failed explicit independent verification | HIGH |
-
-The semantic policy additionally makes the technical axis malicious when a
-grounded payment, credential or sensitive-data request asks for a reply to an
-address outside the sender's organisation.
+Unchanged product policy: a Reply-To on another mailbox without a recognised,
+authenticated sharing or notification routing is HIGH. In addition, a reply
+domain that imitates a protected brand or the recipient organisation is
+reported as a `Sender lookalike` finding on the Reply-To field.
 
 ## Known gaps
 

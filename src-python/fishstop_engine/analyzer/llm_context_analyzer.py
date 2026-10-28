@@ -17,7 +17,7 @@ from fishstop_engine.analysis_limits import (
     MAX_AI_BODY_CHARS,
     MAX_PHI4_SECTIONS,
 )
-from fishstop_engine.domain_utils import registered_domain, identity_mailbox, mailbox_candidates
+from fishstop_engine.domain_utils import registered_domain, identity_mailbox
 from .lookalike import is_risky_lookalike_alert
 from .essential_text import without_compaction_notices
 from .response_templates import CONTENT_SUMMARY_SOURCE, content_summary_parts
@@ -3298,15 +3298,6 @@ def _sensitive_link_domain_mismatch(soc: dict, semantic: dict) -> bool:
     )
 
 
-def _reply_leaves_sender_organisation(soc: dict) -> bool:
-    senders = [address for _, address in mailbox_candidates(soc.get("from_") or "")]
-    replies = [address for _, address in mailbox_candidates(soc.get("reply_to") or "")]
-    if len(senders) != 1 or not replies:
-        return False
-    sender_domain = registered_domain(senders[0].rsplit("@", 1)[-1])
-    return any(registered_domain(reply.rsplit("@", 1)[-1]) != sender_domain for reply in replies)
-
-
 def _technical_risk(soc: dict, semantic: dict | None = None) -> tuple[str, list[str]]:
     from .reply_routing import assess_reply_routing
     malicious = []
@@ -3448,17 +3439,6 @@ def _technical_risk(soc: dict, semantic: dict | None = None) -> tuple[str, list[
         suspicious.append("a link displays a different domain than the one it opens")
     if soc.get("unsafe_scheme_links"):
         malicious.append("a clickable element uses a javascript:, data: or file: target")
-    if (
-        semantic
-        and routing["level"] in {"MEDIUM", "LOW"}
-        and not routing.get("exception")
-        and semantic.get("action_channel") == "email_reply"
-        and (semantic.get("asks_for_payment") or semantic.get("asks_for_credentials")
-             or semantic.get("asks_for_sensitive_information"))
-        and bool(semantic.get("evidence_phrase"))
-        and _reply_leaves_sender_organisation(soc)
-    ):
-        malicious.append("a payment, credential or sensitive-data request asks for a reply to an address outside the sender's organisation")
     for link in (soc.get("links") or []):
         if link.get("actionable") is False or not link.get("financial_attachment_mismatch"):
             continue

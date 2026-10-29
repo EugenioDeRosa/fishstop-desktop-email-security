@@ -1,7 +1,7 @@
 {
   "name": "fishstop",
   "private": true,
-  "version": "1.2.3",
+  "version": "1.2.4",
   "type": "module",
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",

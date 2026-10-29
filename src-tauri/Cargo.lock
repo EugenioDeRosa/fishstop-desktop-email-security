@@ -1125,7 +1125,7 @@ checksum = "d45db016d36b838f563236e9193d0ee6ce38f3f68b6c94e914b4929c96bbb890"
 
 [[package]]
 name = "fishstop"
-version = "1.2.3"
+version = "1.2.4"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",

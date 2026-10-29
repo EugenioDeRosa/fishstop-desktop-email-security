@@ -1,6 +1,6 @@
 [package]
 name = "fishstop"
-version = "1.2.3"
+version = "1.2.4"
 description = "Analizzatore desktop di email sospette"
 authors = ["FishStop"]
 edition = "2021"

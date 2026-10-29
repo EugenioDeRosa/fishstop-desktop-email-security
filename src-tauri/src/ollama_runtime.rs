@@ -102,9 +102,18 @@ const MANAGED_HOST: &str = "127.0.0.1:11435";
 const MANAGED_ENDPOINT: &str = "http://127.0.0.1:11435";
 const EXPERIMENTAL_MLX_ENDPOINT: &str = "http://127.0.0.1:11436";
 #[cfg(target_os = "windows")]
-const WINDOWS_CUDA_URL: &str = "https://github.com/EugenioDeRosa/fishstop-desktop-email-security/releases/latest/download/fishstop-ollama-cuda.zip";
+const WINDOWS_CUDA_RELEASES: &str = "https://github.com/EugenioDeRosa/fishstop-desktop-email-security/releases";
 #[cfg(target_os = "windows")]
-const WINDOWS_CUDA_CHECKSUM_URL: &str = "https://github.com/EugenioDeRosa/fishstop-desktop-email-security/releases/latest/download/fishstop-ollama-cuda.zip.sha256";
+const WINDOWS_CUDA_ASSET: &str = "fishstop-ollama-cuda.zip";
+// Set by the release workflow at build time: the release this installer is
+// published in, and the SHA-256 of the NVIDIA runtime uploaded to it. A build
+// therefore always fetches the runtime it was packaged with, and verifies it
+// against a digest compiled into the binary rather than one served next to the
+// payload. Local builds without these values fall back to the latest release.
+#[cfg(target_os = "windows")]
+const WINDOWS_CUDA_RELEASE_TAG: Option<&str> = option_env!("FISHSTOP_RELEASE_TAG");
+#[cfg(target_os = "windows")]
+const WINDOWS_CUDA_SHA256: Option<&str> = option_env!("FISHSTOP_CUDA_SHA256");
 pub const MODEL_KEEP_ALIVE: &str = "2m";
 #[cfg(target_os = "windows")]
 const OLLAMA_RUNTIME_VERSION: &str = "v0.32.15";
@@ -934,6 +943,21 @@ fn windows_has_nvidia_gpu() -> bool {
 }
 
 #[cfg(target_os = "windows")]
+fn windows_cuda_url(file: &str) -> String {
+    match WINDOWS_CUDA_RELEASE_TAG.map(str::trim).filter(|tag| !tag.is_empty()) {
+        Some(tag) => format!("{WINDOWS_CUDA_RELEASES}/download/{tag}/{file}"),
+        None => format!("{WINDOWS_CUDA_RELEASES}/latest/download/{file}"),
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_cuda_pinned_sha256() -> Option<&'static str> {
+    WINDOWS_CUDA_SHA256
+        .map(str::trim)
+        .filter(|value| value.len() == 64 && value.chars().all(|character| character.is_ascii_hexdigit()))
+}
+
+#[cfg(target_os = "windows")]
 fn ensure_windows_cuda_runtime(app: &AppHandle, binary: &Path) -> Result<(), String> {
     if !windows_has_nvidia_gpu() {
         return Ok(());
@@ -958,19 +982,22 @@ fn ensure_windows_cuda_runtime(app: &AppHandle, binary: &Path) -> Result<(), Str
         .timeout(Duration::from_secs(30 * 60))
         .build()
         .map_err(|error| format!("Could not prepare the NVIDIA runtime download: {error}"))?;
-    let checksum_text = network
-        .get(WINDOWS_CUDA_CHECKSUM_URL)
-        .send()
-        .and_then(|response| response.error_for_status())
-        .and_then(|response| response.text())
-        .map_err(|error| format!("Could not download the NVIDIA runtime checksum: {error}"))?;
+    let checksum_text = match windows_cuda_pinned_sha256() {
+        Some(digest) => digest.to_string(),
+        None => network
+            .get(windows_cuda_url(&format!("{WINDOWS_CUDA_ASSET}.sha256")))
+            .send()
+            .and_then(|response| response.error_for_status())
+            .and_then(|response| response.text())
+            .map_err(|error| format!("Could not download the NVIDIA runtime checksum: {error}"))?,
+    };
     let expected = checksum_text
         .split_whitespace()
         .next()
         .filter(|value| value.len() == 64 && value.chars().all(|character| character.is_ascii_hexdigit()))
         .ok_or_else(|| "The NVIDIA runtime checksum is invalid.".to_string())?;
     let mut response = network
-        .get(WINDOWS_CUDA_URL)
+        .get(windows_cuda_url(WINDOWS_CUDA_ASSET))
         .send()
         .and_then(|response| response.error_for_status())
         .map_err(|error| format!("Could not download the NVIDIA runtime: {error}"))?;

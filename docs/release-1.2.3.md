@@ -40,6 +40,10 @@
 - La pipeline AI non si chiama più Phi-4: la chiave dei report diventa
   `ai_analysis` e la cronologia salvata viene migrata al caricamento. Il codice
   BERT non utilizzato è stato rimosso.
+- Su Windows con GPU NVIDIA, il runtime di accelerazione viene scaricato dalla
+  stessa release dell'app e verificato con un'impronta inclusa nell'app, non
+  più con quella pubblicata accanto al file. Un'app installata non scarica più
+  il runtime di una release diversa.
 - Corretto il ripiego DNS su HTTPS, che dopo il passaggio alla nuova lista dei
   suffissi pubblici restava disattivato in un'installazione pulita.
 

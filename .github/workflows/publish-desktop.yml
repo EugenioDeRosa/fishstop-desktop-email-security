@@ -143,6 +143,20 @@ jobs:
             build/fishstop-ollama-cuda.zip \
             build/fishstop-ollama-cuda.zip.sha256 \
             --clobber
+      - name: Pin the NVIDIA runtime to this release
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        env:
+          RELEASE_TAG: ${{ needs.prepare-release.outputs.release_tag }}
+        shell: bash
+        run: |
+          digest="$(cut -d' ' -f1 build/fishstop-ollama-cuda.zip.sha256)"
+          if ! printf '%s' "${digest}" | grep -Eq '^[0-9a-fA-F]{64}$'; then
+            echo "Invalid NVIDIA runtime checksum: ${digest}"
+            exit 1
+          fi
+          test -n "${RELEASE_TAG}"
+          echo "FISHSTOP_RELEASE_TAG=${RELEASE_TAG}" >> "${GITHUB_ENV}"
+          echo "FISHSTOP_CUDA_SHA256=${digest}" >> "${GITHUB_ENV}"
       - name: Prepare bundled licenses and matching sources
         env:
           FISHSTOP_TARGET_TRIPLE: ${{ matrix.target }}

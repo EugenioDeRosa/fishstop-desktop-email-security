@@ -18,8 +18,9 @@ use std::io::{Read, Write};
 
 pub const FINE_TUNED_MODEL: &str = "fishstop-qwen3:4b-finetuned-v5-q4_K_M";
 pub const MANAGED_MODEL: &str = FINE_TUNED_MODEL;
-pub const FAST_MODEL: &str = "fishstop-fast:1.7b-finetuned-lite-v7-q4_k_m";
+pub const FAST_MODEL: &str = "fishstop-fast:1.7b-finetuned-lite-v7.1-q4_k_m";
 const PREVIOUS_FAST_MODELS: &[&str] = &[
+    "fishstop-fast:1.7b-finetuned-lite-v7-q4_k_m",
     "fishstop-fast:1.7b-finetuned-lite-v6-q4_k_m",
     "fishstop-fast:1.7b-finetuned-lite-v5-q4_k_m",
     "fishstop-fast:1.7b-finetuned-lite-v4-q4_k_m",

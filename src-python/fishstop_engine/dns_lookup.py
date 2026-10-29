@@ -10,7 +10,7 @@ import dns.resolver
 from dns.rdtypes.ANY.TXT import TXT
 import requests
 
-from fishstop_engine.domain_utils import get_tld
+from fishstop_engine.domain_utils import normalize_hostname, public_suffix
 
 
 def resolve_records(name: str, kind: str, *, lifetime: float = 2):
@@ -19,9 +19,10 @@ def resolve_records(name: str, kind: str, *, lifetime: float = 2):
         return list(dns.resolver.resolve(name, kind, lifetime=min(.7, lifetime)))
     except (dns.exception.Timeout, dns.resolver.NoNameservers):
         disabled = set(os.getenv("FISHSTOP_DISABLED_PROVIDERS", "").split(","))
-        public_suffix = get_tld(name.rstrip("."), strict=True) if get_tld else None
+        host = normalize_hostname(name)
+        suffix = public_suffix(host)
         if ("local_only" in disabled or os.getenv("FISHSTOP_DNS_HTTPS_FALLBACK", "1") == "0"
-                or not public_suffix or public_suffix == name.rstrip(".")):
+                or not suffix or suffix == host):
             raise
     remaining = deadline - time.monotonic()
     if remaining <= 0:

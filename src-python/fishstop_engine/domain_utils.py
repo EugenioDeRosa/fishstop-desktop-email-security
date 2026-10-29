@@ -128,6 +128,36 @@ def icann_registered_domain(value: str) -> str:
     return normalize_hostname(str(registrable)) if registrable else ""
 
 
+def public_suffix(value: str) -> str:
+    """Return the known public suffix of a hostname, or "" when it is unknown.
+
+    Backed by the bundled Public Suffix List snapshot; the legacy package is
+    only a fallback so that a minimal environment stays conservative.
+    """
+    host = normalize_hostname(value)
+    if not host:
+        return ""
+    if _PSL is not None:
+        try:
+            suffix = _PSL.publicsuffix(host)
+        except (TypeError, ValueError, UnicodeError):
+            return ""
+        return normalize_hostname(str(suffix)) if suffix else ""
+    if get_tld is None:
+        return ""
+    try:
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                category=DeprecationWarning,
+                module=r"publicsuffix2(?:\..*)?",
+            )
+            suffix = get_tld(host, strict=True)
+    except (TypeError, ValueError, UnicodeError):
+        return ""
+    return normalize_hostname(str(suffix or ""))
+
+
 def is_public_suffix(value: str) -> bool:
     """Return whether a hostname is itself a PSL boundary.
 

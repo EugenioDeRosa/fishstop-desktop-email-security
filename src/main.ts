@@ -8,6 +8,7 @@ import { listen } from "@tauri-apps/api/event";
 import { createBackgroundChecks } from "./background-checks";
 import { createStatusCache } from "./status-cache";
 import { createHopPager } from "./hop-pager";
+import { fastModelVersion } from "./model-version";
 import { prepareStartup } from "./startup";
 import { ensureStartupModel } from "./startup-model";
 import { notify, clearNotifications } from "./notifications";
@@ -3758,7 +3759,7 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
         machineModelName.textContent = `FishSTOP ${modeName}`;
         let version = machineModelName.parentElement?.querySelector<HTMLElement>(".model-finetune-version");
         if (!version && machineModelName.parentElement) { version = document.createElement("small"); version.className = "model-finetune-version"; machineModelName.parentElement.append(version); }
-        if (version) version.textContent = fast ? t("Fine tune Lite {0} · Experimental", [runtime.model.match(/finetuned-lite-(v\d+)/i)?.[1] || "unknown"]) : t("Fine tune {0}", [runtime.fine_tuned_version || "v5"]);
+        if (version) version.textContent = fast ? t("Fine tune Lite {0} · Experimental", [fastModelVersion(runtime.model) || "unknown"]) : t("Fine tune {0}", [runtime.fine_tuned_version || "v5"]);
         machineModelName.removeAttribute("title");
       }
       machineModelRow?.classList.remove("is-busy", "is-missing", "is-ready");

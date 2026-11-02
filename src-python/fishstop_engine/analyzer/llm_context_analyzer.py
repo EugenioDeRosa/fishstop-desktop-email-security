@@ -1110,6 +1110,34 @@ def _normalized_evidence(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip().lower()
 
 
+def _grounded_link_destination(soc: dict, value: str) -> str:
+    """Return the link host (or mailto recipient) shown to the model that a quote names.
+
+    Accepts the host itself, the host with a scheme or trailing path
+    separator, or a trailing part of it on a label boundary that still holds
+    the registrable domain.  A public suffix or a word that is not a domain is
+    never accepted.
+    """
+    candidate = _normalized_evidence(value).strip(_EVIDENCE_EDGE_CHARACTERS.replace("-", ""))
+    candidate = re.sub(r"^(?:https?://|mailto:)", "", candidate).rstrip("/").rstrip(".")
+    if "." not in candidate or not re.fullmatch(r"[\w.@-]+", candidate):
+        return ""
+    for entry in (_link_destination_observations(soc).get("links") or []):
+        for shown in (str(entry.get("host") or ""), str(entry.get("recipient") or "")):
+            shown = shown.lower().rstrip(".")
+            if not shown:
+                continue
+            if candidate == shown:
+                return shown
+            # A trailing part must still contain the registrable domain, so a
+            # public suffix such as "co.uk" or "windows.net" alone never matches.
+            if "@" not in candidate and shown.endswith("." + candidate):
+                registered = registered_domain(candidate)
+                if registered and registered == registered_domain(shown) and len(candidate) >= len(registered):
+                    return candidate
+    return ""
+
+
 def _validated_evidence(soc: dict, value: str, action: str = "") -> str:
     """Ground model evidence in the original message without interpreting its language."""
     evidence = _clip_exact_span(_normalize_obfuscated_text(value), 180)
@@ -1133,6 +1161,10 @@ def _validated_evidence(soc: dict, value: str, action: str = "") -> str:
     core = normalized_evidence.strip(_EVIDENCE_EDGE_CHARACTERS)
     if core != normalized_evidence and re.search(r"\w", core) and core in normalized_searchable:
         return evidence.strip(_EVIDENCE_EDGE_CHARACTERS + "\u2018\u2019\u201c\u201d\u00ab\u00bb\u201e\u201a\u2013\u2014")
+    # The prompt lists each link's destination host inside the email block, so
+    # a model may quote one. It is grounded only if it is one of those hosts.
+    if destination := _grounded_link_destination(soc, evidence):
+        return destination
     # A model may quote a parsed HTML caption as caption<URL>. Require both
     # pieces from the same real link; never ground a fabricated destination.
     link_quote = re.fullmatch(r"\s*(.+?)\s*<\s*(https?://[^<>\s]+)\s*>\s*", evidence, re.I)

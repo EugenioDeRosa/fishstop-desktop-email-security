@@ -683,7 +683,9 @@ class BalancedPipelineTests(unittest.TestCase):
             audit=audit,
         )
 
-        self.assertEqual(calls, ["primary:1", "audit:intent+security_lure", "identity"])
+        # Identity runs before the audit so security_lure can see the claimed
+        # organisation's domain coherence; it is not repeated after the merge.
+        self.assertEqual(calls, ["primary:1", "identity", "audit:intent+security_lure"])
         self.assertEqual(result["performance"]["llm_calls"], 3)
         self.assertEqual(result["analysis"]["requested_action"], "verify_account")
         self.assertEqual(result["analysis"]["final_verdict"], "review")

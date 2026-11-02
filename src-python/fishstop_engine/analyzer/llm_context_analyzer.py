@@ -1458,7 +1458,59 @@ def _request_identity_extraction(soc: dict, *, model: str, timeout: int,
     return {"status": "unavailable"}
 
 
-def _identity_analysis_from_semantic(soc: dict, semantic: dict, *, local_fallback: bool = True) -> dict:
+def _claimed_brand_entities(soc: dict, brand: str, confidence=0.5) -> list[dict]:
+    """Entity list for a claimed organisation that is visibly present in the email."""
+    occurrences = _claimed_brand_occurrences(soc, brand) if brand else []
+    if not occurrences:
+        return []
+    return [{
+        "name": brand,
+        "confidence": confidence,
+        "entity_type": "ORG",
+        "entity_types": ["ORG"],
+        "verified_claim": True,
+        "occurrences": occurrences,
+    }]
+
+
+def _brand_coherence_for(soc: dict, entities: list[dict], precomputed: dict | None = None) -> list[dict]:
+    """Brand/domain coherence, reusing a result already computed for the same claim.
+
+    ``assess_brand_coherence`` performs public lookups and updates sender
+    baselines, so the pre-audit computation is reused rather than repeated.
+    """
+    if not entities or soc.get("local_only"):
+        return []
+    key = tuple(str(entity.get("name") or "").casefold() for entity in entities)
+    if precomputed is not None and precomputed.get("key") == key:
+        return precomputed["coherence"]
+    from fishstop_engine.brand_intelligence import assess_brand_coherence
+    return assess_brand_coherence(soc, entities)
+
+
+def _pre_audit_identity_coherence(soc: dict, claimed_brand: str) -> dict:
+    """Deterministic identity coherence available before the targeted audits.
+
+    The full identity report is built only after all sections are merged, but
+    the ``security_lure`` audit needs to know already whether the declared
+    organisation is contradicted by the sender domain.
+    """
+    brand = _clip_exact_span(_normalize_obfuscated_text(claimed_brand or ""), 80)
+    entities = _claimed_brand_entities(soc, brand)
+    return {
+        "claimed_brand": brand if entities else "",
+        "key": tuple(str(entity["name"]).casefold() for entity in entities),
+        "coherence": _brand_coherence_for(soc, entities),
+    }
+
+
+def _identity_analysis_from_semantic(
+    soc: dict,
+    semantic: dict,
+    *,
+    local_fallback: bool = True,
+    precomputed_coherence: dict | None = None,
+) -> dict:
     """Turn the grounded Qwen identity claim into the existing identity report."""
     brand = _clip_exact_span(
         _normalize_obfuscated_text(semantic.get("claimed_brand") or ""),
@@ -1492,9 +1544,8 @@ def _identity_analysis_from_semantic(soc: dict, semantic: dict, *, local_fallbac
     else:
         semantic["claimed_brand"] = ""
 
-    from fishstop_engine.brand_intelligence import assess_brand_coherence
     from fishstop_engine.impersonation import assess_impersonation
-    coherence = assess_brand_coherence(soc, entities) if entities and not soc.get("local_only") else []
+    coherence = _brand_coherence_for(soc, entities, precomputed_coherence)
     impersonation = assess_impersonation(soc, entities, normalize_semantic_extraction(semantic, soc=soc), coherence)
     soc["impersonation"] = impersonation
     return {
@@ -3977,7 +4028,11 @@ SECURITY_LURE_INSTRUCTIONS = (
 
 
 def _security_audit_observations(soc: dict) -> str:
-    coherence = (soc.get("identity_analysis") or {}).get("coherence") or []
+    coherence = (
+        (soc.get("identity_analysis") or {}).get("coherence")
+        or (soc.get("pre_audit_identity") or {}).get("coherence")
+        or []
+    )
     payload = {
         "sender_domain": registered_domain(_sender_domain(soc)) or "",
         "claimed_identity_domain_mismatch": any(
@@ -4895,6 +4950,31 @@ def stream_ai_email_analysis(
     ollama_calls: list[dict] = []
     grounded_diversion = _grounded_payment_diversion(soc)
 
+    # Identity extraction reads only the email, never a section result, so it
+    # runs once: before the first ``security_lure`` audit when one is needed
+    # (that audit compares the declared organisation with the sender domain),
+    # otherwise after the merge.  The coherence lookup is reused afterwards.
+    identity_state: dict = {"done": False, "extraction": {}, "seconds": 0.0, "pre_audit": None}
+
+    def ensure_identity(fallback_brand: str = ""):
+        if identity_state["done"]:
+            return
+        yield {"status": "progress", "stage": "identity", "message": f"{model} is identifying the organisation represented by the message"}
+        started = monotonic()
+        extraction = _request_identity_extraction(
+            soc, model=model, timeout=remaining_timeout(timeout),
+            telemetry=ollama_calls, cancellation_requested=cancellation_requested)
+        identity_state.update(done=True, extraction=extraction, seconds=monotonic() - started)
+        if extraction.get("status") == "cancelled":
+            return
+        brand = extraction["claimed_brand"] if extraction.get("status") == "ok" else fallback_brand
+        pre_audit = _pre_audit_identity_coherence(soc, brand or "")
+        identity_state["pre_audit"] = pre_audit
+        soc["pre_audit_identity"] = {
+            "claimed_brand": pre_audit["claimed_brand"],
+            "coherence": pre_audit["coherence"],
+        }
+
     section_index = 0
     subject, _, attachment_meta = _prepared_email_prompt_parts(soc)
     while section_index < len(prompt_sections):
@@ -5078,6 +5158,12 @@ def stream_ai_email_analysis(
                     if _needs_extortion_verifier(verifier_primary, section_soc):
                         checks.append("extortion")
 
+                    if "security_lure" in checks:
+                        yield from ensure_identity(semantic.get("claimed_brand") or "")
+                        if cancellation_requested and cancellation_requested():
+                            yield {"status": "cancelled", "text": ""}
+                            return
+                        section_soc["pre_audit_identity"] = soc.get("pre_audit_identity")
                     if checks:
                         yield {
                             "status": "progress",
@@ -5147,6 +5233,11 @@ def stream_ai_email_analysis(
                             semantic.update(payment_diversion)
                     security_primary = normalize_semantic_extraction(semantic, soc=section_soc)
                     if _needs_security_lure_verifier(section_soc, security_primary):
+                        yield from ensure_identity(semantic.get("claimed_brand") or "")
+                        if cancellation_requested and cancellation_requested():
+                            yield {"status": "cancelled", "text": ""}
+                            return
+                        section_soc["pre_audit_identity"] = soc.get("pre_audit_identity")
                         security_lure = _request_security_lure_verifier(
                             section_soc,
                             model=model,
@@ -5221,22 +5312,24 @@ def stream_ai_email_analysis(
         # Ignore prose returned by older fine-tuned models as well.
         semantic["content_summary_source"] = CONTENT_SUMMARY_SOURCE
         identity_model = model
-        yield {"status": "progress", "stage": "identity", "message": f"{identity_model} is identifying the organisation represented by the message"}
-        identity_started = monotonic()
-        identity_extraction = _request_identity_extraction(
-            soc, model=identity_model, timeout=remaining_timeout(timeout),
-            telemetry=ollama_calls, cancellation_requested=cancellation_requested)
-        identity_seconds = monotonic() - identity_started
+        yield from ensure_identity(semantic.get("claimed_brand") or "")
+        identity_extraction = identity_state["extraction"]
+        identity_seconds = identity_state["seconds"]
         if cancellation_requested and cancellation_requested():
             yield {"status": "cancelled", "text": ""}
             return
         if identity_extraction.get("status") == "ok":
             semantic["claimed_brand"] = identity_extraction["claimed_brand"]
             semantic["claimed_role"] = identity_extraction["claimed_role"]
-        identity_analysis = _identity_analysis_from_semantic(soc, semantic, local_fallback=False)
+        identity_analysis = _identity_analysis_from_semantic(
+            soc, semantic, local_fallback=False,
+            precomputed_coherence=identity_state["pre_audit"],
+        )
         identity_analysis["model"] = identity_model
         identity_analysis["extraction"] = {**identity_extraction, "model": identity_model, "elapsed_seconds": identity_seconds}
         soc["identity_analysis"] = identity_analysis
+        # The pre-audit view is superseded by the full identity report.
+        soc.pop("pre_audit_identity", None)
         verification_reasons = _content_verification_reasons(soc, semantic)
         needs_risk_verification = bool(verification_reasons)
         if needs_risk_verification and monotonic() < pipeline_deadline:

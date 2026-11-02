@@ -1090,14 +1090,31 @@ def _split_complete_email_body(
     return chunks
 
 
+# Models routinely retype typographic punctuation as ASCII, or swap single
+# and double quotation marks.  Folding every quotation mark to one character on
+# both sides keeps the substring requirement for the words themselves.
+_EVIDENCE_PUNCTUATION_FOLD = str.maketrans({
+    "\u2018": "'", "\u2019": "'", "\u201a": "'", "\u201b": "'", "\u2032": "'",
+    "\u0060": "'", "\u00b4": "'", "\u2039": "'", "\u203a": "'",
+    '"': "'", "\u201c": "'", "\u201d": "'", "\u201e": "'", "\u201f": "'", "\u2033": "'",
+    "\u00ab": "'", "\u00bb": "'",
+    "\u2010": "-", "\u2011": "-", "\u2012": "-", "\u2013": "-", "\u2014": "-",
+    "\u2015": "-", "\u2212": "-",
+})
+# Characters a model may add, drop or cut through at the ends of a quotation.
+_EVIDENCE_EDGE_CHARACTERS = " '\".,;:!?\u00bf\u00a1()[]{}*_-"
+
+
 def _normalized_evidence(value: str) -> str:
-    value = _normalize_obfuscated_text(value)
+    value = _normalize_obfuscated_text(value).translate(_EVIDENCE_PUNCTUATION_FOLD)
     return re.sub(r"\s+", " ", value).strip().lower()
 
 
 def _validated_evidence(soc: dict, value: str, action: str = "") -> str:
     """Ground model evidence in the original message without interpreting its language."""
     evidence = _clip_exact_span(_normalize_obfuscated_text(value), 180)
+    # Opening/closing quotation marks around the whole quote are not content.
+    evidence = evidence.strip("\"'\u2018\u2019\u201c\u201d\u00ab\u00bb\u201e\u201a ")
     if not evidence:
         return ""
     searchable = "\n".join([
@@ -1110,6 +1127,12 @@ def _validated_evidence(soc: dict, value: str, action: str = "") -> str:
     normalized_evidence = _normalized_evidence(evidence)
     if normalized_evidence in normalized_searchable:
         return evidence
+    # A quotation that starts or stops inside quoted text or at a sentence end
+    # differs from the email only by edge punctuation. The remaining core must
+    # still be a verbatim substring and contain an actual word.
+    core = normalized_evidence.strip(_EVIDENCE_EDGE_CHARACTERS)
+    if core != normalized_evidence and re.search(r"\w", core) and core in normalized_searchable:
+        return evidence.strip(_EVIDENCE_EDGE_CHARACTERS + "\u2018\u2019\u201c\u201d\u00ab\u00bb\u201e\u201a\u2013\u2014")
     # A model may quote a parsed HTML caption as caption<URL>. Require both
     # pieces from the same real link; never ground a fabricated destination.
     link_quote = re.fullmatch(r"\s*(.+?)\s*<\s*(https?://[^<>\s]+)\s*>\s*", evidence, re.I)

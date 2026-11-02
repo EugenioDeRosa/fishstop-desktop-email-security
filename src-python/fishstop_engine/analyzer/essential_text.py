@@ -9,9 +9,10 @@ import re
 
 _TURN_BOUNDARY = re.compile(
     r"^\s*(?:\[(?:TARGET|CONTEXT|PRIOR CONTEXT|LATER FOLLOW-UP CONTEXT).*MESSAGE|"
-    r"(?:from|da|de|sent|inviato|subject|oggetto)\s*:|"
+    r"(?:from|da|de|von|van|sent|inviato|subject|oggetto|asunto|assunto|objet|betreff|onderwerp)\s*:|"
     r"(?:on .+ wrote|il giorno .+ ha scritto|.+ escribi[oó])\s*:|"
-    r"[-_]{3,}.*(?:original|forwarded|inoltrato|originale))", re.I)
+    r"[-_]{3,}.*(?:original|forwarded|inoltrato|originale|reenviado|encaminhada|"
+    r"transf[ée]r[ée]|weitergeleitete|doorgestuurd))", re.I)
 _REPEAT_MARKER = "[Repeated block: identical text is already present above.]"
 _MIME_MARKER = "[HTML alternative; shared paragraphs occur above]"
 _OMISSION_MARKER = "[This version also omits passages present in the other version.]"

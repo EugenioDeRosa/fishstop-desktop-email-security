@@ -9,14 +9,11 @@ from email.utils import parseaddr
 from pathlib import Path
 
 from .html_utils import strip_html_for_intent
+from .mail_markers import FORWARD_MARKER_RE, HEADER_LABEL_PATTERN, header_key
 from fishstop_engine.domain_utils import identity_mailbox
 
 
-_FORWARD_RE = re.compile(
-    r"^\s*(?:-{2,}\s*)?(?:forwarded message|messaggio inoltrato|"
-    r"inizio messaggio inoltrato)(?:\s*-{2,})?\s*:?-*\s*$",
-    re.IGNORECASE,
-)
+_FORWARD_RE = FORWARD_MARKER_RE
 _REPLY_RE = re.compile(
     r"^\s*(?P<label>(?:on|il giorno|luned[iì]|marted[iì]|mercoled[iì]|"
     r"gioved[iì]|venerd[iì]|sabato|domenica|am|le)\b.+?"
@@ -24,18 +21,9 @@ _REPLY_RE = re.compile(
     re.IGNORECASE,
 )
 _HEADER_RE = re.compile(
-    r"^\s*\*{0,2}(?P<label>from|da|de|sent|inviato(?: il)?|enviado el|"
-    r"date|data|to|a|para|cc|bcc|copia|copia nascosta|subject|oggetto|asunto)\*{0,2}\s*:\s*(?P<value>.*)$",
+    r"^\s*\*{0,2}(?P<label>" + HEADER_LABEL_PATTERN + r")\*{0,2}\s*:\s*(?P<value>.*)$",
     re.IGNORECASE,
 )
-_HEADER_KEYS = {
-    "from": "from", "da": "from", "de": "from",
-    "sent": "date", "inviato": "date", "inviato il": "date",
-    "enviado el": "date", "date": "date", "data": "date",
-    "to": "to", "a": "to", "para": "to",
-    "cc": "cc", "copia": "cc", "bcc": "bcc", "copia nascosta": "bcc",
-    "subject": "subject", "oggetto": "subject", "asunto": "subject",
-}
 _ACTION_PATTERNS = (
     (re.compile(r"\biban\b|\bbic\b|bank account|conto bancario|cuenta bancaria", re.I), 7),
     (re.compile(r"\bpayment\b|\bpagamento\b|\bpago\b|\btransfer(?:encia)?\b|\bbonifico\b", re.I), 4),
@@ -103,7 +91,7 @@ def _header_block(lines: list[str], start: int) -> tuple[dict[str, str], int]:
         if not match:
             break
         saw_header = True
-        key = _HEADER_KEYS[match.group("label").casefold()]
+        key = header_key(match.group("label"))
         value = _clean_header_value(match.group("value"))
         if value and key not in fields:
             fields[key] = value
@@ -161,7 +149,7 @@ def inspect_conversation_bytes(raw_bytes: bytes) -> dict:
             index = max(index + 1, content_start)
             continue
         header_match = _HEADER_RE.match(line)
-        if header_match and _HEADER_KEYS[header_match.group("label").casefold()] == "from":
+        if header_match and header_key(header_match.group("label")) == "from":
             fields, content_start = _header_block(lines, index)
             if fields.get("from") and len(fields) >= 2:
                 boundaries.append({"start": index, "content_start": content_start, "fields": fields, "kind": "quoted"})

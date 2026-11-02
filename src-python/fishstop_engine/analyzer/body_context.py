@@ -11,17 +11,18 @@ from email.utils import parseaddr
 
 from fishstop_engine.ai_input import compact_ai_body
 
-
-_FORWARD_MARKER_RE = re.compile(
-    r"^\s*(?:"
-    r"-{2,}\s*forwarded message\s*-{2,}|"
-    r"begin forwarded message:|"
-    r"forwarded message|"
-    r"messaggio inoltrato|"
-    r"inizio messaggio inoltrato"
-    r")\s*$",
-    re.IGNORECASE,
+from .mail_markers import (
+    FORWARD_MARKER_RE,
+    HEADER_LABEL_PATTERN,
+    NON_SENDER_HEADER_LABEL_PATTERN,
+    SENDER_HEADER_LABEL_PATTERN,
+    header_key,
 )
+
+
+# Localized separators ("Messaggio inoltrato", "Mensaje reenviado",
+# "Weitergeleitete Nachricht", ...) are shared with the conversation scanner.
+_FORWARD_MARKER_RE = FORWARD_MARKER_RE
 
 _REPLY_MARKER_RE = re.compile(
     r"^\s*(?:"
@@ -36,26 +37,21 @@ _REPLY_MARKER_RE = re.compile(
 )
 
 _FORWARDED_HEADER_RE = re.compile(
-    r"^\s*(?:"
-    r"from|da|de|sent|inviato|date|data|to|a|cc|bcc|subject|oggetto"
-    r")\s*:",
+    r"^\s*\*{0,2}" + HEADER_LABEL_PATTERN + r"\*{0,2}\s*:",
     re.IGNORECASE,
 )
 
 _FORWARDED_HEADER_CAPTURE_RE = re.compile(
-    r"^\s*(?P<label>from|da|de|sent|inviato|date|data|to|a|cc|bcc|subject|oggetto)\s*:\s*(?P<value>.*)$",
+    r"^\s*\*{0,2}(?P<label>" + HEADER_LABEL_PATTERN + r")\*{0,2}\s*:\s*(?P<value>.*)$",
     re.IGNORECASE,
 )
-_FORWARDED_HEADER_KEYS = {
-    "from": "from", "da": "from", "de": "from",
-    "sent": "date", "inviato": "date", "date": "date", "data": "date",
-    "to": "to", "a": "to", "cc": "cc", "bcc": "bcc",
-    "subject": "subject", "oggetto": "subject",
-}
 
-_OUTLOOK_REPLY_FROM_RE = re.compile(r"^\s*(?:from|da|de)\s*:", re.IGNORECASE)
+_OUTLOOK_REPLY_FROM_RE = re.compile(
+    r"^\s*\*{0,2}" + SENDER_HEADER_LABEL_PATTERN + r"\*{0,2}\s*:",
+    re.IGNORECASE,
+)
 _OUTLOOK_REPLY_HEADER_RE = re.compile(
-    r"^\s*(?:sent|inviato|date|data|to|a|cc|bcc|subject|oggetto)\s*:",
+    r"^\s*\*{0,2}" + NON_SENDER_HEADER_LABEL_PATTERN + r"\*{0,2}\s*:",
     re.IGNORECASE,
 )
 
@@ -63,10 +59,7 @@ _OUTLOOK_REPLY_HEADER_RE = re.compile(
 # ``---------- Original message ----------``), so recognition below relies on
 # the structural header block that follows it rather than on its wording.
 _THREAD_SEPARATOR_RE = re.compile(r"^\s*[_=*-]{8,}(?:\s*[^\r\n]*?\s*[_=*-]{8,})?\s*$")
-_THREAD_SEPARATOR_HEADER_RE = re.compile(
-    r"^\s*(?:from|da|de|sent|inviato|date|data|to|a|cc|bcc|subject|oggetto)\s*:",
-    re.IGNORECASE,
-)
+_THREAD_SEPARATOR_HEADER_RE = _FORWARDED_HEADER_RE
 _GENERIC_HEADER_LINE_RE = re.compile(
     r"^\s*[\wÀ-ÖØ-öø-ÿ][\wÀ-ÖØ-öø-ÿ ._-]{0,32}\s*:\s*\S",
     re.IGNORECASE,
@@ -310,7 +303,7 @@ def extract_forwarded_identity(body_clean: str) -> dict:
                 break
             continue
         started = True
-        key = _FORWARDED_HEADER_KEYS[match.group("label").casefold()]
+        key = header_key(match.group("label"))
         value = re.sub(r"\s+", " ", match.group("value")).strip()
         if value and key not in fields:
             fields[key] = value

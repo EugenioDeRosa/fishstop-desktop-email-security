@@ -1751,12 +1751,31 @@ _AUTHENTICATION_CODE_VALUE_PATTERN = re.compile(r"(?<!\d)\d{4,8}(?!\d)")
 # an actionable link must all be present.  Therefore an ordinary points balance
 # or a time-limited retail sale cannot trigger it on an isolated keyword.
 _REWARD_BENEFIT_PATTERN = re.compile(
-    r"\b(?:reward|rewards|loyalty\s+points?|points?|miles?|bonus|prize|cashback|"
-    r"refund|voucher|gift|benefit|punti|miglia|premi[oa]?|rimborso|buon[oi]|"
-    r"puntos?|millas?|reembolso|regalo|beneficio|pontos?|milhas?|pr[eê]mios?|"
-    r"recompensa|reembolso|presente|benef[ií]cio|gewinnspiel|gewinn)\b",
+    r"\b(?:reward|rewards|loyalty\s+points?|bonus|prize|cashback|"
+    r"refund|voucher|gift|benefit|premi[oa]?|rimborso|buon[oi]|"
+    r"reembolso|regalo|beneficio|pr[eê]mios?|"
+    r"recompensa|reembolso|presente|benef[ií]cio|gewinnspiel|gewinn)\b"
+    # "Points" and "miles" are also ordinary words ("punto di ritiro",
+    # "ponto de retirada", "pick-up point", distances).  They are a benefit
+    # only with an amount or an explicit loyalty/balance context.
+    r"|\b\d[\d.,]*\s*(?:points?|punti|puntos?|pontos?|miles?|miglia|millas?|milhas?)\b"
+    r"|\b(?:points?|punti|puntos?|pontos?|miles?|miglia|millas?|milhas?)\s+"
+    r"(?:fedelt[aà]|loyalty|reward|premio|pr[eê]mio|bonus|fidelidad|fidelidade|"
+    r"accumulat\w*|acumulad\w*|disponibil\w*|disponibles?|dispon[ií]ve(?:l|is)|available)\b"
+    r"|\b(?:saldo|balance)\s+(?:(?:dei|de|of)\s+)?(?:points?|punti|puntos|pontos|miles|miglia|millas|milhas)\b"
+    r"|\b(?:your|tuoi|vostri|tus|sus|seus|teus|vos|vots|deine|ihre)\s+"
+    r"(?:points|punti|puntos|pontos|miles|miglia|millas|milhas|punkte|meilen)\b",
     re.IGNORECASE,
 )
+# Verbs that mean redeeming a benefit on their own.
+_REWARD_STRONG_CLAIM_PATTERN = re.compile(
+    r"\b(?:claim|redeem|riscatt\w*|rescata\w*|canjea\w*|"
+    r"resgata\w*|resgate\w*|troque\w*|teilnehmen|nehmen\s+sie\b.{0,60}\bteil)\b",
+    re.IGNORECASE,
+)
+# All claim verbs.  Generic ones ("ritira il pacco", "collect your parcel",
+# "get your order", "richiedi assistenza") count only with a benefit term in
+# the same sentence or link label.
 _REWARD_CLAIM_PATTERN = re.compile(
     r"\b(?:claim|redeem|collect|get\s+(?:your|the)|activate|riscatt\w*|richied\w*|"
     r"ottien\w*|ritir\w*|rescata\w*|canjea\w*|reclama\w*|obt[eé]n\w*|"
@@ -1818,11 +1837,75 @@ def _explicit_payment_request(soc: dict) -> bool:
     return bool(_explicit_payment_evidence(soc))
 
 
+# Text that reports what *other* messages say is not an instruction to the
+# recipient: a security bulletin quoting "pay 500 euro in bitcoin or I publish
+# the video" warns about extortion, it does not demand a payment.
+_QUOTED_SPAN_PATTERN = re.compile(
+    r'"[^"\n]{3,400}"|\u201c[^\u201d\n]{3,400}\u201d|\u00ab[^\u00bb\n]{3,400}\u00bb|'
+    r'\u201e[^\u201c\u201d\n]{3,400}[\u201c\u201d]|\u2039[^\u203a\n]{3,400}\u203a'
+)
+_REPORTED_SPEECH_PATTERN = re.compile(
+    r"\b(?:"
+    # Italian: "email che dicono / chiedono / minacciano di ..."
+    r"che\s+(?:dicono|dice|chiedono|chiede|affermano|afferma|sostengono|sostiene|"
+    r"minacciano|minaccia|intimano|pretendono|richiedono)|"
+    r"(?:dicendo|chiedendo|affermando|sostenendo|minacciando)\s+(?:di|che)|"
+    # English: "messages claiming / that say / asking you to ..."
+    r"(?:messages?|e-?mails?|texts?|sms|calls?|scams?|scammers?|criminals?|fraudsters?)\s+"
+    r"(?:that\s+|which\s+)?(?:claim(?:s|ing)?|say(?:s|ing)?|ask(?:s|ing)?|demand(?:s|ing)?|"
+    r"threaten(?:s|ing)?|tell(?:s|ing)?\s+you)|"
+    r"(?:claiming|saying|asking|demanding|threatening)\s+(?:that\s+)?(?:you|to)|"
+    # Spanish / Portuguese
+    r"que\s+(?:dicen|dice|piden|pide|afirman|exigen|amenazan|dizem|diz|pedem|pede|"
+    r"afirmam|exigem|amea[cç]am)|"
+    # French
+    r"qui\s+(?:disent|dit|demandent|exigent|pr[ée]tendent|menacent)|"
+    # German / Dutch
+    r"die\s+(?:behaupten|sagen|verlangen|fordern|drohen|beweren|vragen|eisen|dreigen)"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _mask_span(text: str, start: int, end: int) -> str:
+    return text[:start] + re.sub(r"[^\n]", " ", text[start:end]) + text[end:]
+
+
+def _instruction_segments(soc: dict) -> list[str]:
+    """Sentences of the payment scope whose own (unquoted) words are checked.
+
+    Quoted passages and reported speech are blanked with spaces of equal
+    length, so sentence boundaries and the returned verbatim evidence still
+    come from the original text.
+    """
+    if "selected_target_body" in soc:
+        soc = {"body_for_intent": str(soc["selected_target_body"] or "")}
+    text = "\n\n".join([str(soc.get("subject") or ""), _body_context_for_llm(soc), *_actionable_link_texts(soc)])
+    text = re.sub(r"(?<!\n)\n(?!\n)", " ", text)
+    text = _normalize_obfuscated_text(without_compaction_notices(text))
+    masked = text
+    for match in _QUOTED_SPAN_PATTERN.finditer(text):
+        masked = _mask_span(masked, match.start(), match.end())
+    for match in _REPORTED_SPEECH_PATTERN.finditer(masked):
+        clause_end = re.search(r"[.!?\n]|$", masked[match.end():])
+        masked = _mask_span(masked, match.start(), match.end() + clause_end.start())
+    segments: list[tuple[str, str]] = []
+    start = 0
+    for boundary in [*re.finditer(r"(?<=[.!?])\s+|\n+", masked), None]:
+        end = boundary.start() if boundary else len(masked)
+        original = re.sub(r"\s+", " ", text[start:end]).strip()
+        own_words = re.sub(r"\s+", " ", masked[start:end]).strip()
+        if len(original) >= 8:
+            segments.append((original, own_words))
+        start = boundary.end() if boundary else len(masked)
+    return segments
+
+
 def _explicit_payment_evidence(soc: dict) -> str:
     """Return a concrete payment instruction confirmed by both payment patterns."""
     matches = [
-        segment for segment in _payment_target_segments(soc)
-        if _recipient_payment_instruction(segment)
+        original for original, own_words in _instruction_segments(soc)
+        if own_words and _recipient_payment_instruction(own_words)
     ]
     # Prefer the substantive instruction over a short invoice-style subject.
     # This remains language-agnostic and returns only text already present in
@@ -2065,7 +2148,9 @@ def _grounded_reward_claim(soc: dict) -> dict:
         return {}
     urgency = any(_REWARD_URGENCY_PATTERN.search(segment) for segment in segments)
     for label in _actionable_link_texts(soc):
-        if _REWARD_CLAIM_PATTERN.search(label):
+        if _REWARD_STRONG_CLAIM_PATTERN.search(label) or (
+            _REWARD_CLAIM_PATTERN.search(label) and _REWARD_BENEFIT_PATTERN.search(label)
+        ):
             return {"evidence": _clip_exact_span(label, 180), "urgency": urgency}
     claim_segments = [
         segment for segment in segments
@@ -2074,10 +2159,11 @@ def _grounded_reward_claim(soc: dict) -> dict:
     ]
     if not claim_segments:
         # A short CTA such as "Redeem now" may rely on the surrounding body
-        # for the object (points, miles, refund, etc.).
+        # for the object (points, miles, refund, etc.).  Only unambiguous
+        # redemption verbs may do so: "ritira" or "collect" alone is a parcel.
         claim_segments = [
             segment for segment in segments
-            if _REWARD_CLAIM_PATTERN.search(segment)
+            if _REWARD_STRONG_CLAIM_PATTERN.search(segment)
         ]
     if not claim_segments:
         return {}

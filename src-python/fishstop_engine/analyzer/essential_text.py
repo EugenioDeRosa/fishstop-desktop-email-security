@@ -97,6 +97,85 @@ def compact_repeated_blocks(text: str) -> tuple[str, dict]:
                     "before_characters": len(text), "after_characters": len(result)}
 
 
+_DIFF_TOKEN = re.compile(r"(?:https?://|mailto:|www\.)[^\s<>()\[\]\"']+|\w+|[^\w\s]", re.I)
+_URL_TOKEN = re.compile(r"(?:https?://|mailto:|www\.)", re.I)
+# Characters that only wrap or separate links in a text rendering.
+_LINK_MARKUP_TOKENS = {"<", ">", "[", "]", "(", ")", "|", "\u00b7", "\u2022"}
+_FOOTER_LINE = re.compile(
+    r"unsubscribe|opt[ -]?out|manage\s+(?:your\s+)?(?:preferences|subscription|settings)|"
+    r"view\s+(?:this\s+(?:e-?mail|message)\s+)?in\s+(?:your\s+)?browser|privacy|cookie|"
+    r"terms\s+(?:of\s+(?:use|service)|and\s+conditions)|all\s+rights\s+reserved|copyright|\u00a9|"
+    r"you\s+(?:are\s+)?receiv\w+\s+this|this\s+(?:e-?mail|message)\s+was\s+sent|"
+    r"disiscri\w*|cancella\w*\s+(?:l'|la\s+)?iscrizione|gestisci\s+(?:le\s+)?preferenze|"
+    r"visualizza\s+(?:nel|sul)\s+browser|informativa|tutti\s+i\s+diritti\s+riservati|"
+    r"darse\s+de\s+baja|cancelar\s+(?:la\s+)?suscripci[o\u00f3]n|descadastr\w*|"
+    r"d[e\u00e9]sinscri\w*|abmelden|abbestellen|afmelden|datenschutz|"
+    r"\bp\.?\s?iva\b|partita\s+iva|\bvat\b|\bc\.f\.|\bcif\b|\bnif\b|\bcnpj\b|"
+    r"\bs\.p\.a\.?|\bspa\b|\bs\.r\.l\.?|\bsrl\b|\binc\.|\bltd\b|\bllc\b|\bgmbh\b|\bs\.a\.|\bb\.v\.|"
+    r"registered\s+office|sede\s+legale",
+    re.IGNORECASE,
+)
+# A footer never needs to ask for credentials or payment, or to create urgency.
+_FOOTER_RISK_WORDS = re.compile(
+    r"password|credenzial|credential|contraseña|senha|passwort|wachtwoord|\bverif\w*|"
+    r"\blog\s?in\b|sign\s?in|accedi|\bpay\b|\bpaga\w*|pagamento|payment|bonifico|transfer|\biban\b|"
+    r"suspend\w*|sospes\w*|blocc\w*|bloque\w*|gesperrt|urgent\w*|immediat\w*|scad\w*|expir\w*|"
+    r"\bconfirm\w*|conferm\w*|aggiorna\w*|update\s+your",
+    re.IGNORECASE,
+)
+
+
+def _footer_like_line(line: str) -> bool:
+    """A footer/navigation line: legal, subscription or company data, or a short label."""
+    text = _key(re.sub(r"(?:https?://|mailto:|www\.)\S+", " ", line))
+    if not re.search(r"\w", text):
+        return True
+    if _FOOTER_RISK_WORDS.search(text):
+        return False
+    if _FOOTER_LINE.search(text):
+        return True
+    # Navigation rows ("Home | Shop | Contatti") and lone link captions.
+    labels = [part.strip() for part in re.split(r"[|\u00b7\u2022]", text) if part.strip()]
+    return all(len(label.split()) <= 3 and not re.search(r"[.!?:]$", label) for label in labels)
+
+
+def _differs_only_by_links_or_footer(primary: str, alternative: str) -> bool:
+    """True when the alternatives differ only by added/removed URLs or a footer tail.
+
+    Equal wording is required everywhere else; a replaced word, a negation or a
+    sentence present in only one version keeps the conservative merge.
+    """
+    def tokens(value):
+        return [(match.group(0), match.start()) for match in _DIFF_TOKEN.finditer(value)]
+
+    old, new = tokens(primary), tokens(alternative)
+    if not old or not new or max(len(old), len(new)) > 8192:
+        return False
+    matcher = difflib.SequenceMatcher(None, [t for t, _ in old], [t for t, _ in new], autojunk=False)
+    opcodes = [op for op in matcher.get_opcodes() if op[0] != "equal"]
+    if not opcodes:
+        return True
+    last_equal_old = max((i2 for op, i1, i2, j1, j2 in matcher.get_opcodes() if op == "equal"), default=0)
+    last_equal_new = max((j2 for op, i1, i2, j1, j2 in matcher.get_opcodes() if op == "equal"), default=0)
+    for operation, i1, i2, j1, j2 in opcodes:
+        if operation == "replace":
+            changed = [t for t, _ in old[i1:i2]] + [t for t, _ in new[j1:j2]]
+            if all(_URL_TOKEN.match(t) or t in _LINK_MARKUP_TOKENS for t in changed):
+                continue  # A link's URL text differs; the link inventory keeps both.
+            return False
+        side, start, end, text = (old, i1, i2, primary) if operation == "delete" else (new, j1, j2, alternative)
+        extra = [t for t, _ in side[start:end]]
+        if all(_URL_TOKEN.match(t) or t in _LINK_MARKUP_TOKENS for t in extra):
+            continue
+        at_tail = start >= (last_equal_old if side is old else last_equal_new)
+        if not at_tail:
+            return False
+        passage = text[side[start][1]:]
+        if not all(_footer_like_line(line) for line in passage.splitlines()):
+            return False
+    return True
+
+
 def merge_mime_alternatives(primary: str, alternative: str, *, alternative_kind: str = "HTML") -> tuple[str, dict]:
     """Retain all changed alternative paragraphs with neighbouring context.
 
@@ -111,6 +190,12 @@ def merge_mime_alternatives(primary: str, alternative: str, *, alternative_kind:
         return alternative, {"alternative_characters_omitted": 0, "alternatives_differ": False}
     if not alternative or _key(primary) == _key(alternative):
         return primary, {"alternative_characters_omitted": len(alternative), "alternatives_differ": False}
+    # Rendering-only differences (link URLs written out in the plain part, an
+    # HTML-only footer or navigation bar) would otherwise add annotations and a
+    # second header/footer to a 4096-token prompt without adding any wording.
+    if _differs_only_by_links_or_footer(primary, alternative):
+        return primary, {"alternative_characters_omitted": len(alternative), "alternatives_differ": False,
+                         "alternative_difference": "links_or_footer_only"}
     # A paragraph may wrap over several physical lines in the plain part.
     def paragraphs(value):
         return [p for p in re.split(r"\n\s*\n", value) if p.strip()]

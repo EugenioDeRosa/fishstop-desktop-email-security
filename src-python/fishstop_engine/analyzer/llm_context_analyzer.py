@@ -64,6 +64,10 @@ AI_BODY_CHUNK_CHARS = int(os.getenv(
     )),
 ))
 AI_BODY_CHUNK_OVERLAP = int(os.getenv("AI_BODY_CHUNK_OVERLAP", "600"))
+# Long emails: at most this many body sections are sent to the model in the
+# fast and balanced modes (thorough keeps every section up to MAX_AI_SECTIONS).
+# Deterministic checks always read the whole body.
+AI_MAX_ANALYZED_SECTIONS = max(2, int(os.getenv("AI_MAX_ANALYZED_SECTIONS", "6")))
 LLM_PROVIDER = os.getenv(
     "FISHSTOP_LLM_PROVIDER",
     os.getenv("LLM_PROVIDER", "auto"),
@@ -2307,10 +2311,99 @@ def build_fast_email_prompt(soc: dict) -> str:
     )
 
 
+_LIST_ROW_URL = re.compile(r"(?:https?://|www\.)\S+", re.IGNORECASE)
+_LIST_RUN_MIN_ROWS = 8
+_LIST_MARKER = "[{0} similar list rows omitted here; the first and last rows are shown]"
+
+
+def _list_row_shape(line: str) -> str:
+    """Structural shape of a catalog/list row: words, numbers and URLs abstracted."""
+    shape = _LIST_ROW_URL.sub("U", line.strip().lower())
+    shape = re.sub(r"\d+", "0", shape)
+    shape = re.sub(r"[^\W\d_]+(?:[\s'\u2019-]+[^\W\d_]+)*", "w", shape)
+    return re.sub(r"\s+", " ", shape)
+
+
+def _risk_bearing_line(line: str) -> bool:
+    return any(pattern.search(line) for pattern in (
+        _LINK_ACTION_PATTERN, _ACCOUNT_ACTION_CONTEXT_PATTERN, _SENSITIVE_INFORMATION_PATTERN,
+        _PAYMENT_ACTION_PATTERN, _CREDENTIAL_SUBMISSION_PATTERN, _EXTORTION_THREAT_PATTERN,
+        _REWARD_STRONG_CLAIM_PATTERN, _AUTHENTICATION_CODE_LABEL_PATTERN,
+    ))
+
+
+def _collapse_list_runs(body: str) -> tuple[str, int]:
+    """Shorten long runs of same-shaped structured rows (catalogs, price lists).
+
+    Only rows carrying a number or URL qualify, so ordinary prose is never
+    shortened; a row with action, credential, payment or threat wording is
+    always kept and breaks the run. Returns the text and the omitted row count.
+    """
+    lines = body.split("\n")
+    output: list[str] = []
+    omitted = 0
+    index = 0
+    while index < len(lines):
+        shape = _list_row_shape(lines[index])
+        structured = (lines[index].strip() and len(lines[index]) <= 240
+                      and ("0" in shape or "U" in shape) and not _risk_bearing_line(lines[index]))
+        if not structured:
+            output.append(lines[index])
+            index += 1
+            continue
+        run = [index]
+        probe = index + 1
+        while probe < len(lines):
+            if not lines[probe].strip():
+                probe += 1
+                continue
+            if (len(lines[probe]) > 240 or _list_row_shape(lines[probe]) != shape
+                    or _risk_bearing_line(lines[probe])):
+                break
+            run.append(probe)
+            probe += 1
+        if len(run) >= _LIST_RUN_MIN_ROWS:
+            kept = run[:3] + run[-2:]
+            output.extend(lines[row] for row in run[:3])
+            output.append(_LIST_MARKER.format(len(run) - len(kept)))
+            output.extend(lines[row] for row in run[-2:])
+            omitted += len(run) - len(kept)
+            index = run[-1] + 1
+        else:
+            output.extend(lines[index:run[-1] + 1])
+            index = run[-1] + 1
+    return "\n".join(output), omitted
+
+
+def _section_risk_score(section: str) -> int:
+    """Deterministic count of action/risk cues used to pick sections for the model."""
+    return sum(len(pattern.findall(section)) for pattern in (
+        _LINK_ACTION_PATTERN, _ACCOUNT_ACTION_CONTEXT_PATTERN, _SENSITIVE_INFORMATION_PATTERN,
+        _PAYMENT_ACTION_PATTERN, _CREDENTIAL_SUBMISSION_PATTERN, _EXTORTION_THREAT_PATTERN,
+        _REWARD_STRONG_CLAIM_PATTERN, _AUTHENTICATION_CODE_LABEL_PATTERN,
+    )) + len(_LIST_ROW_URL.findall(section)) // 3
+
+
+def _select_sections(sections: list[str], budget: int) -> list[int]:
+    """Indexes to analyze: first and last section plus the highest-risk middles."""
+    if len(sections) <= budget:
+        return list(range(len(sections)))
+    middle = sorted(range(1, len(sections) - 1),
+                    key=lambda i: (-_section_risk_score(sections[i]), i))[:budget - 2]
+    return sorted({0, len(sections) - 1, *middle})
+
+
 def _build_complete_email_prompts(
     soc: dict,
 ) -> list[tuple[str, str]]:
-    """Return every body section and its prompt; no middle section is discarded."""
+    """Return the body sections to analyze and their prompts.
+
+    Short and ordinary emails are sent whole, exactly as before. Long ones
+    are first compacted deterministically (long catalog/list runs), then, in
+    the fast and balanced modes, limited to AI_MAX_ANALYZED_SECTIONS sections:
+    the first, the last and the middles with most action/risk cues. The
+    selection is recorded in ``soc["ai_section_selection"]``.
+    """
     subject, body, attachment_meta = _prepared_email_prompt_parts(soc)
     if len(body) > MAX_AI_BODY_CHARS:
         raise EmailAnalysisLimitError(
@@ -2332,26 +2425,40 @@ def _build_complete_email_prompts(
     if available < 100:
         raise EmailAnalysisLimitError("The local AI context is too small for the analysis instructions. Increase its context size.")
     limit = min(AI_BODY_CHUNK_CHARS, max(400, int(available * min(AI_CHARS_PER_TOKEN, 2.5))))
+    omitted_rows = 0
+    if len(body) > 2 * limit:
+        # Only bodies that would need several sections are compacted, so the
+        # prompt of ordinary emails stays identical to the training format.
+        body, omitted_rows = _collapse_list_runs(body)
     sections = _split_complete_email_body(body, limit=limit)
-    if len(sections) > MAX_AI_SECTIONS:
+    budget = MAX_AI_SECTIONS if ANALYSIS_MODE == "thorough" else min(MAX_AI_SECTIONS, AI_MAX_ANALYZED_SECTIONS)
+    if ANALYSIS_MODE == "thorough" and len(sections) > MAX_AI_SECTIONS:
         raise EmailAnalysisLimitError(
             "The email requires more than "
             f"{MAX_AI_SECTIONS} AI analysis sections."
         )
+    selected = _select_sections(sections, budget)
     total = len(sections)
+    soc["ai_section_selection"] = {
+        "total_sections": total,
+        "analyzed_sections": [index + 1 for index in selected],
+        "skipped_sections": total - len(selected),
+        "collapsed_list_rows": omitted_rows,
+        "section_budget": budget,
+    }
     return [
         (
-            section,
+            sections[index],
             _email_prompt_from_body(
                 soc,
                 subject=subject,
-                body=section,
+                body=sections[index],
                 attachment_meta=attachment_meta,
-                section_number=index,
+                section_number=index + 1,
                 section_total=total,
             ),
         )
-        for index, section in enumerate(sections, start=1)
+        for index in selected
     ]
 
 
@@ -5648,6 +5755,7 @@ def stream_ai_email_analysis(
         "performance": {
             **_performance_summary(ollama_calls),
             "analysis_mode": ANALYSIS_MODE,
+            "section_selection": soc.get("ai_section_selection") or {},
             "identity_extraction_seconds": identity_seconds,
             "identity_model": identity_model,
         },

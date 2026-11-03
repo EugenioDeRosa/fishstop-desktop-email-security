@@ -129,7 +129,7 @@ type AnalysisReport = {
   identity_analysis?: { impersonation?: ImpersonationAssessment; status?: string; model?: string; backend?: string; message?: string; segments_analyzed?: number; entities?: Array<{ name?: string; confidence?: number; entity_type?: string; entity_types?: string[]; occurrences?: Array<{ source?: string; evidence?: string }> }>; coherence?: Array<{ brand?: string; official_website?: string; official_websites?: string[]; official_domain?: string; official_domains?: string[]; associated_domains?: string[]; trusted_action_domains?: string[]; external_reply_domains?: string[]; resolution_source?: string; reference_status?: string; sender_authentication?: string; contacts?: Array<{ source?: string; matches_official?: boolean }>; evidence?: Array<{ source?: string; reference?: string; observed_at?: number; expires_at?: number; confidence?: string }>; dns_observations?: { provider?: string; bimi_present?: boolean }; anomalies?: string[]; status?: string; message?: string; mismatches?: Array<{ source?: string; domain?: string }> }> };
   verdict_signals?: Array<{ id?: string; category?: string; field?: string; level?: string; effect?: string; message?: string }>;
   signal_policy_version?: number;
-  ai_analysis?: { status?: string; model?: string; duration_ms?: number; performance?: { analysis_mode?: string; llm_calls?: number; wall_duration_ms?: number; load_duration_ms?: number; prompt_tokens?: number; generated_tokens?: number; calls?: Array<{ stage?: string; wall_duration_ms?: number; load_duration_ms?: number; prompt_eval_count?: number; prompt_eval_duration_ms?: number; eval_count?: number; eval_duration_ms?: number }> }; analysis?: { final_verdict?: string; content_summary?: string; content_summary_source?: string; content_summary_parts?: string[]; semantic_reason?: string; explanation?: string; confidence?: number; requested_action?: string; action_channel?: string; intent_evidence?: string; intent_signals?: string[]; signal_evidence?: string; content_risk?: string; identity_risk?: string; technical_risk?: string; ambiguity?: string; scam_type?: string; threat_type?: string; coercion?: boolean; claimed_brand?: string; payment_destination_change?: boolean; semantic_extraction?: { asks_for_credentials?: boolean; asks_for_payment?: boolean; asks_for_sensitive_information?: boolean; asks_to_change_account_settings?: boolean; asks_to_verify_account?: boolean; asks_to_open_attachment?: boolean; requested_external_action?: boolean; security_alert?: boolean; impersonation_or_deception?: boolean; identity_deception?: boolean; scam_type?: string; threat_type?: string; coercion?: boolean }; corroboration?: { supports_decision?: boolean; details?: string[]; caveats?: string[] } }; message?: string };
+  ai_analysis?: { status?: string; model?: string; duration_ms?: number; performance?: { analysis_mode?: string; llm_calls?: number; wall_duration_ms?: number; load_duration_ms?: number; prompt_tokens?: number; generated_tokens?: number; calls?: Array<{ stage?: string; wall_duration_ms?: number; load_duration_ms?: number; prompt_eval_count?: number; prompt_eval_duration_ms?: number; eval_count?: number; eval_duration_ms?: number }> }; analysis?: { final_verdict?: string; content_summary?: string; content_summary_source?: string; content_summary_parts?: string[]; semantic_reason?: string; explanation?: string; confidence?: number; requested_action?: string; action_channel?: string; intent_evidence?: string; intent_signals?: string[]; signal_evidence?: string; content_risk?: string; identity_risk?: string; technical_risk?: string; ambiguity?: string; scam_type?: string; threat_type?: string; coercion?: boolean; claimed_brand?: string; payment_destination_change?: boolean; local_only_first_party_clearance?: string; semantic_extraction?: { asks_for_credentials?: boolean; asks_for_payment?: boolean; asks_for_sensitive_information?: boolean; asks_to_change_account_settings?: boolean; asks_to_verify_account?: boolean; asks_to_open_attachment?: boolean; requested_external_action?: boolean; security_alert?: boolean; impersonation_or_deception?: boolean; identity_deception?: boolean; scam_type?: string; threat_type?: string; coercion?: boolean }; corroboration?: { supports_decision?: boolean; details?: string[]; caveats?: string[] } }; message?: string };
   ai_content_summary?: { status?: string; summary?: string; model?: string; backend?: string; message?: string };
   ai_summary?: { status?: string; summary?: string; model?: string; backend?: string; message?: string };
   authentication_scope?: string;
@@ -1402,6 +1402,17 @@ function unverifiedRequestedResourceReason(report: AnalysisReport): string | nul
     return label.length >= 4 && (label.includes(intent) || intent.includes(label));
   });
   const suppliedChannel = semantic?.action_channel === "supplied_link" || requestMatchesLink;
+  // Local only cannot verify sender domains or reputation. The engine grants
+  // this narrow exception only for DMARC-passing, benign mail whose requested
+  // destinations all belong to the sender's own domain; re-check each link here.
+  const localFirstParty = Boolean(semantic?.local_only_first_party_clearance) && semantic?.final_verdict === "legitimate";
+  const senderDomain = normalizedDomain(report.from_registered_domain);
+  const riskyLookalikeDomains = new Set((report.lookalike_alerts || []).filter(isRiskyLookalikeAlert).map((alert) => normalizedDomain(alert.registered_domain)));
+  const localFirstPartyLink = (link: NonNullable<AnalysisReport["links"]>[number]) => localFirstParty
+    && Boolean(senderDomain)
+    && normalizedDomain(link.registered_domain) === senderDomain
+    && !riskyLookalikeDomains.has(senderDomain)
+    && !structurallySuspiciousLink(link);
   if (action === "visit_link" || suppliedChannel && sensitiveRequestedAction(report)) {
     const unverifiedLinks = requestedLinks.filter((link) => cannotVerify(report.link_reputation?.[link.url || ""]));
     const identityMismatch = Boolean(
@@ -1420,6 +1431,7 @@ function unverifiedRequestedResourceReason(report: AnalysisReport): string | nul
       && !sensitiveRequestedAction(report);
     if (unverifiedLinks.some((link) =>
       !isAuthenticatedFirstPartyLink(report, link)
+      && !localFirstPartyLink(link)
       && (!benignLegitimateContext || structurallySuspiciousLink(link)),
     )) {
       return t("The message asks you to open a link, but its reputation could not be verified.");
@@ -1453,7 +1465,7 @@ function unverifiedRequestedResourceReason(report: AnalysisReport): string | nul
     attachment.actionable !== false
     && attachment.mime_role !== "inline_resource"
     && cannotVerify(attachment.file_reputation)
-    && !((benignAlignedSpfContext || benignOrdinaryAttachment) && locallyCleanAttachment(attachment))
+    && !((benignAlignedSpfContext || benignOrdinaryAttachment || localFirstParty) && locallyCleanAttachment(attachment))
   )) {
     return t("The message asks you to open an attachment, but its reputation could not be verified.");
   }

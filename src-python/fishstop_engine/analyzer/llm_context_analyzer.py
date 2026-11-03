@@ -3723,6 +3723,117 @@ def _corroboration(
     return list(dict.fromkeys(supporting))[:4], list(dict.fromkeys(contrary))[:4]
 
 
+_LINK_STRUCTURE_RISK_FIELDS = (
+    "is_ip", "display_mismatch", "has_userinfo", "has_credentials", "nonstandard_port",
+    "unicode_host", "dangerous_download", "financial_attachment_mismatch",
+)
+_ELEVATED_RISK_LEVELS = {"medium", "high", "critical"}
+
+
+def _locally_clean_attachment(attachment: dict) -> bool:
+    """Static inspection completed and found nothing above low risk."""
+    if attachment.get("anomaly"):
+        return False
+    scans = [attachment.get(key) for key in (
+        "inspection", "pdf_security", "archive_security", "office_security", "html_security")]
+    if any(isinstance(scan, dict) and scan.get("analysis_complete") is False for scan in scans):
+        return False
+    office = attachment.get("office_security")
+    if isinstance(office, dict) and office.get("analysis_complete") is not True:
+        return False
+    return not any(
+        str((attachment.get(key) or {}).get("risk_level") or "clean").lower() in _ELEVATED_RISK_LEVELS
+        for key in ("attachment_security", "pdf_security", "archive_security", "office_security")
+    )
+
+
+def _local_only_first_party_clearance(soc: dict, semantic: dict, content_risk: str, technical_risk: str) -> str:
+    """Narrow Local-only exception for ordinary first-party mail with links or files.
+
+    Local only disables the independent DNS/DKIM verification, so an
+    unlisted sender is never "verified" and every unverifiable link or
+    attachment used to force review. This accepts the receiving server's own
+    Authentication-Results (the first one, prepended by the recipient's mail
+    service) only when all of the following hold: DMARC pass with no SPF/DKIM
+    failure; the model judged the content benign with a rationale and without
+    a disagreeing second opinion; no sensitive request; no identity, static or
+    lookalike concern; every requested link belongs to the sender's own
+    registrable domain; every attachment was inspected and found clean.
+    Returns the reason when the exception applies, otherwise an empty string.
+    """
+    if not soc.get("local_only") or (soc.get("domain_authentication") or {}).get("status") != "disabled":
+        return ""
+    if content_risk != "benign" or technical_risk != "clean":
+        return ""
+    if semantic.get("model_content_risk") != "benign" or not semantic.get("model_risk_rationale"):
+        return ""
+    if (semantic.get("risk_verification") or {}).get("status") in {"disagreement", "unavailable"}:
+        return ""
+    if semantic.get("ambiguity") == "high":
+        return ""
+    if semantic.get("confidence_provided") and float(semantic.get("confidence") or 0) < 0.8:
+        return ""
+    if semantic.get("requested_action") not in {"visit_link", "open_attachment", "informational"}:
+        return ""
+    if any(semantic.get(key) for key in (
+        "asks_for_credentials", "asks_for_sensitive_information", "asks_for_payment",
+        "asks_to_change_account_settings", "asks_to_verify_account", "asks_to_claim_reward",
+        "asks_to_bypass_procedure", "urgency_targets_risky_action", "impersonation_or_deception",
+        "identity_deception", "coercion",
+    )):
+        return ""
+    if (soc.get("forwarded_identity") or {}).get("from"):
+        return ""  # Outer authentication says nothing about an embedded sender.
+
+    dmarc = (soc.get("effective_auth_results") or {}).get("DMARC") or {}
+    if str(dmarc.get("status") or "").lower() != "pass":
+        return ""
+    if dmarc.get("source") not in {None, "Authentication-Results"}:
+        return ""  # Only the receiving server's own result, not a relayed claim.
+    if any(_auth_status(soc, name) in {"fail", "softfail", "mixed", "permerror", "temperror", "neutral", "policy"}
+           for name in ("SPF", "DKIM")):
+        return ""
+    if ((soc.get("effective_auth_results") or {}).get("SPF") or {}).get("path_conflict"):
+        return ""
+
+    if soc.get("reply_to_mismatch") and not soc.get("reply_to_mismatch_legitimate"):
+        return ""
+    if soc.get("display_name_spoofing"):
+        return ""
+    impersonation = soc.get("impersonation") or (soc.get("identity_analysis") or {}).get("impersonation") or {}
+    if impersonation.get("status") == "inconsistent" or impersonation.get("decision") in {"review", "phishing"}:
+        return ""
+    if any(item.get("polarity") == "suspicion" for item in impersonation.get("signals", [])):
+        return ""
+    if any(is_risky_lookalike_alert(alert) for alert in soc.get("lookalike_alerts") or []):
+        return ""
+    for flag in soc.get("flags") or []:
+        field = str(flag.get("field") or "").strip().lower()
+        if field.startswith("mime ") or field == "return-path":
+            continue  # Same exclusions as the desktop verdict; DMARC pass covers alignment.
+        if str(flag.get("level") or "").upper() in {"HIGH", "MEDIUM"}:
+            return ""
+    if (soc.get("html_form_analysis") or {}).get("forms"):
+        return ""
+
+    sender = registered_domain(_sender_domain(soc))
+    if not sender:
+        return ""
+    for link in _actionable_links(soc):
+        scheme = str(link.get("scheme") or urlsplit(str(link.get("url") or "")).scheme).lower()
+        if scheme == "mailto":
+            continue
+        link_domain = registered_domain(str(link.get("registered_domain") or link.get("host") or ""))
+        if link_domain != sender or any(link.get(key) for key in _LINK_STRUCTURE_RISK_FIELDS):
+            return ""
+    if not all(_locally_clean_attachment(attachment) for attachment in _actionable_attachments(soc)):
+        return ""
+    return (
+        "Local only: the receiving mail server reports DMARC pass for the sender domain, "
+        "and every requested destination belongs to that domain"
+    )
+
+
 def apply_email_risk_policy(soc: dict, semantic: dict) -> dict:
     """Combine independent evidence axes without allowing weak-only phishing verdicts."""
     semantic = normalize_semantic_extraction(semantic, soc=soc)
@@ -3785,6 +3896,13 @@ def apply_email_risk_policy(soc: dict, semantic: dict) -> dict:
                     for name in ("SPF", "DKIM", "DMARC"))
         and not any(item.get("polarity") == "suspicion" for item in identity_signals)
     )
+    local_first_party = (
+        _local_only_first_party_clearance(soc, semantic, content_risk, technical_risk)
+        if identity_risk == "uncertain" and supplied_action and not benign_with_unavailable_identity
+        else ""
+    )
+    if local_first_party:
+        identity_reasons.append(local_first_party)
     if failed_authentication_with_risky_action:
         identity_reasons.append(
             "SPF, DKIM and DMARC failed while the message requests a concrete risky action"
@@ -3832,7 +3950,7 @@ def apply_email_risk_policy(soc: dict, semantic: dict) -> dict:
             for reason in technical_reasons))
     ):
         verdict = "phishing"
-    elif content_risk == "suspicious" or identity_risk == "spoofing_evidence" or (identity_risk == "uncertain" and supplied_action and not benign_with_unavailable_identity) or technical_risk == "uncertain":
+    elif content_risk == "suspicious" or identity_risk == "spoofing_evidence" or (identity_risk == "uncertain" and supplied_action and not benign_with_unavailable_identity and not local_first_party) or technical_risk == "uncertain":
         verdict = "review"
     else:
         # Authentication failures alone describe uncertain identity, not malicious content.
@@ -3890,6 +4008,7 @@ def apply_email_risk_policy(soc: dict, semantic: dict) -> dict:
         "threat_type": semantic["threat_type"],
         "scam_type": semantic["scam_type"],
         "claimed_brand": semantic["claimed_brand"],
+        "local_only_first_party_clearance": local_first_party,
         "evidence": {
             "content": content_reasons,
             "identity": identity_reasons,

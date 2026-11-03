@@ -32,6 +32,22 @@ class QrPaymentTests(unittest.TestCase):
                 self.assertEqual(["https://example.com/invite"], result["urls"])
                 self.assertTrue(result["analysis_complete"])
 
+    def test_common_email_image_formats_still_decode(self):
+        image = self.qr_image("https://example.com/invite").convert("RGB")
+        for format_ in ("JPEG", "GIF", "BMP", "WEBP"):
+            with self.subTest(format=format_):
+                stream = io.BytesIO()
+                image.save(stream, format=format_)
+                self.assertEqual(["https://example.com/invite"], _inspect(stream.getvalue(), "image/" + format_.lower())["urls"])
+
+    def test_other_image_decoders_are_never_reached(self):
+        stream = io.BytesIO()
+        self.qr_image("https://example.com/invite").save(stream, format="TIFF")
+        with self.assertRaises(Image.UnidentifiedImageError):
+            _inspect(stream.getvalue(), "image/tiff")
+        result = inspect_requested_qr([(0, stream.getvalue(), "image/tiff")])
+        self.assertFalse(result[0]["analysis_complete"])
+
     def test_non_web_qr_is_never_an_action_destination(self):
         stream = io.BytesIO(); self.qr_image("powershell evil-command").save(stream, format="PNG")
         self.assertEqual([], _inspect(stream.getvalue(), "image/png")["urls"])

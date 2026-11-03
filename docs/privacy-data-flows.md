@@ -28,6 +28,7 @@ ogni cache separata. Sign out non elimina la cronologia. La disinstallazione non
 | Spamhaus ZEN / zen.spamhaus.org e resolver DNS | Solo dopo attivazione esplicita, durante analisi; indipendente da AbuseIPDB | IP invertito nella query DNSBL; il resolver vede la query | Bloccato |
 | ipwho.is | Solo dopo attivazione esplicita della geolocalizzazione | IP pubblici della catena di recapito | Bloccato |
 | Resolver DNS configurato dal sistema | Verifica DKIM indipendente e osservazioni DNS | Nomi DNS, inclusi selettore DKIM e dominio; TXT/MX/NS e altri record previsti dal controllo | Bloccato |
+| Google Public DNS / dns.google (DNS su HTTPS) | Solo se il resolver di sistema non risponde entro la scadenza; attivo per default, disattivabile con `FISHSTOP_DNS_HTTPS_FALLBACK=0` | Nome DNS interrogato e tipo di record, inclusi selettore DKIM e dominio; nessun contenuto del messaggio | Bloccato |
 | rdap.org e server RDAP dei registri | Analisi reputazione domini; verifiche identità; età dei domini dei link (al massimo 5 domini registrabili per email, con cache) | Dominio interrogato, mai l'URL completo; rdap.org può redirigere al registro competente | Bloccato |
 | data.iana.org | Caricamento/aggiornamento della tabella bootstrap RDAP | Richiesta della tabella dns.json, senza corpo email | Bloccato |
 | Wikidata / www.wikidata.org | Analisi semantica con entità e verifica online del marchio, salvo cache | Nome del marchio/organizzazione estratto, ID di entità, richieste di proprietà | Bloccato |

@@ -14,6 +14,7 @@ MAX_BYTES = 12 * 1024 * 1024
 MAX_TOTAL_BYTES = 24 * 1024 * 1024
 MAX_PIXELS = 8_000_000
 MAX_PAGES = 4
+QR_IMAGE_FORMATS = ("PNG", "JPEG", "GIF", "BMP", "WEBP")
 TIMEOUT = 6.0
 
 
@@ -76,7 +77,9 @@ def _inspect(raw: bytes, content_type: str) -> dict:
             if len(document) > MAX_PAGES:
                 result.update(status="partial", analysis_complete=False)
     else:
-        with Image.open(io.BytesIO(raw)) as image:
+        # Attachments are untrusted: only the raster formats that carry QR
+        # codes in email reach Pillow, never TIFF, EPS, WMF or other decoders.
+        with Image.open(io.BytesIO(raw), formats=QR_IMAGE_FORMATS) as image:
             decode(image)
     return result
 

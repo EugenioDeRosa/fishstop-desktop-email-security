@@ -1,0 +1,74 @@
+/* Interface polish shared across screens: loading placeholders, stable numbers,
+   balanced copy, generous hit areas, section transitions and shortcut hints. */
+
+/* ---- Skeleton placeholders ---------------------------------------------- */
+.skeleton-row{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:16px;padding:10px 11px;border:1px solid var(--night-border,#e0e9e6);border-radius:9px;background:var(--night-surface,#fff)}
+.skeleton-row>div{display:grid;gap:6px;min-width:0}
+.skeleton-line,.skeleton-pill{display:block;height:8px;border-radius:4px;background:linear-gradient(90deg,var(--night-subtle,#edf3f0) 0%,var(--night-raised,#dfeae6) 45%,var(--night-subtle,#edf3f0) 90%);background-size:220% 100%;animation:fishstop-skeleton 1.4s ease-in-out infinite;animation-delay:var(--skeleton-delay,0ms)}
+.skeleton-line.is-title{width:46%;height:9px}
+.skeleton-line.is-meta{width:28%;height:7px}
+.skeleton-line.is-body{width:72%;height:7px}
+.skeleton-pill{width:58px;height:24px;border-radius:7px}
+.skeleton-turn{padding:13px 14px;border-radius:10px}
+.skeleton-turn .skeleton-pill{width:150px;height:28px}
+.skeleton-timeline{display:grid;gap:8px;margin-top:16px}
+.conversation-inspection-loading{flex-direction:column;align-items:stretch}
+@keyframes fishstop-skeleton{0%{background-position:100% 0}100%{background-position:-120% 0}}
+@media (prefers-reduced-motion:reduce){.skeleton-line,.skeleton-pill{animation:none}}
+.visually-hidden{position:absolute!important;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
+
+/* ---- Numbers that do not jiggle ----------------------------------------- */
+/* Counters, timestamps, IPs and progress values update in place, so every
+   digit gets the same width. Large display headings keep proportional figures. */
+:root{font-variant-numeric:tabular-nums}
+h1{font-variant-numeric:proportional-nums}
+
+/* ---- Balanced headings, no orphaned last words -------------------------- */
+h1,h2,h3,.page-heading h1{text-wrap:balance}
+p,li,small,dd,.notification-message{text-wrap:pretty}
+
+/* ---- Hit areas larger than the icon ------------------------------------- */
+/* The visible button stays the same size; an invisible halo catches the click. */
+.settings-grid .credential-list .credential-row-actions button,.app-notification button,.inbox-disconnect{position:relative}
+.settings-grid .credential-list .credential-row-actions button::before,.app-notification button::before,.inbox-disconnect::before{content:"";position:absolute;inset:-6px}
+.app-notification button[data-notification-close]{min-width:28px;min-height:28px}
+
+/* ---- Toast actions (Undo) ----------------------------------------------- */
+.app-notification .notification-action{flex:none;padding:6px 10px;border:1px solid var(--night-border,#cfe2dc);border-radius:7px;background:var(--night-subtle,#edf6f2);color:var(--night-accent,#16816d);font:800 9px "DM Mono",monospace;letter-spacing:.4px;text-transform:uppercase;line-height:1}
+.app-notification .notification-action:hover{background:var(--night-raised,#e0efe9);color:var(--night-text,#183635)}
+.app-notification .notification-countdown{position:absolute;left:12px;right:12px;bottom:4px;height:2px;border-radius:1px;background:var(--night-accent,#16816d);opacity:.35;transform-origin:left center;animation:notification-countdown linear forwards;animation-duration:var(--notification-duration,6000ms)}
+.app-notification{position:relative}
+.app-notification:hover .notification-countdown,.app-notification:focus-within .notification-countdown{animation-play-state:paused}
+@keyframes notification-countdown{from{transform:scaleX(1)}to{transform:scaleX(0)}}
+@media (prefers-reduced-motion:reduce){.app-notification .notification-countdown{animation:none;opacity:0}}
+
+/* ---- Section view transitions ------------------------------------------- */
+/* Only the workspace content cross-fades; the sidebar stays put. */
+.workspace>.content{view-transition-name:workspace-content}
+::view-transition-old(root),::view-transition-new(root){animation:none}
+/* The incoming section already staggers in via animateSectionEntry, so the
+   transition only fades the outgoing snapshot instead of cutting it. */
+::view-transition-group(workspace-content){animation:none}
+::view-transition-old(workspace-content){animation:fishstop-vt-out .14s ease-in both}
+::view-transition-new(workspace-content){animation:none}
+@keyframes fishstop-vt-out{to{opacity:0;transform:translateY(-4px)}}
+@media (prefers-reduced-motion:reduce){::view-transition-old(workspace-content),::view-transition-new(workspace-content){animation:none}}
+
+/* ---- Avatar placeholder while the profile photo loads ------------------- */
+.avatar{display:grid;place-items:center}
+.avatar>*{grid-area:1/1}
+.avatar .avatar-photo{opacity:0;transition:opacity .2s ease}
+.avatar .avatar-photo.is-loaded{opacity:1}
+
+/* ---- Keyboard shortcut hints -------------------------------------------- */
+.nav-item{position:relative}
+.nav-item kbd,.shortcut-hint kbd{font:600 8px "DM Mono",monospace;letter-spacing:.3px;padding:2px 4px;border:1px solid var(--night-border,#d6e4df);border-bottom-width:2px;border-radius:4px;color:var(--night-muted,#7c8e89);background:transparent;line-height:1}
+.nav-item kbd{color:rgba(217,240,234,.6);border-color:rgba(217,240,234,.22);position:absolute;right:10px;top:50%;transform:translateY(-50%);opacity:0;transition:opacity .15s ease}
+.sidebar:hover .nav-item:not(:disabled) kbd,.nav-item:focus-visible kbd,body.show-shortcuts .nav-item:not(:disabled) kbd{opacity:1}
+.shortcut-hint{display:inline-flex;align-items:center;gap:3px;margin-left:6px;vertical-align:middle}
+.drop-zone .shortcut-hint kbd{font-size:9px}
+@media (max-width:760px){.nav-item kbd{display:none}}
+
+/* ---- Pending removals during the Undo grace period ---------------------- */
+.is-pending-removal{opacity:.45;transition:opacity .2s ease}
+.is-pending-removal button{pointer-events:none}

@@ -11,7 +11,7 @@ import { createHopPager } from "./hop-pager";
 import { fastModelVersion } from "./model-version";
 import { prepareStartup } from "./startup";
 import { ensureStartupModel } from "./startup-model";
-import { notify, clearNotifications } from "./notifications";
+import { notify, clearNotifications, deferWithUndo } from "./notifications";
 import { analysisTimingProfile, defaultAnalysisTimings, analysisTimingEstimate, recordAnalysisTimings, recordAnalysisDuration, createAnalysisProgress } from "./analysis-progress";
 import { currentTheme, initializeTheme, setTheme } from "./theme";
 import { geoDistance, geoGraticule, geoInterpolate, geoOrthographic, geoPath } from "d3-geo";
@@ -23,11 +23,13 @@ import fishstopMailCheckUrl from "./fishstop-mail-check.svg";
 import "./styles.css";
 import "./night.css";
 import "./statistics.css";
+import "./polish.css";
 
 type AuthUser = { sub: string; name?: string; email: string; picture?: string; provider?: "google" | "microsoft" | "guest" };
 type MailboxStatus = { connected: boolean; provider: "google" | "microsoft"; email: string };
 type MailboxMessage = { id: string; subject: string; sender: string; received_at: string; snippet: string; has_attachments: boolean; is_read: boolean };
 const ACCOUNT_ACCESS_ENABLED = false;
+const MAILBOX_SKELETON_ROWS = 5;
 const GUEST_USER: AuthUser = { sub: "guest:local-v1", name: t("Guest"), email: "guest@local.invalid", provider: "guest" };
 
 type Section = "dashboard" | "analyse" | "inbox" | "history" | "statistics" | "settings";
@@ -224,6 +226,56 @@ const RUNTIME_SNAPSHOT_KEY = "fishstop.machine-runtime-v1";
 let ollamaRuntimeSnapshot: OllamaRuntimeStatus | null = readRuntimeSnapshot();
 let refreshMachineSettings: (() => Promise<void>) | null = null;
 let disposeHopPager: (() => void) | null = null;
+let shortcutUser: AuthUser | null = null;
+const pendingKeyRemovals = new Set<string>();
+const IS_MAC = /Mac|iPhone|iPad/i.test(navigator.platform || navigator.userAgent);
+const SECTION_SHORTCUTS: Partial<Record<Section, string>> = { dashboard: "1", analyse: "2", history: "3", statistics: "4", inbox: "5", settings: "," };
+
+function shortcutLabel(key: string): string {
+  return IS_MAC ? `⌘${key.toUpperCase()}` : `Ctrl+${key.toUpperCase()}`;
+}
+
+function shortcutAria(key: string): string {
+  return `${IS_MAC ? "Meta" : "Control"}+${key === "," ? "Comma" : key.toUpperCase()}`;
+}
+
+/** App-wide shortcuts: ⌘/Ctrl+1–5 switch sections, ⌘/Ctrl+, opens Settings, ⌘/Ctrl+O picks an .eml file.
+    Holding the modifier reveals the hints in the sidebar. */
+function installGlobalShortcuts(): void {
+  const modifierHeld = (event: KeyboardEvent) => (IS_MAC ? event.metaKey : event.ctrlKey) && !event.altKey && !event.shiftKey;
+  let hintTimer: ReturnType<typeof setTimeout> | undefined;
+  const hideHints = () => { clearTimeout(hintTimer); document.body.classList.remove("show-shortcuts"); };
+  document.addEventListener("keydown", (event) => {
+    if (event.key === (IS_MAC ? "Meta" : "Control")) {
+      clearTimeout(hintTimer);
+      hintTimer = setTimeout(() => document.body.classList.add("show-shortcuts"), 450);
+      return;
+    }
+    hideHints();
+    const user = shortcutUser;
+    if (!user || !modifierHeld(event) || event.repeat || !document.querySelector(".app-shell")) return;
+    if (document.querySelector("dialog[open]")) return;
+    const key = event.key.toLowerCase();
+    const section = (Object.keys(SECTION_SHORTCUTS) as Section[]).find((candidate) => SECTION_SHORTCUTS[candidate] === key);
+    if (section) {
+      const button = document.querySelector<HTMLButtonElement>(`[data-section="${section}"]`);
+      if (!button || button.disabled) return;
+      event.preventDefault();
+      navigateToSection(user, section);
+      return;
+    }
+    if (key === "o") {
+      event.preventDefault();
+      if (!document.querySelector("#eml-drop")) renderDashboard(user, "analyse");
+      const drop = document.querySelector<HTMLButtonElement>("#eml-drop");
+      const intake = document.querySelector<HTMLElement>("#eml-intake");
+      // The file picker needs the keypress as user activation, so it opens synchronously.
+      if (drop && !drop.disabled && intake && !intake.hidden) drop.click();
+    }
+  });
+  document.addEventListener("keyup", hideHints);
+  window.addEventListener("blur", hideHints);
+}
 const backgroundChecks = createBackgroundChecks();
 let protectionRefreshTimer: number | undefined;
 const runtimeStatusCache = createStatusCache(() => invoke<OllamaRuntimeStatus>("ollama_runtime_status"), 15_000, {
@@ -715,7 +767,10 @@ function showExternalLinkDialog(url: string, label: string): void {
     const status = dialog?.querySelector<HTMLElement>(".external-link-status");
     if (status) status.textContent = copied ? t("Link copied.") : t("Could not copy the link.");
   });
-  dialog.querySelector<HTMLButtonElement>("[data-open-external]")?.addEventListener("click", async () => {
+  dialog.querySelector<HTMLButtonElement>("[data-open-external]")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget as HTMLButtonElement;
+    if (button.disabled) return;
+    button.disabled = true;
     const status = dialog?.querySelector<HTMLElement>(".external-link-status");
     if (status) status.textContent = t("Opening external browser…");
     try {
@@ -723,7 +778,7 @@ function showExternalLinkDialog(url: string, label: string): void {
       dialog?.close();
     } catch (error) {
       if (status) status.textContent = String(error || t("Could not open the external browser."));
-    }
+    } finally { button.disabled = false; }
   });
   if (!dialog.open) {
     dialog.showModal();
@@ -1039,8 +1094,17 @@ function analysisLoadingMarkup(fileName: string, completedChecks: number[] = [],
   return html`<section class="analysis-loading" aria-live="polite" role="progressbar" aria-label="Analysis progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percentage}" style="--analysis-progress:${percentage}%"><div class="analysis-progress-surface" aria-hidden="true"><div class="analysis-progress-glow"></div></div><div class="loading-orbit"><i></i><b aria-hidden="true">${searchIconMarkup()}</b></div><div><p class="page-kicker">LOCAL ANALYSIS IN PROGRESS</p><h2>Checking ${escapeHtml(fileName)}</h2><p class="loading-copy">${escapeHtml(engineText(progressMessage))}</p><small class="loading-estimate">${escapeHtml(activeAnalysis?.progressHint || t("Estimating analysis time for this model and computer…"))}</small></div><ol>${checks.map((label, index) => html`<li data-loading-check="${index}" class="${completed.has(index) ? "done" : index === completedCount ? "active" : ""}"><span>✓</span>${label}</li>`).join("")}</ol></section>`;
 }
 
+/** Placeholder rows shaped like the content they stand in for, so the layout does not jump on load. */
+function skeletonRows(count: number, rowClass: string): string {
+  return Array.from({ length: count }, (_, index) => `<div class="skeleton-row ${rowClass}" style="--skeleton-delay:${index * 90}ms"><div><i class="skeleton-line is-title"></i><i class="skeleton-line is-meta"></i><i class="skeleton-line is-body"></i></div><i class="skeleton-pill"></i></div>`).join("");
+}
+
+function inboxSkeletonMarkup(label: string): string {
+  return html`<p class="visually-hidden">${escapeHtml(label)}</p><div class="inbox-message-list inbox-skeleton" aria-hidden="true">${skeletonRows(MAILBOX_SKELETON_ROWS, "skeleton-message")}</div>`;
+}
+
 function conversationInspectionMarkup(fileName: string): string {
-  return html`<section class="conversation-inspection-loading" aria-live="polite"><span class="inbox-spinner" aria-hidden="true"></span><div><p class="page-kicker">CONVERSATION DISCOVERY</p><h2>Reading ${escapeHtml(fileName)}</h2><p>Identifying forwarded messages and quoted replies before security analysis.</p></div></section>`;
+  return html`<section class="conversation-inspection-loading" aria-live="polite" aria-busy="true"><div><p class="page-kicker">CONVERSATION DISCOVERY</p><h2>Reading ${escapeHtml(fileName)}</h2><p>Identifying forwarded messages and quoted replies before security analysis.</p></div><div class="skeleton-timeline" aria-hidden="true">${skeletonRows(3, "skeleton-turn")}</div></section>`;
 }
 
 function conversationSegmentMarkup(segment: ConversationSegment): string {
@@ -2608,10 +2672,15 @@ function bindReportInteractions(user: AuthUser, report: AnalysisReport): void {
     downloadReport.insertAdjacentHTML("afterend", html`<button id="copy-report" type="button">Copy report</button>`);
   }
   downloadReport?.addEventListener("click", async () => {
-    const destination = await save({ defaultPath: "fishstop-report.json", filters: [{ name: t("JSON report"), extensions: ["json"] }] });
-    if (!destination) return;
+    if (downloadReport.disabled) return;
+    // Block a second click while the save dialog is still opening.
+    downloadReport.disabled = true;
     const previous = downloadReport.textContent;
-    downloadReport.disabled = true; downloadReport.textContent = t("Saving…");
+    let destination: string | null = null;
+    try { destination = await save({ defaultPath: "fishstop-report.json", filters: [{ name: t("JSON report"), extensions: ["json"] }] }); }
+    catch { destination = null; }
+    if (!destination) { downloadReport.disabled = false; return; }
+    downloadReport.textContent = t("Saving…");
     try {
       await invoke("save_analysis_report", { path: destination, report: structuredReportData(report) });
       notify(t("Report saved."));
@@ -3031,7 +3100,7 @@ function mailboxIntakeMarkup(user: AuthUser): string {
   const provider = mailboxProvider(user);
   const name = mailboxProviderName(user);
   const logo = provider === "microsoft" ? microsoftLogo() : googleLogo();
-  return html`<section class="inbox-intake" id="inbox-intake"><div class="inbox-intake-heading"><div><p class="page-kicker">READ-ONLY MAILBOX</p><h2>Recent ${name} messages</h2><p>Connect the same account used for FishStop. Only the latest 10 messages are listed; the full EML is downloaded only when you analyse one.</p></div><span class="inbox-provider">${logo}<b>${name}</b></span></div><div class="inbox-state" id="inbox-state" aria-live="polite"><span class="inbox-spinner" aria-hidden="true"></span><p>Checking mailbox connection…</p></div></section>`;
+  return html`<section class="inbox-intake" id="inbox-intake"><div class="inbox-intake-heading"><div><p class="page-kicker">READ-ONLY MAILBOX</p><h2>Recent ${name} messages</h2><p>Connect the same account used for FishStop. Only the latest 10 messages are listed; the full EML is downloaded only when you analyse one.</p></div><span class="inbox-provider">${logo}<b>${name}</b></span></div><div class="inbox-state" id="inbox-state" aria-live="polite" aria-busy="true">${inboxSkeletonMarkup(t("Checking mailbox connection…"))}</div></section>`;
 }
 
 function mailboxMessageMarkup(message: MailboxMessage): string {
@@ -3048,6 +3117,7 @@ function mailboxAuthorizationExpired(error: unknown): boolean {
 function renderMailboxMessages(state: HTMLElement, user: AuthUser, snapshot: MailboxInboxSnapshot): void {
   const messages = snapshot.messages;
   state.className = "inbox-state";
+  state.removeAttribute("aria-busy");
   state.innerHTML = html`<div class="inbox-connected-heading"><div><strong>${escapeHtml(snapshot.email || user.email)}</strong><small>Read-only · 10 most recent Inbox messages</small></div><div><button class="soft-action" id="refresh-mailbox" type="button">Refresh</button><button class="inbox-disconnect" id="disconnect-mailbox" type="button">Disconnect</button></div></div><div class="inbox-message-list">${messages.length ? messages.map(mailboxMessageMarkup).join("") : localizeHtml("<p class=\"inbox-empty\">No recent messages were returned by this inbox.</p>")}</div>`;
 }
 
@@ -3065,11 +3135,13 @@ async function refreshMailboxPanelNow(user: AuthUser, force = false): Promise<vo
   const cacheEpoch = mailboxInboxEpochs.get(cacheKey) || 0;
   if (!await mailboxInboxAvailable(user)) {
     if (!panel.isConnected) return;
+    state.removeAttribute("aria-busy");
     state.className = "inbox-state inbox-connect-state inbox-coming-soon";
     state.innerHTML = html`<div class="inbox-connect-copy"><strong>Gmail inbox analysis is coming soon</strong><p>You can still download a message as an EML file and analyse it locally.</p></div><span class="inbox-coming-soon-badge">COMING SOON</span>`;
     return;
   }
   const cached = mailboxInboxCache.get(cacheKey);
+  let revalidating = false;
   if (cached && !force) {
     renderMailboxMessages(state, user, cached);
     return;
@@ -3079,12 +3151,22 @@ async function refreshMailboxPanelNow(user: AuthUser, force = false): Promise<vo
     if (!panel.isConnected) return;
     if (!status.connected) {
       clearMailboxInboxCache(user);
+      state.removeAttribute("aria-busy");
       state.className = "inbox-state inbox-connect-state";
       state.innerHTML = html`<div class="inbox-connect-copy"><strong>Connect ${name}</strong><p>Read-only access. FishStop cannot send, delete or move messages.</p></div><button class="primary-action" id="connect-mailbox" type="button">Connect ${name}</button>`;
       return;
     }
-    state.className = "inbox-state";
-    state.innerHTML = html`<span class="inbox-spinner" aria-hidden="true"></span><p>Loading the latest messages from ${escapeHtml(status.email || user.email)}…</p>`;
+    revalidating = Boolean(cached && state.querySelector(".inbox-message-list:not(.inbox-skeleton)"));
+    if (revalidating) {
+      // Stale-while-revalidate: keep the last list on screen and refresh it in place.
+      const refreshButton = state.querySelector<HTMLButtonElement>("#refresh-mailbox");
+      if (refreshButton) { refreshButton.disabled = true; refreshButton.setAttribute("aria-busy", "true"); refreshButton.textContent = t("Refreshing…"); }
+      state.setAttribute("aria-busy", "true");
+    } else {
+      state.className = "inbox-state";
+      state.setAttribute("aria-busy", "true");
+      state.innerHTML = inboxSkeletonMarkup(t("Loading the latest messages from {0}…", [status.email || user.email]));
+    }
     let request = mailboxInboxRequests.get(cacheKey);
     if (!request || force) {
       const createdRequest = invoke<MailboxMessage[]>("list_recent_mailbox_messages", { userSub: user.sub, provider, limit: 10 });
@@ -3103,6 +3185,13 @@ async function refreshMailboxPanelNow(user: AuthUser, force = false): Promise<vo
     console.error("Mailbox refresh failed", error);
     if (!panel.isConnected) return;
     const reconnect = mailboxAuthorizationExpired(error);
+    if (revalidating && !reconnect && cached) {
+      // Keep the messages the user is already looking at; only the refresh failed.
+      renderMailboxMessages(state, user, cached);
+      notify(t("Messages could not be loaded. Please try again."), "error");
+      return;
+    }
+    state.removeAttribute("aria-busy");
     state.className = "inbox-state inbox-connect-state";
     state.innerHTML = html`<div class="inbox-connect-copy inbox-error"><strong>${reconnect ? t("Reconnect {0}", [name]) : t("Mailbox unavailable")}</strong><p>${escapeHtml(reconnect ? t("Mailbox authorization expired. Sign in again to restore read-only access.") : t("Messages could not be loaded. Please try again."))}</p></div><button class="soft-action" id="${reconnect ? "reconnect-mailbox" : "refresh-mailbox"}" type="button">${reconnect ? t("Reconnect {0}", [name]) : t("Try again")}</button>`;
   }
@@ -3127,7 +3216,7 @@ function analysisPageContent(user: AuthUser, source: "file" | "inbox" = "file"):
       ? analysisLoadingMarkup(active!.fileName, active!.completedChecks, active!.progressMessage, active!.progressPercent)
       : "";
   const intake = source === "file"
-    ? html`<section class="eml-intake" id="eml-intake" ${isProcessing || hasReport ? "hidden" : ""}><button class="drop-zone" id="eml-drop" type="button"><span class="drop-icon">↥</span><strong>Drop an .eml file here</strong><span>or select it from your computer · max 40 MB</span></button><input id="eml-input" type="file" accept=".eml,message/rfc822" hidden /></section>`
+    ? html`<section class="eml-intake" id="eml-intake" ${isProcessing || hasReport ? "hidden" : ""}><button class="drop-zone" id="eml-drop" type="button" aria-keyshortcuts="${shortcutAria("o")}"><span class="drop-icon">↥</span><strong>Drop an .eml file here</strong><span>or select it from your computer · max 40 MB</span><span class="shortcut-hint" aria-hidden="true"><kbd>${shortcutLabel("o")}</kbd></span></button><input id="eml-input" type="file" accept=".eml,message/rfc822" hidden /></section>`
     : html`${!isProcessing && !hasReport ? mailboxIntakeMarkup(user) : ""}<p class="upload-status" id="upload-status">${isProcessing || hasReport ? status : ""}</p>`;
   const actions = html`<div class="analysis-actions"><button class="change-analysis" id="change-eml" type="button" ${(!isProcessing && hasReport) || active?.status === "error" ? "" : "hidden"}>${source === "inbox" ? t("Back to inbox") : t("Change email")}</button>${source === "file" ? html`<button class="reset-analysis" id="reset-analysis" type="button" ${hasReport && !isProcessing ? "" : "hidden"}>Reset</button>` : ""}<button class="cancel-analysis" id="cancel-analysis" type="button" ${isProcessing ? "" : "hidden"}>Cancel</button></div>`;
   const checkLabel = active?.status === "error" ? t("CHECK INCOMPLETE") : isProcessing ? t("CHECK IN PROGRESS") : hasReport ? t("CHECK COMPLETED") : t("NEW CHECK");
@@ -3249,7 +3338,62 @@ function contentFor(section: Section, user: AuthUser): string {
   return html`<div class="page-heading dashboard-heading"><div><p class="page-kicker">YOUR PRIVATE WORKSPACE</p><h1>${dashboardGreeting()}, ${firstName}.</h1><p>Keep track of your email security.</p></div></div><section class="welcome-card"><div><p class="page-kicker">READY WHEN YOU ARE</p><h2>Received a suspicious email?</h2><p>Upload the EML file and let FishStop inspect its risk signals.</p><button class="primary-action" data-go="analyse" type="button">Analyse a file <span>→</span></button></div><div class="mail-art" aria-hidden="true"><span></span></div></section><div class="overview-row"><section class="mini-panel recent-activity-panel"><div class="panel-top"><h2>Recent activity</h2><button data-go="history" type="button">View history</button></div>${recentActivity}</section><section class="mini-panel outcomes-panel"><div class="outcomes-heading"><div><p class="page-kicker">LOCAL HISTORY</p><h2>Analysis outcomes</h2></div><small>All saved analyses</small></div><div class="outcomes-content"><div class="outcomes-donut ${history.length ? "" : "empty"}" style="--danger-end:${dashboardDangerEnd}%;--review-end:${dashboardReviewEnd}%" role="img" aria-label="${history.length ? t("{0} high risk, {1} review required, {2} clear analyses", [dashboardHighRiskCount, dashboardReviewCount, dashboardClearCount]) : t("No saved analyses")}"><span><strong>${history.length}</strong><small>total</small></span></div><ul class="outcomes-legend"><li class="danger"><span>High risk</span><strong>${dashboardHighRiskCount}</strong></li><li class="review"><span>Review</span><strong>${dashboardReviewCount}</strong></li><li class="safe"><span>Clear</span><strong>${dashboardClearCount}</strong></li></ul></div></section></div>`;
 }
 
+/** Switch sections with a short cross-fade where the webview supports view transitions. */
+function navigateToSection(user: AuthUser, section: Section): void {
+  const current = document.querySelector<HTMLButtonElement>("[data-section].selected")?.dataset.section;
+  const startViewTransition = (document as Document & { startViewTransition?: (update: () => void) => unknown }).startViewTransition;
+  if (current === section || !motionAllowed() || typeof startViewTransition !== "function") {
+    renderDashboard(user, section);
+    return;
+  }
+  try { startViewTransition.call(document, () => renderDashboard(user, section)); }
+  catch { renderDashboard(user, section); }
+}
+
+/** Show the initial until the remote profile photo has loaded, and keep it if the photo fails. */
+function bindAvatarPhoto(): void {
+  const photo = document.querySelector<HTMLImageElement>(".avatar .avatar-photo");
+  if (!photo) return;
+  const loaded = () => photo.classList.add("is-loaded");
+  if (photo.complete && photo.naturalWidth) { loaded(); return; }
+  photo.addEventListener("load", loaded, { once: true });
+  photo.addEventListener("error", () => photo.remove(), { once: true });
+}
+
+/** Clearing history hides it at once and only deletes it from disk if Undo is not pressed. */
+function clearHistoryWithUndo(user: AuthUser): void {
+  const snapshot = readAnalysisHistory(user);
+  if (!snapshot.length) return;
+  const rerenderIfVisible = () => {
+    const visible = document.querySelector<HTMLButtonElement>("[data-section].selected")?.dataset.section as Section | undefined;
+    if (storedUser()?.sub === user.sub && (visible === "history" || visible === "dashboard" || visible === "statistics")) renderDashboard(user, visible);
+  };
+  deferWithUndo(t("History cleared."), {
+    apply: () => { analysisHistoryCache.set(user.sub, []); rerenderIfVisible(); },
+    undo: () => {
+      // Analyses saved during the grace period were written alongside an empty history, so merge them back.
+      const added = readAnalysisHistory(user);
+      const restored = [...added, ...snapshot.filter((record) => !added.some((entry) => entry.id === record.id))];
+      analysisHistoryCache.set(user.sub, restored);
+      if (added.length) void invoke("save_analysis_history", { userSub: user.sub, history: restored }).catch(() => notify(t("Could not restore history. Please try again."), "error"));
+      rerenderIfVisible();
+    },
+    commit: async () => {
+      if (readAnalysisHistory(user).length) return; // New analyses already replaced the stored history.
+      try {
+        await invoke("clear_analysis_history", { userSub: user.sub });
+        localStorage.removeItem(historyStorageKey(user));
+      } catch {
+        if (!readAnalysisHistory(user).length) analysisHistoryCache.set(user.sub, snapshot);
+        rerenderIfVisible();
+        notify(t("Could not clear history. Please try again."), "error");
+      }
+    },
+  });
+}
+
 function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
+  shortcutUser = user;
   if (section === "inbox" && (!ACCOUNT_ACCESS_ENABLED || user.provider === "guest")) section = "analyse";
   disposeHopPager?.(); disposeHopPager = null;
   removeStatisticsMenuDismissal?.();
@@ -3265,7 +3409,8 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
   const safeName = escapeHtml(user.provider === "guest" ? savedGuestName() || t("Guest") : user.name || (user.provider === "microsoft" ? t("Microsoft account") : t("Google account")));
   const safeEmail = user.provider === "guest" ? t("Local workspace") : escapeHtml(user.email);
   const safePicture = user.picture ? escapeHtml(user.picture) : "";
-  root.innerHTML = html`<div class="app-shell ${section === "dashboard" ? "dashboard-shell" : section === "statistics" ? "statistics-shell" : ""}"><aside class="sidebar"><div class="sidebar-brand"><img class="brand-mark" src="${fishstopMailCheckUrl}" alt="" aria-hidden="true" /><span>fish<span>stop</span></span></div><nav aria-label="Primary navigation">${(Object.keys(labels) as Section[]).map((key) => html`<button class="nav-item ${section === key ? "selected" : ""}" data-section="${key}" type="button" ${key === "inbox" && (!ACCOUNT_ACCESS_ENABLED || user.provider === "guest") ? "disabled" : ""}><span>${icons[key]}</span>${labels[key]}</button>`).join("")}</nav><div class="sidebar-bottom"><div class="account"><span class="avatar">${safePicture ? html`<img src="${safePicture}" alt="" />` : initial}</span><div><strong>${safeName}</strong><small>${safeEmail}</small></div></div><button class="logout" id="logout" type="button">Sign out <span>↗</span></button></div></aside><main class="workspace"><header class="topbar"><div class="crumb"><span>FishStop</span><b>/</b><strong>${labels[section]}</strong></div><div class="top-status top-status-checking" data-protection-status role="status" aria-live="polite"><i aria-hidden="true"></i><span>Checking protection…</span></div></header><section class="content ${section === "dashboard" ? "dashboard-content" : section === "statistics" ? "statistics-content" : ""}">${contentFor(section, user)}</section></main></div>`;
+  root.innerHTML = html`<div class="app-shell ${section === "dashboard" ? "dashboard-shell" : section === "statistics" ? "statistics-shell" : ""}"><aside class="sidebar"><div class="sidebar-brand"><img class="brand-mark" src="${fishstopMailCheckUrl}" alt="" aria-hidden="true" /><span>fish<span>stop</span></span></div><nav aria-label="Primary navigation">${(Object.keys(labels) as Section[]).map((key) => html`<button class="nav-item ${section === key ? "selected" : ""}" data-section="${key}" ${SECTION_SHORTCUTS[key] ? `aria-keyshortcuts="${shortcutAria(SECTION_SHORTCUTS[key]!)}"` : ""} type="button" ${key === "inbox" && (!ACCOUNT_ACCESS_ENABLED || user.provider === "guest") ? "disabled" : ""}><span>${icons[key]}</span>${labels[key]}${SECTION_SHORTCUTS[key] ? `<kbd aria-hidden="true">${shortcutLabel(SECTION_SHORTCUTS[key]!)}</kbd>` : ""}</button>`).join("")}</nav><div class="sidebar-bottom"><div class="account"><span class="avatar"><span class="avatar-initial" aria-hidden="true">${initial}</span>${safePicture ? html`<img class="avatar-photo" src="${safePicture}" alt="" decoding="async" />` : ""}</span><div><strong>${safeName}</strong><small>${safeEmail}</small></div></div><button class="logout" id="logout" type="button">Sign out <span>↗</span></button></div></aside><main class="workspace"><header class="topbar"><div class="crumb"><span>FishStop</span><b>/</b><strong>${labels[section]}</strong></div><div class="top-status top-status-checking" data-protection-status role="status" aria-live="polite"><i aria-hidden="true"></i><span>Checking protection…</span></div></header><section class="content ${section === "dashboard" ? "dashboard-content" : section === "statistics" ? "statistics-content" : ""}">${contentFor(section, user)}</section></main></div>`;
+  bindAvatarPhoto();
   const active = currentAnalysis(user);
   const activeSource = active?.source || "file";
   if (((section === "analyse" && activeSource === "file") || (section === "inbox" && activeSource === "inbox")) && active?.status === "complete" && active.report) {
@@ -3289,11 +3434,10 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
     badge.className = `history-risk ${verdict.tone}`;
     badge.textContent = verdict.tone === "danger" ? t("RISK") : verdict.tone === "review" ? "REVIEW" : "TRUSTED";
   });
-  if (section === "history" && readAnalysisHistory(user).length) root.insertAdjacentHTML("beforeend", html`<dialog class="confirm-dialog" id="clear-history-dialog" aria-labelledby="clear-history-title"><div class="dialog-mark">!</div><p class="page-kicker">IRREVERSIBLE ACTION</p><h2 id="clear-history-title">Clear history?</h2><p>This will delete every saved analysis for <strong>${safeEmail}</strong> on this device.</p><div class="dialog-actions"><button id="cancel-clear-history" type="button">Cancel</button><button id="confirm-clear-history" type="button">Clear history</button></div></dialog>`);
   root.insertAdjacentHTML("beforeend", html`<dialog class="confirm-dialog sign-out-dialog" id="sign-out-dialog" aria-labelledby="sign-out-title" aria-describedby="sign-out-description"><h2 id="sign-out-title">Sign out?</h2><p id="sign-out-description">Are you sure you want to sign out of FishStop?</p><div class="dialog-actions"><button id="cancel-sign-out" type="button" autofocus>Cancel</button><button id="confirm-sign-out" type="button">Sign out</button></div></dialog>`);
   animateSectionEntry(section);
-  document.querySelectorAll<HTMLButtonElement>("[data-section]").forEach((button) => button.addEventListener("click", () => renderDashboard(user, button.dataset.section as Section)));
-  document.querySelectorAll<HTMLButtonElement>("[data-go]").forEach((button) => button.addEventListener("click", () => renderDashboard(user, button.dataset.go as Section)));
+  document.querySelectorAll<HTMLButtonElement>("[data-section]").forEach((button) => button.addEventListener("click", () => navigateToSection(user, button.dataset.section as Section)));
+  document.querySelectorAll<HTMLButtonElement>("[data-go]").forEach((button) => button.addEventListener("click", () => navigateToSection(user, button.dataset.go as Section)));
   const statisticsMenu = document.querySelector<HTMLElement>(".statistics-period-menu");
   document.querySelectorAll<HTMLButtonElement>("[data-statistics-view]").forEach(button => button.addEventListener("click", () => {
     document.querySelector<HTMLElement>(".statistics-panels")!.dataset.view = button.dataset.statisticsView;
@@ -3401,24 +3545,13 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
     renderDashboard(user, "analyse");
   }));
   document.querySelector<HTMLButtonElement>("#clear-history")?.addEventListener("click", () => {
-    const dialog = document.querySelector<HTMLDialogElement>("#clear-history-dialog");
-    if (!dialog) return;
-    dialog.showModal();
-    animateDialogEntrance(dialog);
-  });
-  document.querySelector<HTMLButtonElement>("#cancel-clear-history")?.addEventListener("click", () => {
-    document.querySelector<HTMLDialogElement>("#clear-history-dialog")?.close();
-  });
-  document.querySelector<HTMLButtonElement>("#confirm-clear-history")?.addEventListener("click", () => {
-    void ensureAnalysisHistory(user).then(async () => {
+    const button = document.querySelector<HTMLButtonElement>("#clear-history");
+    if (button) button.disabled = true;
+    void ensureAnalysisHistory(user).then(() => {
       if (analysisHistoryErrors.has(user.sub)) throw new Error("History storage unavailable");
-      await invoke("clear_analysis_history", { userSub: user.sub });
-      analysisHistoryCache.set(user.sub, []);
-      localStorage.removeItem(historyStorageKey(user));
-      renderDashboard(user, "history");
-      notify(t("History cleared."));
+      clearHistoryWithUndo(user);
     }).catch(() => {
-      document.querySelector<HTMLDialogElement>("#clear-history-dialog")?.close();
+      if (button?.isConnected) button.disabled = false;
       notify(t("Could not clear history. Please try again."), "error");
     });
   });
@@ -3544,15 +3677,18 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
     if (status) status.textContent = "";
     trigger?.focus();
   }));
+  let savingReputationKeys = false;
   document.querySelector<HTMLFormElement>("#reputation-settings")?.addEventListener("submit", (event) => {
     event.preventDefault();
+    if (savingReputationKeys) return;
     const inlineValue = (provider: "virustotal" | "abuseipdb" | "otx") => String(document.querySelector<HTMLInputElement>(`.credential-inline-field input[name="${provider}"]`)?.value || "").trim();
     const virustotal = inlineValue("virustotal");
     const abuseipdb = inlineValue("abuseipdb");
     const otx = inlineValue("otx");
     const status = document.querySelector<HTMLElement>("#settings-status");
     if (status) status.textContent = t("Saving in the system keychain…");
-    void invoke("save_reputation_keys", { userSub: user.sub, virustotal, abuseipdb, otx }).then(async () => {
+    savingReputationKeys = true;
+    void invoke("save_reputation_keys", { userSub: user.sub, virustotal, abuseipdb, otx }).finally(() => { savingReputationKeys = false; }).then(async () => {
       if (status) status.textContent = "";
       notify(t("API keys saved securely."));
       closeCredentialEditor();
@@ -3563,24 +3699,32 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
   document.querySelectorAll<HTMLButtonElement>(".remove-reputation-key").forEach((button) => {
     button.addEventListener("click", () => {
       const provider = button.dataset.removeReputationKey;
-      if (!provider) return;
-      const status = document.querySelector<HTMLElement>("#settings-status");
-      button.disabled = true;
-      button.setAttribute("aria-busy", "true");
-      if (status) status.textContent = t("Removing the key from the system keychain…");
-      void invoke("remove_reputation_key", { userSub: user.sub, provider }).then(async () => {
-        if (status) status.textContent = "";
-        notify(t("API key removed."));
-        button.removeAttribute("aria-busy");
-        await refreshReputationSettings(user, true);
-        void refreshProtectionStatus(user, true);
-      }).catch((error) => {
-        console.error("Could not remove credential", error);
-        button.disabled = false;
-        button.removeAttribute("aria-busy");
-        button.innerHTML = credentialActionIcon("remove");
-        if (status) status.textContent = "";
-        notify(t("Could not remove the API key. Please try again."), "error");
+      if (!provider || pendingKeyRemovals.has(provider)) return;
+      const row = button.closest<HTMLElement>("li");
+      const restoreRow = () => {
+        pendingKeyRemovals.delete(provider);
+        row?.classList.remove("is-pending-removal");
+        if (button.isConnected) { button.disabled = false; button.removeAttribute("aria-busy"); button.innerHTML = credentialActionIcon("remove"); }
+      };
+      deferWithUndo(t("API key removed."), {
+        apply: () => {
+          pendingKeyRemovals.add(provider);
+          row?.classList.add("is-pending-removal");
+          button.disabled = true;
+        },
+        undo: restoreRow,
+        commit: async () => {
+          try {
+            await invoke("remove_reputation_key", { userSub: user.sub, provider });
+            pendingKeyRemovals.delete(provider);
+            await refreshReputationSettings(user, true);
+            void refreshProtectionStatus(user, true);
+          } catch (error) {
+            console.error("Could not remove credential", error);
+            restoreRow();
+            notify(t("Could not remove the API key. Please try again."), "error");
+          }
+        },
       });
     });
   });
@@ -4330,14 +4474,17 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       (analysisId, conversationSelection) => invoke<AnalysisReport>("analyze_eml_contents", { fileName: file.name, contents, userSub: user.sub, analysisId, conversationSelection, disabledProviders: disabledReputationProviders(user) }),
     );
   };
+  let choosingEml = false;
   const chooseEml = async () => {
+    if (choosingEml) return; // A double click must not stack two file pickers.
+    choosingEml = true;
     try {
       const selected = await open({ multiple: false, directory: false, filters: [{ name: t("Email message"), extensions: ["eml"] }] });
       if (typeof selected === "string") displayFile(selected);
     } catch (error) {
       if (emlInput) emlInput.click();
       else if (uploadStatus) { console.error("File selector failed", error); uploadStatus.textContent = t("The file selector could not be opened. Please try again."); }
-    }
+    } finally { choosingEml = false; }
   };
   inboxIntake?.addEventListener("click", async (event) => {
     const button = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("button") : null;
@@ -4387,16 +4534,26 @@ function renderDashboard(user: AuthUser, section: Section = "dashboard"): void {
       return;
     }
     if (button.id === "disconnect-mailbox") {
-      button.disabled = true;
-      try {
-        clearMailboxInboxCache(user);
-        await invoke("disconnect_mailbox", { userSub: user.sub });
-        await refreshMailboxPanel(user);
-        notify(t("Mailbox disconnected."));
-      } catch (error) {
-        console.error("Mailbox action failed", error);
-        notify(t("Could not disconnect the mailbox. Please try again."), "error");
-      }
+      const state = document.querySelector<HTMLElement>("#inbox-state");
+      const setPending = (pending: boolean) => {
+        state?.classList.toggle("is-pending-removal", pending);
+        state?.querySelectorAll<HTMLButtonElement>("button").forEach((control) => { control.disabled = pending; });
+      };
+      deferWithUndo(t("Mailbox disconnected."), {
+        apply: () => setPending(true),
+        undo: () => setPending(false),
+        commit: async () => {
+          try {
+            clearMailboxInboxCache(user);
+            await invoke("disconnect_mailbox", { userSub: user.sub });
+            await refreshMailboxPanel(user);
+          } catch (error) {
+            console.error("Mailbox action failed", error);
+            setPending(false);
+            notify(t("Could not disconnect the mailbox. Please try again."), "error");
+          }
+        },
+      });
       return;
     }
     if (button.classList.contains("analyse-inbox-message")) {
@@ -4510,6 +4667,7 @@ async function startWorkspace(user: AuthUser): Promise<void> {
 
 initializeTheme();
 initializeLanguage();
+installGlobalShortcuts();
 document.addEventListener("click", event => {
   const control = (event.target as HTMLElement | null)?.closest<HTMLButtonElement>("[data-language-toggle]");
   if (!control || control.disabled) return;

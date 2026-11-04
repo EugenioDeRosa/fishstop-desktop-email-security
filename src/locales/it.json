@@ -1219,5 +1219,8 @@
   "The link `{0}` uses a URL shortener that hides the final destination.": "Il link `{0}` usa un servizio di URL brevi che nasconde la destinazione finale.",
   "The link `{0}` uses a free hosting or form service frequently abused for phishing pages.": "Il link `{0}` usa un servizio di hosting o di moduli gratuito spesso abusato per pagine di phishing.",
   "The invitation embeds a file inside the calendar data.": "L'invito incorpora un file nei dati del calendario.",
-  "a calendar invitation with links comes from an organiser who does not match the sender": "un invito calendario con link proviene da un organizzatore diverso dal mittente"
+  "a calendar invitation with links comes from an organiser who does not match the sender": "un invito calendario con link proviene da un organizzatore diverso dal mittente",
+  "Undo": "Annulla",
+  "Refreshing…": "Aggiornamento…",
+  "Could not restore history. Please try again.": "Impossibile ripristinare la cronologia. Riprova."
 }

@@ -11,6 +11,7 @@ const { fastModelVersion } = exports;
 const catalog = JSON.parse(readFileSync(new URL('../src-tauri/model-catalog-fast.json', import.meta.url), 'utf8'));
 
 test('Fast labels keep dotted versions', () => {
+  assert.equal(fastModelVersion('fishstop-fast:1.7b-finetuned-lite-v8-q4_k_m'), 'v8');
   assert.equal(fastModelVersion('fishstop-fast:1.7b-finetuned-lite-v7.1-q4_k_m'), 'v7.1');
   assert.equal(fastModelVersion('fishstop-fast:1.7b-finetuned-lite-v7-q4_k_m'), 'v7');
   assert.equal(fastModelVersion('fishstop-fast:1.7b-finetuned-lite-v10.2.3-q4_k_m'), 'v10.2.3');
